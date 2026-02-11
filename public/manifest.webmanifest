@@ -1,0 +1,19 @@
+{
+  "name": "Untitled Board Game",
+  "short_name": "Untitled Game",
+  "description": "Simultaneous hex tactics board game",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a0f0a",
+  "theme_color": "#1a0f0a",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

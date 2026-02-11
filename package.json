@@ -1,0 +1,19 @@
+{
+  "name": "scaffold",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:lan": "vite --host 0.0.0.0 --port 5173",
+    "dev:lan:https": "vite --mode lan-https --host 0.0.0.0 --port 5173",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "preview:lan:https": "vite preview --mode lan-https --host 0.0.0.0 --port 4173"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^2.1.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  }
+}
