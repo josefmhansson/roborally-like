@@ -12,7 +12,12 @@ import {
   simulatePlannedState,
   startActionPhase,
 } from './engine/game'
+import { OnlineClient } from './net/client'
+import type { OnlineSessionState, PlayMode } from './net/types'
+import type { ClientGameCommand, RoomSetup, ServerMessage } from './shared/net/protocol'
+import type { GameStateView, PresenceState, ViewMeta } from './shared/net/view'
 import type {
+  CardInstance,
   CardDefId,
   CardType,
   Direction,
@@ -37,6 +42,22 @@ if (DEBUG_CARD_LAYERS) {
   document.body.classList.add('debug-cards')
 }
 
+function resolveAssetUrl(relativePath: string): string {
+  const baseUrl = import.meta.env.BASE_URL || '/'
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
+  const normalizedPath = relativePath.replace(/^\/+/, '')
+  return `${normalizedBase}${normalizedPath}`
+}
+
+function applyCardAssetCssVars(): void {
+  const root = document.documentElement
+  root.style.setProperty('--card-base-image', `url("${resolveAssetUrl('assets/cards/action_card_base.png')}")`)
+  root.style.setProperty('--card-team-image', `url("${resolveAssetUrl('assets/cards/action_card_team.png')}")`)
+  root.style.setProperty('--ap-seal-image', `url("${resolveAssetUrl('assets/cards/AP_seal.png')}")`)
+}
+
+applyCardAssetCssVars()
+
 app.innerHTML = `
   <div class="app">
     <section id="menu-screen" class="menu-screen">
@@ -44,7 +65,7 @@ app.innerHTML = `
         <div class="title">Untitled Board Game</div>
         <div class="subtitle">MVP sandbox for simultaneous hex tactics</div>
         <div class="menu-actions">
-          <button id="menu-start" class="btn">Start Game</button>
+          <button id="menu-start" class="btn">Start Local Game</button>
           <button id="menu-loadout" class="btn ghost">Loadout</button>
           <button id="menu-settings" class="btn ghost">Settings</button>
         </div>
@@ -56,6 +77,20 @@ app.innerHTML = `
             <button id="seed-apply" class="btn ghost" type="button">Apply</button>
           </div>
           <div id="seed-status" class="seed-status"></div>
+        </div>
+        <div class="seed-block">
+          <div class="seed-label">Online PvP</div>
+          <div class="online-row">
+            <input id="online-room" type="text" placeholder="Room code (e.g. AB12CD)" />
+            <input id="online-token" type="text" placeholder="Seat token" />
+          </div>
+          <div class="menu-actions">
+            <button id="online-create" class="btn" type="button">Create Room</button>
+            <button id="online-join" class="btn ghost" type="button">Join Room</button>
+            <button id="online-enter" class="btn ghost hidden" type="button">Enter Match</button>
+          </div>
+          <div id="online-links" class="seed-status"></div>
+          <div id="online-status" class="seed-status"></div>
         </div>
       </div>
     </section>
@@ -171,6 +206,7 @@ app.innerHTML = `
                 <span id="turn"></span>
                 <span id="active"></span>
                 <span id="counts"></span>
+                <span id="network-state"></span>
               </div>
             </div>
           </section>
@@ -216,6 +252,13 @@ const seedInput = document.querySelector<HTMLInputElement>('#seed-input')!
 const seedCopyButton = document.querySelector<HTMLButtonElement>('#seed-copy')!
 const seedApplyButton = document.querySelector<HTMLButtonElement>('#seed-apply')!
 const seedStatus = document.querySelector<HTMLDivElement>('#seed-status')!
+const onlineRoomInput = document.querySelector<HTMLInputElement>('#online-room')!
+const onlineTokenInput = document.querySelector<HTMLInputElement>('#online-token')!
+const onlineCreateButton = document.querySelector<HTMLButtonElement>('#online-create')!
+const onlineJoinButton = document.querySelector<HTMLButtonElement>('#online-join')!
+const onlineEnterButton = document.querySelector<HTMLButtonElement>('#online-enter')!
+const onlineLinksEl = document.querySelector<HTMLDivElement>('#online-links')!
+const onlineStatusEl = document.querySelector<HTMLDivElement>('#online-status')!
 
 const loadoutBackButton = document.querySelector<HTMLButtonElement>('#loadout-back')!
 const loadoutToggleButton = document.querySelector<HTMLButtonElement>('#loadout-toggle')!
@@ -250,6 +293,7 @@ const turnEl = document.querySelector<HTMLSpanElement>('#turn')!
 const activeEl = document.querySelector<HTMLSpanElement>('#active')!
 const logEl = document.querySelector<HTMLDivElement>('#log')!
 const countsEl = document.querySelector<HTMLSpanElement>('#counts')!
+const networkStateEl = document.querySelector<HTMLSpanElement>('#network-state')!
 const winnerModal = document.querySelector<HTMLDivElement>('#winner-modal')!
 const winnerTextEl = document.querySelector<HTMLDivElement>('#winner-text')!
 const winnerMenuButton = document.querySelector<HTMLButtonElement>('#winner-menu')!
@@ -274,6 +318,13 @@ if (
   !seedCopyButton ||
   !seedApplyButton ||
   !seedStatus ||
+  !onlineRoomInput ||
+  !onlineTokenInput ||
+  !onlineCreateButton ||
+  !onlineJoinButton ||
+  !onlineEnterButton ||
+  !onlineLinksEl ||
+  !onlineStatusEl ||
   !loadoutBackButton ||
   !loadoutToggleButton ||
   !loadoutFilterToggleButton ||
@@ -302,6 +353,7 @@ if (
   !activeEl ||
   !logEl ||
   !countsEl ||
+  !networkStateEl ||
   !winnerModal ||
   !winnerTextEl ||
   !winnerMenuButton ||
@@ -418,20 +470,20 @@ function loadImage(src: string): ImageAsset {
 }
 
 const tileImages: Record<TileKind, ImageAsset> = {
-  grass: loadImage('/assets/tiles/tile_grass.png'),
-  forest: loadImage('/assets/tiles/tile_forest.png'),
-  mountain: loadImage('/assets/tiles/tile_mountain.png'),
-  pond: loadImage('/assets/tiles/tile_pond.png'),
-  rocky: loadImage('/assets/tiles/tile_rocky.png'),
-  rough: loadImage('/assets/tiles/tile_rough.png'),
-  shrub: loadImage('/assets/tiles/tile_shrub.png'),
+  grass: loadImage(resolveAssetUrl('assets/tiles/tile_grass.png')),
+  forest: loadImage(resolveAssetUrl('assets/tiles/tile_forest.png')),
+  mountain: loadImage(resolveAssetUrl('assets/tiles/tile_mountain.png')),
+  pond: loadImage(resolveAssetUrl('assets/tiles/tile_pond.png')),
+  rocky: loadImage(resolveAssetUrl('assets/tiles/tile_rocky.png')),
+  rough: loadImage(resolveAssetUrl('assets/tiles/tile_rough.png')),
+  shrub: loadImage(resolveAssetUrl('assets/tiles/tile_shrub.png')),
 }
-const spawnBaseImage = loadImage('/assets/buildings/spawn_village_base.png')
-const spawnTeamImage = loadImage('/assets/buildings/spawn_village_team.png')
-const strongholdBaseImage = loadImage('/assets/buildings/stronghold_base.png')
-const strongholdTeamImage = loadImage('/assets/buildings/stronghold_team.png')
-const unitBaseImage = loadImage('/assets/units/unit_soldier_base.png')
-const unitTeamImage = loadImage('/assets/units/unit_soldier_team.png')
+const spawnBaseImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_base.png'))
+const spawnTeamImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_team.png'))
+const strongholdBaseImage = loadImage(resolveAssetUrl('assets/buildings/stronghold_base.png'))
+const strongholdTeamImage = loadImage(resolveAssetUrl('assets/buildings/stronghold_team.png'))
+const unitBaseImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_base.png'))
+const unitTeamImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_team.png'))
 const unitTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const strongholdTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
@@ -462,7 +514,26 @@ let overlayShowSeq = 0
 let hoverCardId: string | null = null
 let hasPointer = false
 const hiddenCardIds = new Set<string>()
- 
+
+let mode: PlayMode = 'local'
+let onlineClient: OnlineClient | null = null
+let onlineSession: OnlineSessionState | null = null
+type OnlineResolutionReplayState = {
+  finalStateView: GameStateView
+  finalViewMeta: ViewMeta
+  presence: PresenceState
+}
+let onlineResolutionReplay: OnlineResolutionReplayState | null = null
+let onlinePendingAction: { type: 'create'; setup: RoomSetup } | { type: 'join'; roomCode: string; seatToken: string } | null =
+  null
+let onlineAutoEnterGameOnJoin = true
+let onlineReconnectTimer: number | null = null
+let onlineSuppressReconnect = false
+let onlineCommandSeq = 1
+
+const ONLINE_SESSION_STORAGE_KEY = 'untitled_game_online_session_v1'
+const ONLINE_SESSION_VERSION = 1
+const ONLINE_RECONNECT_DELAY_MS = 2000
 
 isInitialized = true
 
@@ -511,6 +582,12 @@ type PersistedProgress = {
   boardPan: { x: number; y: number }
 }
 
+type PersistedOnlineSession = {
+  version: number
+  roomCode: string
+  seatToken: string
+}
+
 const PROGRESS_STORAGE_KEY = 'untitled_game_progress_v1'
 const PROGRESS_SAVE_DEBOUNCE_MS = 250
 let progressSaveTimer: number | null = null
@@ -521,6 +598,7 @@ function normalizeDeckInput(input: unknown): CardDefId[] {
 }
 
 function scheduleProgressSave(): void {
+  if (mode === 'online') return
   if (progressSaveTimer !== null) {
     window.clearTimeout(progressSaveTimer)
   }
@@ -531,6 +609,7 @@ function scheduleProgressSave(): void {
 }
 
 function persistProgressNow(): void {
+  if (mode === 'online') return
   try {
     const payload: PersistedProgress = {
       version: 1,
@@ -607,6 +686,503 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
   }
 }
 
+function getDefaultSocketUrl(): string {
+  const configured = (import.meta.env as Record<string, string | boolean | undefined>).VITE_WS_URL
+  if (typeof configured === 'string' && configured.length > 0) return configured
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${protocol}://${window.location.host}/ws`
+}
+
+function setOnlineStatus(message: string): void {
+  onlineStatusEl.textContent = message
+}
+
+function setOnlineLinks(message: string): void {
+  onlineLinksEl.textContent = message
+}
+
+function refreshOnlineLobbyUi(): void {
+  const hasSession = Boolean(onlineSession)
+  onlineEnterButton.classList.toggle('hidden', !hasSession)
+  onlineEnterButton.disabled = !hasSession
+  if (!hasSession) {
+    onlineEnterButton.textContent = 'Enter Match'
+    return
+  }
+  onlineEnterButton.textContent = `Enter Match (P${onlineSession!.seat + 1})`
+}
+
+function persistOnlineSession(roomCode: string, seatToken: string): void {
+  try {
+    const payload: PersistedOnlineSession = {
+      version: ONLINE_SESSION_VERSION,
+      roomCode,
+      seatToken,
+    }
+    localStorage.setItem(ONLINE_SESSION_STORAGE_KEY, JSON.stringify(payload))
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function restoreOnlineSession(): { roomCode: string; seatToken: string } | null {
+  try {
+    const raw = localStorage.getItem(ONLINE_SESSION_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PersistedOnlineSession>
+    if (parsed.version !== ONLINE_SESSION_VERSION) return null
+    if (typeof parsed.roomCode !== 'string' || typeof parsed.seatToken !== 'string') return null
+    return {
+      roomCode: parsed.roomCode.toUpperCase(),
+      seatToken: parsed.seatToken,
+    }
+  } catch {
+    return null
+  }
+}
+
+function clearOnlineSessionStorage(): void {
+  try {
+    localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readInviteFromUrl(): { roomCode: string; seatToken: string } | null {
+  const params = new URLSearchParams(window.location.search)
+  const roomCode = params.get('room')
+  const seatToken = params.get('token')
+  if (!roomCode || !seatToken) return null
+  return {
+    roomCode: roomCode.trim().toUpperCase(),
+    seatToken: seatToken.trim(),
+  }
+}
+
+function stripInviteQueryParams(): void {
+  if (!window.location.search) return
+  const url = new URL(window.location.href)
+  url.searchParams.delete('room')
+  url.searchParams.delete('token')
+  window.history.replaceState({}, '', url.toString())
+}
+
+function clearOnlineReconnectTimer(): void {
+  if (onlineReconnectTimer !== null) {
+    window.clearTimeout(onlineReconnectTimer)
+    onlineReconnectTimer = null
+  }
+}
+
+function dispatchPendingOnlineAction(): void {
+  if (!onlineClient || !onlineClient.isConnected() || !onlinePendingAction) return
+  let sent = false
+  if (onlinePendingAction.type === 'create') {
+    sent = onlineClient.send({
+      type: 'create_room',
+      setup: onlinePendingAction.setup,
+    })
+  } else if (onlinePendingAction.type === 'join') {
+    sent = onlineClient.send({
+      type: 'join_room',
+      roomCode: onlinePendingAction.roomCode,
+      seatToken: onlinePendingAction.seatToken,
+    })
+  }
+  if (sent) {
+    onlinePendingAction = null
+  }
+}
+
+function nextOnlineCommandId(): string {
+  const value = `cmd-${onlineCommandSeq}`
+  onlineCommandSeq += 1
+  return value
+}
+
+function applyPlayMode(next: PlayMode): void {
+  mode = next
+  resetCardVisualState()
+}
+
+function resetCardVisualState(): void {
+  hiddenCardIds.clear()
+  pendingCardTransfer = null
+  onlineResolutionReplay = null
+  clearOverlayClone()
+  suppressOverlayUntil = 0
+}
+
+function teardownOnlineSession(clearStoredSession: boolean): void {
+  clearOnlineReconnectTimer()
+  onlinePendingAction = null
+  onlineAutoEnterGameOnJoin = true
+  onlineSuppressReconnect = true
+  if (onlineClient) {
+    onlineClient.close()
+    onlineClient = null
+  }
+  onlineSession = null
+  if (clearStoredSession) {
+    clearOnlineSessionStorage()
+  }
+  setOnlineLinks('')
+  setOnlineStatus('')
+  refreshOnlineLobbyUi()
+}
+
+function scheduleOnlineReconnect(): void {
+  if (mode !== 'online' || !onlineSession) return
+  const session = onlineSession
+  onlineAutoEnterGameOnJoin = screen === 'game'
+  if (onlineReconnectTimer !== null) return
+  onlineReconnectTimer = window.setTimeout(() => {
+    onlineReconnectTimer = null
+    onlinePendingAction = {
+      type: 'join',
+      roomCode: session.roomCode,
+      seatToken: session.seatToken,
+    }
+    ensureOnlineClient()
+  }, ONLINE_RECONNECT_DELAY_MS)
+}
+
+function ensureOnlineClient(): void {
+  if (onlineClient) {
+    if (onlineClient.isConnected()) {
+      dispatchPendingOnlineAction()
+    } else {
+      onlineClient.connect()
+    }
+    return
+  }
+
+  onlineClient = new OnlineClient(getDefaultSocketUrl(), {
+    onOpen: () => {
+      if (onlineSession) {
+        onlineSession.connected = true
+      }
+      setOnlineStatus('Connected.')
+      dispatchPendingOnlineAction()
+    },
+    onClose: (event) => {
+      if (onlineSuppressReconnect) return
+      if (onlineSession) {
+        onlineSession.connected = false
+      }
+      const reason = event.reason.toLowerCase()
+      const reclaimed = event.code === 4000 || reason.includes('reclaimed')
+      if (mode === 'online') {
+        if (reclaimed) {
+          clearOnlineReconnectTimer()
+          onlineSuppressReconnect = true
+          setOnlineStatus('Seat token already active on another device. Use the other seat token to join as Player 2.')
+          render()
+          return
+        }
+        setOnlineStatus('Disconnected. Reconnecting...')
+        scheduleOnlineReconnect()
+        render()
+      }
+    },
+    onError: () => {
+      setOnlineStatus('Connection error.')
+    },
+    onMessage: (message) => {
+      handleServerMessage(message)
+    },
+  })
+  onlineClient.connect()
+}
+
+function beginOnlineCreate(): void {
+  onlineSuppressReconnect = false
+  onlineAutoEnterGameOnJoin = false
+  const setup: RoomSetup = {
+    settings: { ...gameSettings },
+    loadouts: {
+      p1: [...loadouts.p1],
+      p2: [...loadouts.p2],
+    },
+  }
+  applyPlayMode('online')
+  onlinePendingAction = { type: 'create', setup }
+  setOnlineStatus('Connecting to create room...')
+  ensureOnlineClient()
+}
+
+function beginOnlineJoin(roomCode: string, seatToken: string): void {
+  onlineSuppressReconnect = false
+  onlineAutoEnterGameOnJoin = true
+  applyPlayMode('online')
+  onlinePendingAction = {
+    type: 'join',
+    roomCode: roomCode.trim().toUpperCase(),
+    seatToken: seatToken.trim(),
+  }
+  setOnlineStatus('Connecting to join room...')
+  ensureOnlineClient()
+}
+
+function sendOnlineCommand(command: ClientGameCommand): void {
+  if (mode !== 'online') return
+  if (onlineSession && onlineSession.presence.paused) {
+    statusEl.textContent = 'Match is paused while waiting for reconnect.'
+    return
+  }
+  if (!onlineClient || !onlineClient.isConnected()) {
+    statusEl.textContent = 'Offline. Waiting to reconnect...'
+    return
+  }
+  const cmdId = nextOnlineCommandId()
+  const sent = onlineClient.send({
+    type: 'command',
+    cmdId,
+    command,
+  })
+  if (!sent) {
+    statusEl.textContent = 'Unable to send command right now.'
+  }
+}
+
+function mapViewToState(view: GameStateView): GameState {
+  const players: GameState['players'] = [
+    {
+      deck: [],
+      hand: cloneCards(view.players[0].hand),
+      discard: [],
+      orders: cloneOrders(view.players[0].orders),
+    },
+    {
+      deck: [],
+      hand: cloneCards(view.players[1].hand),
+      discard: [],
+      orders: cloneOrders(view.players[1].orders),
+    },
+  ]
+
+  const units: GameState['units'] = {}
+  Object.entries(view.units).forEach(([id, unit]) => {
+    units[id] = {
+      ...unit,
+      pos: { ...unit.pos },
+    }
+  })
+
+  return {
+    boardRows: view.boardRows,
+    boardCols: view.boardCols,
+    tiles: view.tiles.map((tile) => ({ ...tile })),
+    units,
+    players,
+    ready: [view.ready[0], view.ready[1]],
+    actionBudgets: [view.actionBudgets[0], view.actionBudgets[1]],
+    activePlayer: view.activePlayer,
+    phase: view.phase,
+    actionQueue: cloneOrders(view.actionQueue),
+    actionIndex: view.actionIndex,
+    turn: view.turn,
+    nextUnitId: view.nextUnitId,
+    nextOrderId: view.nextOrderId,
+    log: [...view.log],
+    winner: view.winner,
+    spawnedByOrder: { ...view.spawnedByOrder },
+    settings: { ...view.settings },
+  }
+}
+
+function cloneCards(cards: CardInstance[] | null): CardInstance[] {
+  if (!cards) return []
+  return cards.map((card) => ({ ...card }))
+}
+
+function cloneOrders(orders: GameState['actionQueue'] | null): GameState['actionQueue'] {
+  if (!orders) return []
+  return orders.map((order) => ({
+    ...order,
+    params: {
+      ...order.params,
+      tile: order.params.tile ? { ...order.params.tile } : undefined,
+    },
+  }))
+}
+
+function applyOnlineSnapshot(stateView: GameStateView, viewMeta: ViewMeta, presence: PresenceState): void {
+  clearActionAnimationState()
+  state = mapViewToState(stateView)
+  planningPlayer = viewMeta.selfSeat
+  clearOverlayClone()
+  pendingCardTransfer = null
+  hiddenCardIds.clear()
+  if (!onlineSession) {
+    onlineSession = {
+      roomCode: viewMeta.roomCode,
+      seat: viewMeta.selfSeat,
+      seatToken: '',
+      connected: true,
+      presence,
+      viewMeta,
+    }
+  } else {
+    onlineSession.viewMeta = viewMeta
+    onlineSession.presence = presence
+    onlineSession.connected = true
+  }
+
+  const hand = state.players[planningPlayer]?.hand ?? []
+  if (selectedCardId && !hand.some((card) => card.id === selectedCardId)) {
+    selectedCardId = null
+    pendingOrder = null
+  }
+
+  if (pendingOrder) {
+    const pendingCardId = pendingOrder.cardId
+    if (!hand.some((card) => card.id === pendingCardId)) {
+      pendingOrder = null
+    }
+  }
+}
+
+function isOnlineResolutionReplayActive(): boolean {
+  return mode === 'online' && onlineResolutionReplay !== null && state.phase === 'action'
+}
+
+function finalizeOnlineResolutionReplay(): boolean {
+  if (!onlineResolutionReplay) return false
+  if (state.phase === 'action') return false
+  const replay = onlineResolutionReplay
+  onlineResolutionReplay = null
+  applyOnlineSnapshot(replay.finalStateView, replay.finalViewMeta, replay.presence)
+  if (state.winner !== null) {
+    statusEl.textContent = `Player ${state.winner + 1} wins!`
+  } else {
+    statusEl.textContent = 'Resolution complete. Planning phase.'
+  }
+  return true
+}
+
+function handleServerMessage(message: ServerMessage): void {
+  if (message.type === 'room_created') {
+    onlineRoomInput.value = message.roomCode
+    onlineTokenInput.value = message.seatToken
+    const selfSeat = message.seat + 1
+    const opponentSeat = message.seat === 0 ? 2 : 1
+    const opponentLink = message.seat === 0 ? message.inviteLinks.seat1 : message.inviteLinks.seat0
+    setOnlineLinks(`You are P${selfSeat}. Share this with opponent (P${opponentSeat}): ${opponentLink}`)
+    onlineSession = {
+      roomCode: message.roomCode,
+      seat: message.seat,
+      seatToken: message.seatToken,
+      connected: true,
+      presence: {
+        connected: [true, false],
+        paused: false,
+        deadlineAt: null,
+      },
+      viewMeta: null,
+    }
+    persistOnlineSession(message.roomCode, message.seatToken)
+    setOnlineStatus(`Room ${message.roomCode} created.`)
+    refreshOnlineLobbyUi()
+    return
+  }
+
+  if (message.type === 'joined') {
+    if (!onlineSession) {
+      const token = onlinePendingAction?.type === 'join' ? onlinePendingAction.seatToken : onlineTokenInput.value.trim()
+      onlineSession = {
+        roomCode: message.roomCode,
+        seat: message.seat,
+        seatToken: token,
+        connected: true,
+        presence: {
+          connected: [false, false],
+          paused: false,
+          deadlineAt: null,
+        },
+        viewMeta: null,
+      }
+    } else {
+      onlineSession.roomCode = message.roomCode
+      onlineSession.seat = message.seat
+      onlineSession.connected = true
+    }
+    planningPlayer = message.seat
+    persistOnlineSession(message.roomCode, onlineSession.seatToken)
+    setOnlineStatus(`Joined room ${message.roomCode} as Player ${message.seat + 1}.`)
+    refreshOnlineLobbyUi()
+    if (onlineAutoEnterGameOnJoin) {
+      setScreen('game')
+    } else {
+      setScreen('menu')
+    }
+    stripInviteQueryParams()
+    return
+  }
+
+  if (message.type === 'snapshot') {
+    applyPlayMode('online')
+    onlineResolutionReplay = null
+    applyOnlineSnapshot(message.stateView, message.viewMeta, message.presence)
+    if (onlineSession) {
+      onlineSession.roomCode = message.viewMeta.roomCode
+      onlineSession.seat = message.viewMeta.selfSeat
+      onlineSession.viewMeta = message.viewMeta
+      onlineSession.presence = message.presence
+    }
+    render()
+    return
+  }
+
+  if (message.type === 'resolution_bundle') {
+    applyPlayMode('online')
+    onlineResolutionReplay = {
+      finalStateView: message.finalStateView,
+      finalViewMeta: message.finalViewMeta,
+      presence: message.presence,
+    }
+    applyOnlineSnapshot(message.actionStartStateView, message.actionStartViewMeta, message.presence)
+    statusEl.textContent = 'Resolution started. Step through actions.'
+    render()
+    return
+  }
+
+  if (message.type === 'presence_update') {
+    if (onlineSession) {
+      onlineSession.presence = {
+        connected: [message.connected[0], message.connected[1]],
+        paused: message.paused,
+        deadlineAt: message.deadlineAt,
+      }
+    }
+    render()
+    return
+  }
+
+  if (message.type === 'command_result') {
+    if (!message.ok) {
+      statusEl.textContent = message.message ?? 'Command rejected.'
+    } else if (message.message) {
+      statusEl.textContent = message.message
+    }
+    return
+  }
+
+  if (message.type === 'match_end') {
+    if (message.winner !== null) {
+      statusEl.textContent = `Player ${message.winner + 1} wins (${message.reason}).`
+    } else {
+      statusEl.textContent = `Match ended (${message.reason}).`
+    }
+    return
+  }
+
+  if (message.type === 'error') {
+    setOnlineStatus(`Error: ${message.message}`)
+  }
+}
+
 function registerServiceWorker(): void {
   if (!import.meta.env.PROD) return
   if (!('serviceWorker' in navigator)) return
@@ -655,13 +1231,12 @@ function tryStartActionPhase(): void {
 }
 
 function resetGameState(statusMessage: string): void {
-  animationQueue = []
-  currentAnimation = null
-  isAnimating = false
-  autoResolve = false
-  pendingDeathUnits.clear()
-  unitAlphaOverrides.clear()
-  deathAlphaOverrides.clear()
+  if (mode === 'online') {
+    statusEl.textContent = 'Reset is disabled in online matches.'
+    return
+  }
+  resetCardVisualState()
+  clearActionAnimationState()
   state = createGameState(gameSettings, loadouts)
   planningPlayer = 0
   selectedCardId = null
@@ -670,6 +1245,16 @@ function resetGameState(statusMessage: string): void {
   updateReadyButtons()
   statusEl.textContent = statusMessage
   render()
+}
+
+function clearActionAnimationState(): void {
+  animationQueue = []
+  currentAnimation = null
+  isAnimating = false
+  autoResolve = false
+  pendingDeathUnits.clear()
+  unitAlphaOverrides.clear()
+  deathAlphaOverrides.clear()
 }
 
 function clearOverlayTimers(): void {
@@ -2037,6 +2622,7 @@ function renderHand(): void {
   cardButtons.forEach((button) => {
     button.addEventListener('click', () => {
       if (state.phase !== 'planning') return
+      if (state.ready[planningPlayer]) return
       const cardId = button.dataset.cardId ?? null
       if (!cardId) return
       if (overlayLocked && overlaySourceId !== cardId) {
@@ -2088,7 +2674,7 @@ function renderOrders(): void {
       }
       const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
-        <div class="card order-card type-${def.type} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning}" ${hiddenStyle}>
+        <div class="card order-card type-${def.type} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${hiddenStyle}>
           ${renderApBadge(apCost)}
           <div class="card-title">${def.name}</div>
           <div class="card-desc">${def.description}</div>
@@ -2102,6 +2688,10 @@ function renderOrders(): void {
     const cards = Array.from(ordersEl.querySelectorAll<HTMLDivElement>('.order-card'))
     cards.forEach((card) => {
       card.addEventListener('dragstart', (event) => {
+        if (state.ready[planningPlayer]) {
+          event.preventDefault()
+          return
+        }
         const target = event.currentTarget as HTMLDivElement
         const orderId = target.dataset.orderId ?? ''
         event.dataTransfer?.setData('text/plain', orderId)
@@ -2127,10 +2717,20 @@ function renderOrders(): void {
 
       card.addEventListener('drop', (event) => {
         event.preventDefault()
+        if (state.ready[planningPlayer]) return
         const target = event.currentTarget as HTMLDivElement
         const fromId = event.dataTransfer?.getData('text/plain')
         const toId = target.dataset.orderId
         if (!fromId || !toId || fromId === toId) return
+        if (mode === 'online') {
+          sendOnlineCommand({
+            type: 'reorder_order',
+            fromOrderId: fromId,
+            toOrderId: toId,
+          })
+          statusEl.textContent = 'Moving order...'
+          return
+        }
         const playerState = state.players[planningPlayer]
         const fromIndex = playerState.orders.findIndex((order) => order.id === fromId)
         const toIndex = playerState.orders.findIndex((order) => order.id === toId)
@@ -2143,9 +2743,17 @@ function renderOrders(): void {
       })
 
       card.addEventListener('click', () => {
-        if (isDraggingOrder || state.phase !== 'planning') return
+        if (isDraggingOrder || state.phase !== 'planning' || state.ready[planningPlayer]) return
         const orderId = card.dataset.orderId
         if (!orderId) return
+        if (mode === 'online') {
+          sendOnlineCommand({
+            type: 'remove_order',
+            orderId,
+          })
+          statusEl.textContent = 'Removing order...'
+          return
+        }
         const fromRect = card.getBoundingClientRect()
         const fromHandRects = captureCardRects(handEl)
         const fromOrderRects = captureCardRects(ordersEl)
@@ -2619,7 +3227,14 @@ function renderMeta(): void {
   turnEl.textContent = `Turn ${state.turn}`
   activeEl.textContent = `Active Player: ${state.activePlayer + 1}`
   const compactLabels = window.matchMedia('(max-width: 720px)').matches
-  plannerNameEl.textContent = compactLabels ? `P${planningPlayer + 1}` : `Player ${planningPlayer + 1}`
+  plannerNameEl.textContent =
+    mode === 'online'
+      ? compactLabels
+        ? `P${planningPlayer + 1} Online`
+        : `Player ${planningPlayer + 1} Online`
+      : compactLabels
+        ? `P${planningPlayer + 1}`
+        : `Player ${planningPlayer + 1}`
   plannerNameEl.classList.toggle('team-0', planningPlayer === 0)
   plannerNameEl.classList.toggle('team-1', planningPlayer === 1)
   const usedAP = state.players[planningPlayer].orders.reduce((sum, order) => {
@@ -2630,14 +3245,37 @@ function renderMeta(): void {
     (planningPlayer === 0 ? state.settings.actionBudgetP1 : state.settings.actionBudgetP2) ??
     (planningPlayer === 0 ? gameSettings.actionBudgetP1 : gameSettings.actionBudgetP2) ??
     3
-  countsEl.textContent = `Deck P1: ${state.players[0].deck.length} | Discard P1: ${state.players[0].discard.length} | Deck P2: ${state.players[1].deck.length} | Discard P2: ${state.players[1].discard.length}`
+  const counts = onlineSession?.viewMeta?.counts
+  if (mode === 'online' && counts) {
+    countsEl.textContent = `Deck P1: ${counts[0].deck} | Discard P1: ${counts[0].discard} | Deck P2: ${counts[1].deck} | Discard P2: ${counts[1].discard}`
+  } else {
+    countsEl.textContent = `Deck P1: ${state.players[0].deck.length} | Discard P1: ${state.players[0].discard.length} | Deck P2: ${state.players[1].deck.length} | Discard P2: ${state.players[1].discard.length}`
+  }
+
+  if (mode === 'online' && onlineSession) {
+    const deadline = onlineSession.presence.deadlineAt
+    if (onlineSession.presence.paused && deadline) {
+      const remainingMs = Math.max(0, deadline - Date.now())
+      const seconds = Math.ceil(remainingMs / 1000)
+      networkStateEl.textContent = `Room ${onlineSession.roomCode} | Paused (${seconds}s)`
+    } else if (!onlineSession.connected) {
+      networkStateEl.textContent = `Room ${onlineSession.roomCode} | Reconnecting...`
+    } else {
+      networkStateEl.textContent = `Room ${onlineSession.roomCode} | Connected`
+    }
+  } else {
+    networkStateEl.textContent = ''
+  }
+
   plannerApEl.innerHTML = renderApDots(usedAP, totalAP)
   updateReadyButtons()
   switchPlannerButton.textContent = compactLabels ? 'Switch' : 'Switch Player'
   resolveNextButton.textContent = compactLabels ? 'Next' : 'Resolve Next'
   resolveAllButton.textContent = compactLabels ? 'Resolve' : 'Resolve Turn'
-  gameMenuButton.textContent = compactLabels ? 'Menu' : 'Main Menu'
-  resetGameButton.textContent = compactLabels ? 'Reset' : 'Reset Game'
+  gameMenuButton.textContent =
+    mode === 'online' ? (compactLabels ? 'Leave' : 'Leave Match') : compactLabels ? 'Menu' : 'Main Menu'
+  resetGameButton.textContent =
+    mode === 'online' ? (compactLabels ? 'Reset Off' : 'Reset (Local Only)') : compactLabels ? 'Reset' : 'Reset Game'
 }
 
 function render(): void {
@@ -2667,12 +3305,18 @@ function render(): void {
   }
 
   const inPlanning = state.phase === 'planning'
+  const inOnlineMode = mode === 'online'
+  const inOnlineReplayAction = inOnlineMode && isOnlineResolutionReplayActive()
+  const roomPaused = inOnlineMode ? onlineSession?.presence.paused ?? false : false
+  const disconnected = inOnlineMode ? !(onlineSession?.connected ?? false) : false
   readyButton.classList.toggle('hidden', !inPlanning)
-  resolveNextButton.classList.toggle('hidden', inPlanning)
-  resolveAllButton.classList.toggle('hidden', inPlanning)
-  readyButton.disabled = !inPlanning || state.ready[planningPlayer]
+  resolveNextButton.classList.toggle('hidden', inPlanning || (inOnlineMode && !inOnlineReplayAction))
+  resolveAllButton.classList.toggle('hidden', inPlanning || (inOnlineMode && !inOnlineReplayAction))
+  switchPlannerButton.classList.toggle('hidden', inOnlineMode)
+  readyButton.disabled = !inPlanning || state.ready[planningPlayer] || roomPaused || disconnected
   resolveNextButton.disabled = state.phase !== 'action' || isAnimating
   resolveAllButton.disabled = state.phase !== 'action' || isAnimating
+  resetGameButton.disabled = inOnlineMode
   scheduleProgressSave()
 }
 
@@ -2894,6 +3538,7 @@ function runNextAnimation(): void {
       requestAnimationFrame(() => resolveNextActionAnimated())
       return
     }
+    finalizeOnlineResolutionReplay()
     render()
     return
   }
@@ -2910,11 +3555,13 @@ function resolveNextActionAnimated(): void {
   const currentOrder = state.actionQueue[state.actionIndex]
   resolveNextAction(state)
   if (!currentOrder) {
+    finalizeOnlineResolutionReplay()
     render()
     return
   }
   const animations = buildAnimations(currentOrder, before)
   if (animations.length === 0) {
+    finalizeOnlineResolutionReplay()
     render()
     if (autoResolve && state.phase === 'action') {
       requestAnimationFrame(() => resolveNextActionAnimated())
@@ -2932,6 +3579,18 @@ function tryAutoAddOrder(): void {
   const defId = getCardDefId(pendingOrder.cardId)
   if (!defId) return
   if (getNextRequirement(defId, pendingOrder.params) !== null) return
+  if (mode === 'online') {
+    sendOnlineCommand({
+      type: 'queue_order',
+      cardId: pendingOrder.cardId,
+      params: pendingOrder.params,
+    })
+    selectedCardId = null
+    pendingOrder = null
+    statusEl.textContent = 'Queueing order...'
+    render()
+    return
+  }
   const fromEl = handEl.querySelector<HTMLElement>(`[data-card-id="${pendingOrder.cardId}"]`)
   const fromRect = fromEl?.getBoundingClientRect()
   const fromHandRects = captureCardRects(handEl)
@@ -3226,6 +3885,10 @@ function resolveSelectableUnitId(
 }
 
 function handleBoardClick(hex: Hex): void {
+  if (mode === 'online' && onlineSession && (onlineSession.presence.paused || !onlineSession.connected)) {
+    statusEl.textContent = 'Waiting for connection...'
+    return
+  }
   if (!pendingOrder || state.phase !== 'planning') return
   const activeOrder = pendingOrder
   const defId = getCardDefId(activeOrder.cardId)
@@ -3340,15 +4003,28 @@ function handleBoardClick(hex: Hex): void {
 }
 
 menuStartButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+    applyPlayMode('local')
+    setOnlineStatus('')
+  }
   resetGameState('Select a card to start planning.')
   setScreen('game')
 })
 
 menuLoadoutButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    setOnlineStatus('Leave online match to edit loadouts.')
+    return
+  }
   setScreen('loadout')
 })
 
 menuSettingsButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    setOnlineStatus('Leave online match to edit settings.')
+    return
+  }
   setScreen('settings')
 })
 
@@ -3380,7 +4056,34 @@ seedApplyButton.addEventListener('click', () => {
   }
 })
 
+onlineCreateButton.addEventListener('click', () => {
+  beginOnlineCreate()
+})
+
+onlineJoinButton.addEventListener('click', () => {
+  const roomCode = onlineRoomInput.value.trim().toUpperCase()
+  const seatToken = onlineTokenInput.value.trim()
+  if (!roomCode || !seatToken) {
+    setOnlineStatus('Enter room code and seat token.')
+    return
+  }
+  beginOnlineJoin(roomCode, seatToken)
+})
+
+onlineEnterButton.addEventListener('click', () => {
+  if (!onlineSession) {
+    setOnlineStatus('Create or join a room first.')
+    return
+  }
+  setScreen('game')
+})
+
 gameMenuButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+    applyPlayMode('local')
+    setOnlineStatus('')
+  }
   selectedCardId = null
   pendingOrder = null
   setScreen('menu')
@@ -3486,6 +4189,7 @@ settingActionBudgetP2.addEventListener('change', () => {
 })
 
 switchPlannerButton.addEventListener('click', () => {
+  if (mode === 'online') return
   planningPlayer = planningPlayer === 0 ? 1 : 0
   selectedCardId = null
   pendingOrder = null
@@ -3493,6 +4197,13 @@ switchPlannerButton.addEventListener('click', () => {
 })
 
 readyButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    if (state.phase !== 'planning') return
+    if (state.ready[planningPlayer]) return
+    sendOnlineCommand({ type: 'ready' })
+    statusEl.textContent = 'Marking ready...'
+    return
+  }
   if (state.phase !== 'planning') return
   if (state.ready[planningPlayer]) return
   const currentPlayer = planningPlayer
@@ -3509,24 +4220,38 @@ readyButton.addEventListener('click', () => {
 })
 
 resolveNextButton.addEventListener('click', () => {
+  if (mode === 'online' && !isOnlineResolutionReplayActive()) return
   autoResolve = false
   resolveNextActionAnimated()
 })
 
 resolveAllButton.addEventListener('click', () => {
+  if (mode === 'online' && !isOnlineResolutionReplayActive()) return
   autoResolve = true
   resolveNextActionAnimated()
 })
 
 resetGameButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    statusEl.textContent = 'Reset is disabled in online mode.'
+    return
+  }
   resetGameState('Game reset.')
 })
 
 winnerMenuButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+    applyPlayMode('local')
+  }
   setScreen('menu')
 })
 
 winnerResetButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    statusEl.textContent = 'Reset is disabled in online mode.'
+    return
+  }
   resetGameState('Game reset.')
 })
 
@@ -3692,6 +4417,21 @@ window.addEventListener('pagehide', () => {
 const restoredScreen = restoreProgressFromStorage()
 setScreen(restoredScreen ?? 'menu')
 registerServiceWorker()
+refreshOnlineLobbyUi()
+
+const inviteJoin = readInviteFromUrl()
+if (inviteJoin) {
+  onlineRoomInput.value = inviteJoin.roomCode
+  onlineTokenInput.value = inviteJoin.seatToken
+  beginOnlineJoin(inviteJoin.roomCode, inviteJoin.seatToken)
+} else {
+  const persistedOnline = restoreOnlineSession()
+  if (persistedOnline) {
+    onlineRoomInput.value = persistedOnline.roomCode
+    onlineTokenInput.value = persistedOnline.seatToken
+    beginOnlineJoin(persistedOnline.roomCode, persistedOnline.seatToken)
+  }
+}
 
 window.addEventListener('resize', () => {
   render()
