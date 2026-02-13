@@ -13,7 +13,8 @@ export default defineConfig(({ mode }) => {
         '/ws': {
           target: wsProxyTarget,
           ws: true,
-          changeOrigin: true,
+          changeOrigin: false,
+          xfwd: true,
           secure: false,
         },
       },
@@ -24,7 +25,8 @@ export default defineConfig(({ mode }) => {
         '/ws': {
           target: wsProxyTarget,
           ws: true,
-          changeOrigin: true,
+          changeOrigin: false,
+          xfwd: true,
           secure: false,
         },
       },

@@ -42,3 +42,65 @@ test('queue/remove ownership and ready flow', () => {
   assert.equal(room.state.phase, 'planning')
   assert.equal(room.state.turn >= 2, true)
 })
+
+test('update_loadout allowed in pregame and rematch resets ended match', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom()
+
+  const pregameUpdate = applyRoomCommand(room, 0, {
+    type: 'update_loadout',
+    loadout: ['spell_invest', 'spell_meteor', 'move_any'],
+  })
+  assert.equal(pregameUpdate.ok, true)
+
+  room.ended = true
+  room.state.winner = 0
+
+  const postGameUpdate = applyRoomCommand(room, 1, {
+    type: 'update_loadout',
+    loadout: ['attack_arrow', 'move_forward', 'reinforce_spawn'],
+  })
+  assert.equal(postGameUpdate.ok, true)
+
+  const rematch0 = applyRoomCommand(room, 0, { type: 'rematch' })
+  assert.equal(rematch0.ok, true)
+  assert.equal(room.ended, true)
+
+  const rematch1 = applyRoomCommand(room, 1, { type: 'rematch' })
+  assert.equal(rematch1.ok, true)
+  assert.equal(room.ended, false)
+  assert.equal(room.state.winner, null)
+  assert.equal(room.state.turn, 1)
+})
+
+test('update_loadout from other seat does not clear existing rematch request', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom()
+  room.ended = true
+  room.state.winner = 1
+
+  const update0 = applyRoomCommand(room, 0, {
+    type: 'update_loadout',
+    loadout: ['spell_invest', 'move_any'],
+  })
+  assert.equal(update0.ok, true)
+
+  const rematch0 = applyRoomCommand(room, 0, { type: 'rematch' })
+  assert.equal(rematch0.ok, true)
+  assert.equal(room.rematchReady[0], true)
+  assert.equal(room.rematchReady[1], false)
+
+  const update1 = applyRoomCommand(room, 1, {
+    type: 'update_loadout',
+    loadout: ['attack_arrow', 'move_forward'],
+  })
+  assert.equal(update1.ok, true)
+  assert.equal(room.rematchReady[0], true)
+  assert.equal(room.rematchReady[1], false)
+
+  const rematch1 = applyRoomCommand(room, 1, { type: 'rematch' })
+  assert.equal(rematch1.ok, true)
+  assert.equal(room.ended, false)
+  assert.equal(room.state.winner, null)
+  assert.equal(room.state.turn, 1)
+})

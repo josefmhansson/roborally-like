@@ -274,7 +274,7 @@ export function planOrder(
     (player === 0 ? DEFAULT_SETTINGS.actionBudgetP1 : DEFAULT_SETTINGS.actionBudgetP2)
   if (getUsedActionPoints(state, player) + nextCost > budget) return null
   const projectedState = simulatePlannedState(state, player)
-  if (!validateOrderParams(projectedState, player, card.defId, params)) {
+  if (!validateOrderParams(projectedState, player, card.defId, params, state)) {
     return null
   }
 
@@ -470,7 +470,7 @@ export function getPlannedOrderValidity(state: GameState, player: PlayerId): boo
 
   const validity: boolean[] = []
   for (const order of state.players[player].orders) {
-    const canApply = canApplyOrder(sim, order)
+    const canApply = canApplyOrder(sim, order, state)
     validity.push(canApply)
     if (canApply) {
       applyOrderForPlanning(sim, order)
@@ -491,13 +491,19 @@ function finishTurn(state: GameState): void {
   drawPhase(state)
 }
 
-function validateOrderParams(state: GameState, player: PlayerId, defId: CardDefId, params: OrderParams): boolean {
+function validateOrderParams(
+  state: GameState,
+  player: PlayerId,
+  defId: CardDefId,
+  params: OrderParams,
+  fallbackState?: GameState
+): boolean {
   const def = CARD_DEFS[defId]
   if (def.requires.unit) {
     if (!params.unitId) return false
     if (def.requires.unit === 'any') {
       if (isPlannedUnitReference(state, player, params.unitId)) return false
-      const unit = state.units[params.unitId]
+      const unit = state.units[params.unitId] ?? fallbackState?.units[params.unitId]
       if (!unit) return false
       if (unit.kind !== 'unit') return false
     } else {
@@ -673,7 +679,7 @@ function applyOrderForPlanning(state: GameState, order: Order): void {
   }
 }
 
-function canApplyOrder(state: GameState, order: Order): boolean {
+function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState): boolean {
   const def = CARD_DEFS[order.defId]
   const params = order.params
   for (const effect of def.effects) {
@@ -729,7 +735,7 @@ function canApplyOrder(state: GameState, order: Order): boolean {
       if (!params.unitId) return false
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
-      const unit = state.units[resolved]
+      const unit = state.units[resolved] ?? fallbackState?.units[resolved]
       if (!unit) return false
       if (unit.kind !== 'unit') return false
       continue

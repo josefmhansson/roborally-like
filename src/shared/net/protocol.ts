@@ -27,7 +27,22 @@ export type ReadyCommand = {
   type: 'ready'
 }
 
-export type ClientGameCommand = QueueOrderCommand | RemoveOrderCommand | ReorderOrderCommand | ReadyCommand
+export type UpdateLoadoutCommand = {
+  type: 'update_loadout'
+  loadout: CardDefId[]
+}
+
+export type RematchCommand = {
+  type: 'rematch'
+}
+
+export type ClientGameCommand =
+  | QueueOrderCommand
+  | RemoveOrderCommand
+  | ReorderOrderCommand
+  | ReadyCommand
+  | UpdateLoadoutCommand
+  | RematchCommand
 
 export type CreateRoomMessage = {
   type: 'create_room'
@@ -38,6 +53,7 @@ export type JoinRoomMessage = {
   type: 'join_room'
   roomCode: string
   seatToken: string
+  loadout?: CardDefId[]
 }
 
 export type CommandMessage = {

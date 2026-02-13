@@ -102,6 +102,7 @@ app.innerHTML = `
             <button id="loadout-toggle" class="btn ghost">Player 1</button>
             <button id="loadout-clear" class="btn ghost">Clear Deck</button>
             <button id="loadout-filters" class="btn ghost">Filter</button>
+            <button id="loadout-continue" class="btn hidden">Continue to Match</button>
             <button id="loadout-back" class="btn ghost">Back</button>
           </div>
         </div>
@@ -230,9 +231,11 @@ app.innerHTML = `
   <div id="winner-modal" class="winner-modal hidden" role="dialog" aria-modal="true" aria-labelledby="winner-text">
     <div class="winner-card">
       <div id="winner-text" class="winner-text"></div>
+      <div id="winner-note" class="seed-status"></div>
       <div class="winner-actions">
         <button id="winner-menu" class="btn ghost">Main Menu</button>
-        <button id="winner-reset" class="btn">Reset Game</button>
+        <button id="winner-reset" class="btn">Edit Deck</button>
+        <button id="winner-rematch" class="btn ghost hidden">Rematch</button>
       </div>
     </div>
   </div>
@@ -264,6 +267,7 @@ const loadoutBackButton = document.querySelector<HTMLButtonElement>('#loadout-ba
 const loadoutToggleButton = document.querySelector<HTMLButtonElement>('#loadout-toggle')!
 const loadoutClearButton = document.querySelector<HTMLButtonElement>('#loadout-clear')!
 const loadoutFilterToggleButton = document.querySelector<HTMLButtonElement>('#loadout-filters')!
+const loadoutContinueButton = document.querySelector<HTMLButtonElement>('#loadout-continue')!
 const loadoutCountLabel = document.querySelector<HTMLDivElement>('#loadout-count')!
 const loadoutControls = document.querySelector<HTMLDivElement>('#loadout-controls')!
 const loadoutSelected = document.querySelector<HTMLDivElement>('#loadout-selected')!
@@ -296,8 +300,10 @@ const countsEl = document.querySelector<HTMLSpanElement>('#counts')!
 const networkStateEl = document.querySelector<HTMLSpanElement>('#network-state')!
 const winnerModal = document.querySelector<HTMLDivElement>('#winner-modal')!
 const winnerTextEl = document.querySelector<HTMLDivElement>('#winner-text')!
+const winnerNoteEl = document.querySelector<HTMLDivElement>('#winner-note')!
 const winnerMenuButton = document.querySelector<HTMLButtonElement>('#winner-menu')!
 const winnerResetButton = document.querySelector<HTMLButtonElement>('#winner-reset')!
+const winnerRematchButton = document.querySelector<HTMLButtonElement>('#winner-rematch')!
 const gameMenuButton = document.querySelector<HTMLButtonElement>('#game-menu')!
 
 const switchPlannerButton = document.querySelector<HTMLButtonElement>('#switch-planner')!
@@ -328,6 +334,7 @@ if (
   !loadoutBackButton ||
   !loadoutToggleButton ||
   !loadoutFilterToggleButton ||
+  !loadoutContinueButton ||
   !loadoutCountLabel ||
   !loadoutControls ||
   !loadoutSelected ||
@@ -356,8 +363,10 @@ if (
   !networkStateEl ||
   !winnerModal ||
   !winnerTextEl ||
+  !winnerNoteEl ||
   !winnerMenuButton ||
   !winnerResetButton ||
+  !winnerRematchButton ||
   !gameMenuButton
 ) {
   throw new Error('UI elements missing')
@@ -524,9 +533,13 @@ type OnlineResolutionReplayState = {
   presence: PresenceState
 }
 let onlineResolutionReplay: OnlineResolutionReplayState | null = null
-let onlinePendingAction: { type: 'create'; setup: RoomSetup } | { type: 'join'; roomCode: string; seatToken: string } | null =
-  null
+let onlinePendingAction:
+  | { type: 'create'; setup: RoomSetup }
+  | { type: 'join'; roomCode: string; seatToken: string; loadout: CardDefId[] }
+  | null = null
 let onlineAutoEnterGameOnJoin = true
+let onlineRouteToLoadoutOnJoin = false
+let onlineRematchRequested = false
 let onlineReconnectTimer: number | null = null
 let onlineSuppressReconnect = false
 let onlineCommandSeq = 1
@@ -701,6 +714,81 @@ function setOnlineLinks(message: string): void {
   onlineLinksEl.textContent = message
 }
 
+function buildInviteQrUrl(inviteLink: string): string {
+  const data = encodeURIComponent(inviteLink)
+  return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${data}`
+}
+
+function renderOnlineInviteLinks(selfSeat: PlayerId, inviteLinks: { seat0: string; seat1: string }): void {
+  const opponentSeat: PlayerId = selfSeat === 0 ? 1 : 0
+  const opponentLink = opponentSeat === 0 ? inviteLinks.seat0 : inviteLinks.seat1
+  const selfLink = selfSeat === 0 ? inviteLinks.seat0 : inviteLinks.seat1
+
+  onlineLinksEl.innerHTML = ''
+  const container = document.createElement('div')
+  container.className = 'online-invite'
+
+  const title = document.createElement('div')
+  title.className = 'online-invite-title'
+  title.textContent = `You are P${selfSeat + 1}. Share this invite with P${opponentSeat + 1}:`
+  container.appendChild(title)
+
+  const link = document.createElement('a')
+  link.className = 'online-invite-link'
+  link.href = opponentLink
+  link.target = '_blank'
+  link.rel = 'noopener noreferrer'
+  link.textContent = opponentLink
+  container.appendChild(link)
+
+  const actions = document.createElement('div')
+  actions.className = 'online-invite-actions'
+
+  const copyInviteButton = document.createElement('button')
+  copyInviteButton.type = 'button'
+  copyInviteButton.className = 'btn ghost'
+  copyInviteButton.textContent = 'Copy Invite Link'
+  copyInviteButton.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(opponentLink)
+      setOnlineStatus('Invite link copied.')
+    } catch {
+      setOnlineStatus('Copy failed. Long-press the link and copy manually.')
+    }
+  })
+  actions.appendChild(copyInviteButton)
+
+  const copySelfButton = document.createElement('button')
+  copySelfButton.type = 'button'
+  copySelfButton.className = 'btn ghost'
+  copySelfButton.textContent = 'Copy My Seat Link'
+  copySelfButton.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(selfLink)
+      setOnlineStatus('Your seat link copied.')
+    } catch {
+      setOnlineStatus('Copy failed. Long-press the link and copy manually.')
+    }
+  })
+  actions.appendChild(copySelfButton)
+
+  container.appendChild(actions)
+
+  const qr = document.createElement('img')
+  qr.className = 'online-invite-qr'
+  qr.alt = `QR code for Player ${opponentSeat + 1} invite`
+  qr.loading = 'lazy'
+  qr.src = buildInviteQrUrl(opponentLink)
+  container.appendChild(qr)
+
+  const note = document.createElement('div')
+  note.className = 'online-invite-note'
+  note.textContent = 'Scan QR from phone camera or tap/copy the invite link.'
+  container.appendChild(note)
+
+  onlineLinksEl.appendChild(container)
+}
+
 function refreshOnlineLobbyUi(): void {
   const hasSession = Boolean(onlineSession)
   onlineEnterButton.classList.toggle('hidden', !hasSession)
@@ -753,18 +841,31 @@ function readInviteFromUrl(): { roomCode: string; seatToken: string } | null {
   const params = new URLSearchParams(window.location.search)
   const roomCode = params.get('room')
   const seatToken = params.get('token')
-  if (!roomCode || !seatToken) return null
+  if (roomCode && seatToken) {
+    return {
+      roomCode: roomCode.trim().toUpperCase(),
+      seatToken: seatToken.trim(),
+    }
+  }
+
+  const pathMatch = window.location.pathname.match(/^\/join\/([^/]+)\/([^/]+)\/?$/)
+  if (!pathMatch) return null
   return {
-    roomCode: roomCode.trim().toUpperCase(),
-    seatToken: seatToken.trim(),
+    roomCode: decodeURIComponent(pathMatch[1]).trim().toUpperCase(),
+    seatToken: decodeURIComponent(pathMatch[2]).trim(),
   }
 }
 
 function stripInviteQueryParams(): void {
-  if (!window.location.search) return
+  const hasInviteQuery = Boolean(window.location.search)
+  const hasInvitePath = /^\/join\/[^/]+\/[^/]+\/?$/.test(window.location.pathname)
+  if (!hasInviteQuery && !hasInvitePath) return
   const url = new URL(window.location.href)
   url.searchParams.delete('room')
   url.searchParams.delete('token')
+  if (/^\/join\/[^/]+\/[^/]+\/?$/.test(url.pathname)) {
+    url.pathname = '/'
+  }
   window.history.replaceState({}, '', url.toString())
 }
 
@@ -788,6 +889,7 @@ function dispatchPendingOnlineAction(): void {
       type: 'join_room',
       roomCode: onlinePendingAction.roomCode,
       seatToken: onlinePendingAction.seatToken,
+      loadout: onlinePendingAction.loadout,
     })
   }
   if (sent) {
@@ -818,6 +920,8 @@ function teardownOnlineSession(clearStoredSession: boolean): void {
   clearOnlineReconnectTimer()
   onlinePendingAction = null
   onlineAutoEnterGameOnJoin = true
+  onlineRouteToLoadoutOnJoin = false
+  onlineRematchRequested = false
   onlineSuppressReconnect = true
   if (onlineClient) {
     onlineClient.close()
@@ -836,6 +940,7 @@ function scheduleOnlineReconnect(): void {
   if (mode !== 'online' || !onlineSession) return
   const session = onlineSession
   onlineAutoEnterGameOnJoin = screen === 'game'
+  onlineRouteToLoadoutOnJoin = false
   if (onlineReconnectTimer !== null) return
   onlineReconnectTimer = window.setTimeout(() => {
     onlineReconnectTimer = null
@@ -843,6 +948,7 @@ function scheduleOnlineReconnect(): void {
       type: 'join',
       roomCode: session.roomCode,
       seatToken: session.seatToken,
+      loadout: [...loadouts.p1],
     }
     ensureOnlineClient()
   }, ONLINE_RECONNECT_DELAY_MS)
@@ -899,11 +1005,13 @@ function ensureOnlineClient(): void {
 function beginOnlineCreate(): void {
   onlineSuppressReconnect = false
   onlineAutoEnterGameOnJoin = false
+  onlineRouteToLoadoutOnJoin = false
+  onlineRematchRequested = false
   const setup: RoomSetup = {
     settings: { ...gameSettings },
     loadouts: {
       p1: [...loadouts.p1],
-      p2: [...loadouts.p2],
+      p2: [...STARTING_DECK],
     },
   }
   applyPlayMode('online')
@@ -912,14 +1020,17 @@ function beginOnlineCreate(): void {
   ensureOnlineClient()
 }
 
-function beginOnlineJoin(roomCode: string, seatToken: string): void {
+function beginOnlineJoin(roomCode: string, seatToken: string, routeToLoadout = true): void {
   onlineSuppressReconnect = false
-  onlineAutoEnterGameOnJoin = true
+  onlineAutoEnterGameOnJoin = !routeToLoadout
+  onlineRouteToLoadoutOnJoin = routeToLoadout
+  onlineRematchRequested = false
   applyPlayMode('online')
   onlinePendingAction = {
     type: 'join',
     roomCode: roomCode.trim().toUpperCase(),
     seatToken: seatToken.trim(),
+    loadout: [...loadouts.p1],
   }
   setOnlineStatus('Connecting to join room...')
   ensureOnlineClient()
@@ -944,6 +1055,39 @@ function sendOnlineCommand(command: ClientGameCommand): void {
   if (!sent) {
     statusEl.textContent = 'Unable to send command right now.'
   }
+}
+
+function submitOnlineLoadoutAndContinue(): void {
+  if (mode !== 'online' || !onlineSession) {
+    setScreen('game')
+    return
+  }
+  if (!onlineClient || !onlineClient.isConnected()) {
+    setOnlineStatus('Still connecting to room...')
+    return
+  }
+  sendOnlineCommand({
+    type: 'update_loadout',
+    loadout: [...loadouts.p1],
+  })
+  statusEl.textContent = state.winner !== null ? 'Deck saved.' : 'Deck submitted. Entering match...'
+  if (state.winner !== null) {
+    setOnlineStatus('Deck updated for rematch.')
+  }
+  setScreen('game')
+}
+
+function requestOnlineRematch(): void {
+  if (mode !== 'online' || !onlineSession) return
+  sendOnlineCommand({
+    type: 'update_loadout',
+    loadout: [...loadouts.p1],
+  })
+  sendOnlineCommand({ type: 'rematch' })
+  onlineRematchRequested = true
+  statusEl.textContent = 'Rematch requested, waiting for opponent.'
+  setScreen('game')
+  render()
 }
 
 function mapViewToState(view: GameStateView): GameState {
@@ -1011,7 +1155,11 @@ function cloneOrders(orders: GameState['actionQueue'] | null): GameState['action
 function applyOnlineSnapshot(stateView: GameStateView, viewMeta: ViewMeta, presence: PresenceState): void {
   clearActionAnimationState()
   state = mapViewToState(stateView)
+  gameSettings = { ...state.settings }
+  resizeDecks(gameSettings.deckSize)
+  enforceMaxCopies()
   planningPlayer = viewMeta.selfSeat
+  loadoutPlayer = 0
   clearOverlayClone()
   pendingCardTransfer = null
   hiddenCardIds.clear()
@@ -1042,6 +1190,12 @@ function applyOnlineSnapshot(stateView: GameStateView, viewMeta: ViewMeta, prese
       pendingOrder = null
     }
   }
+  if (state.winner === null) {
+    onlineRematchRequested = false
+  }
+  if (screen === 'loadout') {
+    renderLoadout()
+  }
 }
 
 function isOnlineResolutionReplayActive(): boolean {
@@ -1066,10 +1220,7 @@ function handleServerMessage(message: ServerMessage): void {
   if (message.type === 'room_created') {
     onlineRoomInput.value = message.roomCode
     onlineTokenInput.value = message.seatToken
-    const selfSeat = message.seat + 1
-    const opponentSeat = message.seat === 0 ? 2 : 1
-    const opponentLink = message.seat === 0 ? message.inviteLinks.seat1 : message.inviteLinks.seat0
-    setOnlineLinks(`You are P${selfSeat}. Share this with opponent (P${opponentSeat}): ${opponentLink}`)
+    renderOnlineInviteLinks(message.seat, message.inviteLinks)
     onlineSession = {
       roomCode: message.roomCode,
       seat: message.seat,
@@ -1109,10 +1260,14 @@ function handleServerMessage(message: ServerMessage): void {
       onlineSession.connected = true
     }
     planningPlayer = message.seat
+    loadoutPlayer = 0
     persistOnlineSession(message.roomCode, onlineSession.seatToken)
     setOnlineStatus(`Joined room ${message.roomCode} as Player ${message.seat + 1}.`)
     refreshOnlineLobbyUi()
-    if (onlineAutoEnterGameOnJoin) {
+    if (onlineRouteToLoadoutOnJoin) {
+      setScreen('loadout')
+      onlineRouteToLoadoutOnJoin = false
+    } else if (onlineAutoEnterGameOnJoin) {
       setScreen('game')
     } else {
       setScreen('menu')
@@ -1161,11 +1316,19 @@ function handleServerMessage(message: ServerMessage): void {
   }
 
   if (message.type === 'command_result') {
+    const lower = (message.message ?? '').toLowerCase()
     if (!message.ok) {
+      if (lower.includes('rematch')) {
+        onlineRematchRequested = false
+      }
       statusEl.textContent = message.message ?? 'Command rejected.'
     } else if (message.message) {
+      if (lower.includes('rematch requested')) {
+        onlineRematchRequested = true
+      }
       statusEl.textContent = message.message
     }
+    render()
     return
   }
 
@@ -1847,6 +2010,7 @@ function drawStrengthDots(
 
 function setScreen(next: typeof screen): void {
   screen = next
+  applyCardAssetCssVars()
   menuScreen.classList.toggle('hidden', screen !== 'menu')
   loadoutScreen.classList.toggle('hidden', screen !== 'loadout')
   settingsScreen.classList.toggle('hidden', screen !== 'settings')
@@ -2109,6 +2273,8 @@ function drawBoard(): void {
     }
   }
 
+  drawStrongholdProjectedDestroyIndicators()
+
   structures
     .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q)
     .forEach((item) => {
@@ -2239,10 +2405,11 @@ function drawSelectableHighlights(): void {
 
   const isUnitStep = nextStep === 'unit'
   const isDirectionStep = nextStep === 'direction' || nextStep === 'moveDirection' || nextStep === 'faceDirection'
+  const useDirectionArrows = isDirectionStep && !(defId === 'move_forward_face' && nextStep === 'moveDirection')
   const stroke = isUnitStep ? '#ffe66a' : '#7bd8ff'
   const lineWidth = 2.2
 
-  if (isDirectionStep) {
+  if (useDirectionArrows) {
     const base = getDirectionBase(selectionState, defId, pendingOrder.params, planningPlayer, nextStep)
     if (!base) return
     const origin = projectHex(base)
@@ -2267,16 +2434,42 @@ function drawSelectableHighlights(): void {
   })
 }
 
-function drawStrongholdPreviewOverlays(): void {
-  if (!previewState || state.phase !== 'planning') return
+function getProjectedDestroyedStrongholds(): Unit[] {
+  if (!previewState || state.phase !== 'planning') return []
+  const currentPreview = previewState
+  const strongholds: Unit[] = []
   ;([0, 1] as PlayerId[]).forEach((player) => {
     const strongholdId = `stronghold-${player}`
     const actual = state.units[strongholdId]
     if (!actual) return
-    const preview = previewState?.units[strongholdId]
+    const preview = currentPreview.units[strongholdId]
     const previewStrength = preview?.strength ?? 0
     if (previewStrength > 0) return
+    strongholds.push(actual)
+  })
+  return strongholds
+}
 
+function drawStrongholdProjectedDestroyIndicators(): void {
+  const destroyedStrongholds = getProjectedDestroyedStrongholds()
+  destroyedStrongholds.forEach((stronghold) => {
+    const center = projectHex(stronghold.pos)
+    ctx.save()
+    ctx.globalAlpha = 0.92
+    ctx.translate(center.x, center.y)
+    ctx.scale(1, BOARD_TILT)
+    ctx.beginPath()
+    ctx.arc(0, 0, layout.size * 0.62, 0, Math.PI * 2)
+    ctx.strokeStyle = '#ff2b2b'
+    ctx.lineWidth = 4
+    ctx.stroke()
+    ctx.restore()
+  })
+}
+
+function drawStrongholdPreviewOverlays(): void {
+  const destroyedStrongholds = getProjectedDestroyedStrongholds()
+  destroyedStrongholds.forEach((actual) => {
     const center = projectHex(actual.pos)
 
     ctx.save()
@@ -2292,15 +2485,6 @@ function drawStrongholdPreviewOverlays(): void {
       BUILDING_ANCHOR_Y
     )
     ctx.filter = 'none'
-    ctx.restore()
-
-    ctx.save()
-    ctx.globalAlpha = 0.9
-    ctx.beginPath()
-    ctx.arc(center.x, center.y, layout.size * 0.62, 0, Math.PI * 2)
-    ctx.strokeStyle = '#ff2b2b'
-    ctx.lineWidth = 3.2
-    ctx.stroke()
     ctx.restore()
 
     ctx.save()
@@ -2866,7 +3050,7 @@ function stepHint(step: SelectionStep): string {
     case 'direction':
       return 'Click an adjacent tile (arrow shown) to set direction.'
     case 'moveDirection':
-      return 'Click an adjacent tile (arrow shown) to set move direction.'
+      return 'Click a highlighted adjacent tile to set move direction.'
     case 'faceDirection':
       return 'Click an adjacent tile (arrow shown) to set facing direction.'
     case 'distance':
@@ -3048,8 +3232,17 @@ function renderLog(): void {
 }
 
 function renderLoadout(): void {
+  applyCardAssetCssVars()
+  if (mode === 'online') {
+    loadoutPlayer = 0
+  }
   const deck = loadoutPlayer === 0 ? loadouts.p1 : loadouts.p2
-  loadoutToggleButton.textContent = `Player ${loadoutPlayer + 1}`
+  loadoutToggleButton.textContent = mode === 'online' ? 'Your Deck' : `Player ${loadoutPlayer + 1}`
+  loadoutToggleButton.classList.toggle('hidden', mode === 'online')
+  loadoutContinueButton.classList.toggle('hidden', !(mode === 'online' && onlineSession))
+  loadoutContinueButton.disabled = !(mode === 'online' && onlineSession)
+  loadoutContinueButton.textContent =
+    mode === 'online' && state.winner !== null ? 'Save Deck + Back to Match' : 'Continue to Match'
   loadoutCountLabel.textContent = `${deck.length}/${gameSettings.deckSize} cards`
   loadoutControls.classList.toggle('hidden', !loadoutFiltersExpanded)
   loadoutFilterToggleButton.classList.toggle('active', loadoutFiltersExpanded)
@@ -3276,6 +3469,11 @@ function renderMeta(): void {
     mode === 'online' ? (compactLabels ? 'Leave' : 'Leave Match') : compactLabels ? 'Menu' : 'Main Menu'
   resetGameButton.textContent =
     mode === 'online' ? (compactLabels ? 'Reset Off' : 'Reset (Local Only)') : compactLabels ? 'Reset' : 'Reset Game'
+  winnerMenuButton.textContent = mode === 'online' ? 'Leave Match' : 'Main Menu'
+  winnerResetButton.textContent = mode === 'online' ? 'Edit Deck' : 'Reset Game'
+  winnerRematchButton.classList.toggle('hidden', mode !== 'online')
+  winnerRematchButton.textContent = onlineRematchRequested ? 'Rematch Pending' : 'Rematch'
+  winnerRematchButton.disabled = mode !== 'online' || onlineRematchRequested || !(onlineSession?.connected ?? false)
 }
 
 function render(): void {
@@ -3299,8 +3497,11 @@ function render(): void {
   if (state.winner !== null) {
     statusEl.textContent = `Player ${state.winner + 1} wins!`
     winnerTextEl.textContent = `Player ${state.winner + 1} wins the game.`
+    winnerNoteEl.textContent =
+      mode === 'online' && onlineRematchRequested ? 'Rematch requested, waiting for opponent.' : ''
     winnerModal.classList.remove('hidden')
   } else {
+    winnerNoteEl.textContent = ''
     winnerModal.classList.add('hidden')
   }
 
@@ -3673,6 +3874,18 @@ function hasSecondaryBoostTarget(snapshot: GameState, player: PlayerId, selected
   return [...unitHexes, ...planned].some((hex) => hex.q !== selected.pos.q || hex.r !== selected.pos.r)
 }
 
+function dedupeHexes(hexes: Hex[]): Hex[] {
+  const seen = new Set<string>()
+  const unique: Hex[] = []
+  hexes.forEach((hex) => {
+    const key = `${hex.q},${hex.r}`
+    if (seen.has(key)) return
+    seen.add(key)
+    unique.push(hex)
+  })
+  return unique
+}
+
 function getSelectableHexes(
   snapshot: GameState,
   defId: CardDefId,
@@ -3684,7 +3897,11 @@ function getSelectableHexes(
     const requirement = CARD_DEFS[defId].requires.unit
     const units = Object.values(snapshot.units).filter((unit) => unit.kind === 'unit')
     if (requirement === 'any') {
-      return units.map((unit) => ({ ...unit.pos }))
+      const currentUnits = Object.values(state.units).filter((unit) => unit.kind === 'unit')
+      return dedupeHexes([
+        ...units.map((unit) => ({ ...unit.pos })),
+        ...currentUnits.map((unit) => ({ ...unit.pos })),
+      ])
     }
     const friendlyUnits = units.filter((unit) => unit.owner === player)
     const unitHexes = friendlyUnits.map((unit) => ({ ...unit.pos }))
@@ -3864,7 +4081,11 @@ function resolveSelectableUnitId(
     const unit = Object.values(selectionState.units).find(
       (item) => item.pos.q === hex.q && item.pos.r === hex.r && item.kind === 'unit'
     )
-    return unit ? unit.id : null
+    if (unit) return unit.id
+    const currentUnit = Object.values(state.units).find(
+      (item) => item.pos.q === hex.q && item.pos.r === hex.r && item.kind === 'unit'
+    )
+    return currentUnit ? currentUnit.id : null
   }
 
   const unit = Object.values(selectionState.units).find(
@@ -4013,10 +4234,6 @@ menuStartButton.addEventListener('click', () => {
 })
 
 menuLoadoutButton.addEventListener('click', () => {
-  if (mode === 'online') {
-    setOnlineStatus('Leave online match to edit loadouts.')
-    return
-  }
   setScreen('loadout')
 })
 
@@ -4067,7 +4284,7 @@ onlineJoinButton.addEventListener('click', () => {
     setOnlineStatus('Enter room code and seat token.')
     return
   }
-  beginOnlineJoin(roomCode, seatToken)
+  beginOnlineJoin(roomCode, seatToken, true)
 })
 
 onlineEnterButton.addEventListener('click', () => {
@@ -4094,8 +4311,13 @@ loadoutBackButton.addEventListener('click', () => {
 })
 
 loadoutToggleButton.addEventListener('click', () => {
+  if (mode === 'online') return
   loadoutPlayer = loadoutPlayer === 0 ? 1 : 0
   renderLoadout()
+})
+
+loadoutContinueButton.addEventListener('click', () => {
+  submitOnlineLoadoutAndContinue()
 })
 
 loadoutClearButton.addEventListener('click', () => {
@@ -4249,10 +4471,17 @@ winnerMenuButton.addEventListener('click', () => {
 
 winnerResetButton.addEventListener('click', () => {
   if (mode === 'online') {
-    statusEl.textContent = 'Reset is disabled in online mode.'
+    setScreen('loadout')
+    statusEl.textContent = 'Adjust your deck. Return to the match and press Rematch when ready.'
     return
   }
   resetGameState('Game reset.')
+})
+
+winnerRematchButton.addEventListener('click', () => {
+  if (mode !== 'online') return
+  if (onlineRematchRequested) return
+  requestOnlineRematch()
 })
 
 canvas.addEventListener(
@@ -4423,13 +4652,13 @@ const inviteJoin = readInviteFromUrl()
 if (inviteJoin) {
   onlineRoomInput.value = inviteJoin.roomCode
   onlineTokenInput.value = inviteJoin.seatToken
-  beginOnlineJoin(inviteJoin.roomCode, inviteJoin.seatToken)
+  beginOnlineJoin(inviteJoin.roomCode, inviteJoin.seatToken, true)
 } else {
   const persistedOnline = restoreOnlineSession()
   if (persistedOnline) {
     onlineRoomInput.value = persistedOnline.roomCode
     onlineTokenInput.value = persistedOnline.seatToken
-    beginOnlineJoin(persistedOnline.roomCode, persistedOnline.seatToken)
+    beginOnlineJoin(persistedOnline.roomCode, persistedOnline.seatToken, false)
   }
 }
 

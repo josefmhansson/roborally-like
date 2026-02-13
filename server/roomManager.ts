@@ -10,12 +10,15 @@ type SeatState = {
   socket: WebSocket | null
   connected: boolean
   lastSeen: number
+  loadoutLocked: boolean
 }
 
 export type Room = {
   code: string
   state: GameState
   seats: [SeatState, SeatState]
+  seatLoadouts: [CardDefId[], CardDefId[]]
+  rematchReady: [boolean, boolean]
   paused: boolean
   reconnectDeadlineAt: number | null
   ended: boolean
@@ -25,12 +28,13 @@ export type Room = {
 
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const ROOM_CODE_LENGTH = 6
+const DEFAULT_RECONNECT_GRACE_MS = 10 * 60 * 1000
 
 export class RoomManager {
   private readonly rooms = new Map<string, Room>()
   private readonly reconnectGraceMs: number
 
-  constructor(reconnectGraceMs = 10 * 60 * 1000) {
+  constructor(reconnectGraceMs = DEFAULT_RECONNECT_GRACE_MS) {
     this.reconnectGraceMs = reconnectGraceMs
   }
 
@@ -47,14 +51,18 @@ export class RoomManager {
           socket: null,
           connected: false,
           lastSeen: Date.now(),
+          loadoutLocked: true,
         },
         {
           token: createToken(),
           socket: null,
           connected: false,
           lastSeen: Date.now(),
+          loadoutLocked: false,
         },
       ],
+      seatLoadouts: [loadouts.p1, loadouts.p2],
+      rematchReady: [false, false],
       paused: false,
       reconnectDeadlineAt: null,
       ended: false,
@@ -116,6 +124,25 @@ export class RoomManager {
     return room
   }
 
+  applySeatLoadoutOnFirstJoin(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[]): void {
+    const seatState = room.seats[seat]
+    if (seatState.loadoutLocked) return
+    this.updateSeatLoadout(room, seat, submittedLoadout)
+    seatState.loadoutLocked = true
+  }
+
+  canUpdateLoadout(room: Room): boolean {
+    return canRoomUpdateLoadout(room)
+  }
+
+  updateSeatLoadout(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[]): void {
+    updateRoomSeatLoadout(room, seat, submittedLoadout)
+  }
+
+  requestRematch(room: Room, seat: PlayerId): { started: boolean } {
+    return requestRoomRematch(room, seat)
+  }
+
   listRooms(): Room[] {
     return [...this.rooms.values()]
   }
@@ -161,6 +188,53 @@ export class RoomManager {
   }
 }
 
+export function canRoomUpdateLoadout(room: Room): boolean {
+  if (room.ended || room.state.winner !== null) return true
+  return isPregameLoadoutWindow(room)
+}
+
+export function updateRoomSeatLoadout(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[]): void {
+  const normalizedDeck = sanitizeDeck(submittedLoadout ?? STARTING_DECK, room.state.settings)
+  room.seatLoadouts[seat] = [...normalizedDeck]
+  room.state.players[seat] = createPlayerStateFromDeck(normalizedDeck, seat, room.state.settings.drawPerTurn)
+  room.state.ready[seat] = false
+  if (room.ended || room.state.winner !== null) {
+    room.rematchReady[seat] = false
+  } else {
+    room.rematchReady = [false, false]
+  }
+}
+
+export function requestRoomRematch(room: Room, seat: PlayerId): { started: boolean } {
+  room.rematchReady[seat] = true
+  if (!(room.rematchReady[0] && room.rematchReady[1])) {
+    return { started: false }
+  }
+  resetRoomForRematch(room)
+  return { started: true }
+}
+
+function resetRoomForRematch(room: Room): void {
+  room.state = createGameState(room.state.settings, {
+    p1: [...room.seatLoadouts[0]],
+    p2: [...room.seatLoadouts[1]],
+  })
+  room.ended = false
+  room.endReason = null
+  room.rematchReady = [false, false]
+  room.paused = false
+  room.reconnectDeadlineAt = null
+}
+
+function isPregameLoadoutWindow(room: Room): boolean {
+  if (room.state.turn !== 1) return false
+  if (room.state.phase !== 'planning') return false
+  if (room.state.winner !== null) return false
+  if (room.state.ready[0] || room.state.ready[1]) return false
+  if (room.state.players[0].orders.length > 0 || room.state.players[1].orders.length > 0) return false
+  return true
+}
+
 function createToken(): string {
   return randomBytes(24).toString('hex')
 }
@@ -204,8 +278,47 @@ function sanitizeDeck(deck: CardDefId[], settings: GameSettings): CardDefId[] {
     if (output.length >= settings.deckSize) break
   }
 
-  if (output.length === 0) {
-    return STARTING_DECK.slice(0, settings.deckSize)
+  while (output.length < settings.deckSize) {
+    let paddedAny = false
+    for (const defId of STARTING_DECK) {
+      const count = counts.get(defId) ?? 0
+      if (count >= settings.maxCopies) continue
+      output.push(defId)
+      counts.set(defId, count + 1)
+      paddedAny = true
+      if (output.length >= settings.deckSize) break
+    }
+    if (!paddedAny) break
   }
+
   return output
+}
+
+function createPlayerStateFromDeck(
+  deckDefIds: CardDefId[],
+  seat: PlayerId,
+  drawCount: number
+): GameState['players'][number] {
+  const deck = shuffle(
+    deckDefIds.map((defId, index) => ({
+      id: `p${seat + 1}-c${index + 1}`,
+      defId,
+    }))
+  )
+  const hand = deck.splice(0, Math.max(0, drawCount))
+  return {
+    deck,
+    hand,
+    discard: [],
+    orders: [],
+  }
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const arr = [...items]
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
 }

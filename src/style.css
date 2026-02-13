@@ -301,6 +301,49 @@ input[type='number'] {
   min-height: 14px;
 }
 
+.online-invite {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.online-invite-title {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.online-invite-link {
+  color: var(--accent);
+  font-size: 12px;
+  word-break: break-all;
+  text-decoration: underline;
+}
+
+.online-invite-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.online-invite-actions .btn {
+  width: auto;
+  min-width: 0;
+}
+
+.online-invite-qr {
+  width: 160px;
+  height: 160px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #ffffff;
+  padding: 6px;
+}
+
+.online-invite-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .pill {
   background: rgba(123, 216, 255, 0.15);
   color: var(--ink);
@@ -478,7 +521,7 @@ input[type='number'] {
 
 .winner-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
 }
 
@@ -647,7 +690,11 @@ input[type='number'] {
 }
 
 .card {
-  background: transparent;
+  background-color: transparent;
+  background-image: var(--card-base-image, url('/assets/cards/action_card_base.png'));
+  background-position: 45% center;
+  background-size: cover;
+  background-repeat: no-repeat;
   color: #1b1f2a;
   border-radius: var(--card-radius);
   padding: 12px 14px;
@@ -667,6 +714,9 @@ input[type='number'] {
   --card-tint: #3b4f7d;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  isolation: isolate;
 }
 
 .card.hidden-card {
@@ -734,7 +784,10 @@ body.debug-cards .card.card-placeholder::after {
 }
 
 .card::before {
-  background: var(--card-base-image, url('/assets/cards/action_card_base.png')) 45% center/cover no-repeat;
+  background-image: var(--card-base-image, url('/assets/cards/action_card_base.png'));
+  background-position: 45% center;
+  background-size: cover;
+  background-repeat: no-repeat;
   z-index: 1;
 }
 
@@ -1133,7 +1186,7 @@ body.theme-ember .board-panel {
 }
 
 body.theme-ember .card {
-  background: transparent;
+  background-color: transparent;
 }
 body.theme-ember .card.selected,
 body.theme-ember .order-card.drag-over {

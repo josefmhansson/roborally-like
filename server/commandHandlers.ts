@@ -2,6 +2,7 @@ import { planOrder, resolveAllActions, startActionPhase } from '../src/engine/ga
 import type { Direction, GameState, OrderParams, PlayerId } from '../src/engine/types'
 import type { ClientGameCommand } from '../src/shared/net/protocol'
 import type { Room } from './roomManager'
+import { canRoomUpdateLoadout, requestRoomRematch, updateRoomSeatLoadout } from './roomManager'
 
 type ResolutionReplayPayload = {
   actionStartState: GameState
@@ -13,15 +14,40 @@ export type CommandApplyResult =
   | { ok: false; errorCode: string; message: string }
 
 export function applyRoomCommand(room: Room, seat: PlayerId, command: ClientGameCommand): CommandApplyResult {
-  if (room.ended || room.state.winner !== null) {
-    return { ok: false, errorCode: 'match_ended', message: 'Match has already ended.' }
-  }
   if (room.paused) {
     return { ok: false, errorCode: 'room_paused', message: 'Match is paused while waiting for reconnect.' }
   }
 
   switch (command.type) {
+    case 'update_loadout': {
+      if (!canRoomUpdateLoadout(room)) {
+        return {
+          ok: false,
+          errorCode: 'loadout_locked',
+          message: 'Loadout can only be changed before match start or after match end.',
+        }
+      }
+      updateRoomSeatLoadout(room, seat, command.loadout)
+      return { ok: true, message: 'Loadout updated.' }
+    }
+    case 'rematch': {
+      if (!(room.ended || room.state.winner !== null)) {
+        return {
+          ok: false,
+          errorCode: 'match_not_ended',
+          message: 'Rematch is only available after match end.',
+        }
+      }
+      const rematch = requestRoomRematch(room, seat)
+      if (rematch.started) {
+        return { ok: true, message: 'Rematch started.' }
+      }
+      return { ok: true, message: 'Rematch requested. Waiting for opponent.' }
+    }
     case 'queue_order': {
+      if (room.ended || room.state.winner !== null) {
+        return { ok: false, errorCode: 'match_ended', message: 'Match has already ended.' }
+      }
       if (room.state.phase !== 'planning') {
         return { ok: false, errorCode: 'invalid_phase', message: 'Orders can only be queued during planning.' }
       }
@@ -36,6 +62,9 @@ export function applyRoomCommand(room: Room, seat: PlayerId, command: ClientGame
       return { ok: true, message: 'Order queued.' }
     }
     case 'remove_order': {
+      if (room.ended || room.state.winner !== null) {
+        return { ok: false, errorCode: 'match_ended', message: 'Match has already ended.' }
+      }
       if (room.state.phase !== 'planning') {
         return { ok: false, errorCode: 'invalid_phase', message: 'Orders can only be edited during planning.' }
       }
@@ -52,6 +81,9 @@ export function applyRoomCommand(room: Room, seat: PlayerId, command: ClientGame
       return { ok: true, message: 'Order removed.' }
     }
     case 'reorder_order': {
+      if (room.ended || room.state.winner !== null) {
+        return { ok: false, errorCode: 'match_ended', message: 'Match has already ended.' }
+      }
       if (room.state.phase !== 'planning') {
         return { ok: false, errorCode: 'invalid_phase', message: 'Orders can only be edited during planning.' }
       }
@@ -71,6 +103,9 @@ export function applyRoomCommand(room: Room, seat: PlayerId, command: ClientGame
       return { ok: true, message: 'Order moved.' }
     }
     case 'ready': {
+      if (room.ended || room.state.winner !== null) {
+        return { ok: false, errorCode: 'match_ended', message: 'Match has already ended.' }
+      }
       if (room.state.phase !== 'planning') {
         return { ok: false, errorCode: 'invalid_phase', message: 'Ready is only valid during planning.' }
       }

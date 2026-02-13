@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage } from 'node:http'
+import { networkInterfaces } from 'node:os'
 import { URL } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ClientMessage, ClientGameCommand, RoomSetup, ServerMessage } from '../src/shared/net/protocol'
@@ -124,6 +125,7 @@ function handleClientMessage(ws: WebSocket, request: IncomingMessage, message: C
       send(ws, { type: 'error', code: 'invalid_token', message: 'Seat token is invalid.' })
       return
     }
+    manager.applySeatLoadoutOnFirstJoin(room, seat, message.loadout)
     const previousSocket = room.seats[seat].socket
     if (previousSocket && previousSocket !== ws) {
       sessions.delete(previousSocket)
@@ -259,10 +261,13 @@ function parseClientMessage(raw: WebSocket.RawData): ClientMessage | null {
     }
     if (value.type === 'join_room') {
       if (typeof value.roomCode !== 'string' || typeof value.seatToken !== 'string') return null
+      const loadout = parseJoinLoadout(value.loadout)
+      if (value.loadout !== undefined && !loadout) return null
       return {
         type: 'join_room',
         roomCode: value.roomCode,
         seatToken: value.seatToken,
+        loadout: loadout ?? undefined,
       }
     }
     if (value.type === 'command') {
@@ -295,6 +300,14 @@ function parseRoomSetup(value: unknown): RoomSetup | null {
   }
 }
 
+function parseJoinLoadout(value: unknown): RoomSetup['loadouts']['p1'] | null {
+  if (value === undefined) return null
+  if (!Array.isArray(value)) return null
+  const cards = value.filter((item): item is string => typeof item === 'string')
+  if (cards.length !== value.length) return null
+  return cards as RoomSetup['loadouts']['p1']
+}
+
 function parseGameCommand(value: unknown): ClientGameCommand | null {
   if (!isObject(value) || typeof value.type !== 'string') return null
   if (value.type === 'queue_order') {
@@ -320,6 +333,17 @@ function parseGameCommand(value: unknown): ClientGameCommand | null {
   if (value.type === 'ready') {
     return { type: 'ready' }
   }
+  if (value.type === 'update_loadout') {
+    const loadout = parseJoinLoadout(value.loadout)
+    if (!loadout) return null
+    return {
+      type: 'update_loadout',
+      loadout,
+    }
+  }
+  if (value.type === 'rematch') {
+    return { type: 'rematch' }
+  }
   return null
 }
 
@@ -330,16 +354,84 @@ function buildInviteLinks(
   seatToken1: string
 ): { seat0: string; seat1: string } {
   const explicitBase = process.env.INVITE_BASE_URL?.trim()
+  const forwardedHost = (request.headers['x-forwarded-host'] as string | undefined)?.split(',')[0]?.trim()
   const isTls = Boolean((request.socket as { encrypted?: boolean }).encrypted)
+  const forwardedProto = normalizeInviteProto(
+    (request.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim()
+  )
   const proto =
-    (request.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() ||
+    forwardedProto ??
     (isTls ? 'https' : 'http')
-  const host = request.headers.host ?? `localhost:${PORT}`
+  const rawHost = forwardedHost || request.headers.host || `localhost:${PORT}`
+  const host = normalizeInviteHost(rawHost)
   const base = explicitBase && explicitBase.length > 0 ? explicitBase.replace(/\/+$/, '') : `${proto}://${host}`
   return {
-    seat0: `${base}/?room=${encodeURIComponent(roomCode)}&token=${encodeURIComponent(seatToken0)}`,
-    seat1: `${base}/?room=${encodeURIComponent(roomCode)}&token=${encodeURIComponent(seatToken1)}`,
+    seat0: `${base}/join/${encodeURIComponent(roomCode)}/${encodeURIComponent(seatToken0)}`,
+    seat1: `${base}/join/${encodeURIComponent(roomCode)}/${encodeURIComponent(seatToken1)}`,
   }
+}
+
+function normalizeInviteProto(value: string | undefined): 'http' | 'https' | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'http' || normalized === 'ws') return 'http'
+  if (normalized === 'https' || normalized === 'wss') return 'https'
+  return null
+}
+
+function normalizeInviteHost(hostHeader: string): string {
+  const parsed = parseHostHeader(hostHeader)
+  if (!parsed) return hostHeader
+  if (!isLocalHostname(parsed.hostname)) return hostHeader
+  const lanIpv4 = detectLanIpv4()
+  if (!lanIpv4) return hostHeader
+  return parsed.port ? `${lanIpv4}:${parsed.port}` : lanIpv4
+}
+
+function parseHostHeader(hostHeader: string): { hostname: string; port: string } | null {
+  try {
+    const parsed = new URL(`http://${hostHeader.trim()}`)
+    return {
+      hostname: parsed.hostname,
+      port: parsed.port,
+    }
+  } catch {
+    return null
+  }
+}
+
+function isLocalHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase()
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '0.0.0.0'
+}
+
+function detectLanIpv4(): string | null {
+  const interfaces = networkInterfaces()
+  const preferred: string[] = []
+  const fallback: string[] = []
+  for (const entries of Object.values(interfaces)) {
+    if (!entries) continue
+    for (const entry of entries) {
+      if (entry.family !== 'IPv4' || entry.internal) continue
+      if (isPrivateIpv4(entry.address)) {
+        preferred.push(entry.address)
+      } else {
+        fallback.push(entry.address)
+      }
+    }
+  }
+  return preferred[0] ?? fallback[0] ?? null
+}
+
+function isPrivateIpv4(address: string): boolean {
+  const octets = address.split('.').map((part) => Number(part))
+  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false
+  }
+  if (octets[0] === 10) return true
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true
+  if (octets[0] === 192 && octets[1] === 168) return true
+  return false
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
