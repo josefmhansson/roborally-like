@@ -12,6 +12,8 @@ import {
   simulatePlannedState,
   startActionPhase,
 } from './engine/game'
+import { buildBotPlan } from './engine/bot'
+import { getCardArtSvg } from './ui/cardArt'
 import { OnlineClient } from './net/client'
 import type { OnlineSessionState, PlayMode } from './net/types'
 import type { ClientGameCommand, RoomSetup, ServerMessage } from './shared/net/protocol'
@@ -19,6 +21,7 @@ import type { GameStateView, PresenceState, ViewMeta } from './shared/net/view'
 import type {
   CardInstance,
   CardDefId,
+  CardEffect,
   CardType,
   Direction,
   GameSettings,
@@ -66,6 +69,7 @@ app.innerHTML = `
         <div class="subtitle">MVP sandbox for simultaneous hex tactics</div>
         <div class="menu-actions">
           <button id="menu-start" class="btn">Start Local Game</button>
+          <button id="menu-start-bot" class="btn ghost">Start Vs Bot</button>
           <button id="menu-loadout" class="btn ghost">Loadout</button>
           <button id="menu-settings" class="btn ghost">Settings</button>
         </div>
@@ -249,6 +253,7 @@ const gameScreen = document.querySelector<HTMLDivElement>('#game-screen')!
 const cardOverlay = document.querySelector<HTMLDivElement>('#card-overlay')!
 
 const menuStartButton = document.querySelector<HTMLButtonElement>('#menu-start')!
+const menuStartBotButton = document.querySelector<HTMLButtonElement>('#menu-start-bot')!
 const menuLoadoutButton = document.querySelector<HTMLButtonElement>('#menu-loadout')!
 const menuSettingsButton = document.querySelector<HTMLButtonElement>('#menu-settings')!
 const seedInput = document.querySelector<HTMLInputElement>('#seed-input')!
@@ -318,6 +323,7 @@ if (
   !settingsScreen ||
   !gameScreen ||
   !menuStartButton ||
+  !menuStartBotButton ||
   !menuLoadoutButton ||
   !menuSettingsButton ||
   !seedInput ||
@@ -543,10 +549,14 @@ let onlineRematchRequested = false
 let onlineReconnectTimer: number | null = null
 let onlineSuppressReconnect = false
 let onlineCommandSeq = 1
+let botThinking = false
+let botPlanToken = 0
 
 const ONLINE_SESSION_STORAGE_KEY = 'untitled_game_online_session_v1'
 const ONLINE_SESSION_VERSION = 1
 const ONLINE_RECONNECT_DELAY_MS = 2000
+const BOT_HUMAN_PLAYER: PlayerId = 0
+const BOT_PLAYER: PlayerId = 1
 
 isInitialized = true
 
@@ -583,8 +593,9 @@ type SeedPayload = {
 }
 
 type PersistedProgress = {
-  version: 1
+  version: 1 | 2
   screen: 'menu' | 'loadout' | 'settings' | 'game'
+  localMode?: 'local' | 'bot'
   gameSettings: GameSettings
   loadouts: { p1: CardDefId[]; p2: CardDefId[] }
   state: GameState
@@ -625,8 +636,9 @@ function persistProgressNow(): void {
   if (mode === 'online') return
   try {
     const payload: PersistedProgress = {
-      version: 1,
+      version: 2,
       screen,
+      localMode: mode === 'bot' ? 'bot' : 'local',
       gameSettings,
       loadouts: {
         p1: [...loadouts.p1],
@@ -650,7 +662,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     const raw = localStorage.getItem(PROGRESS_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<PersistedProgress>
-    if (parsed.version !== 1) return null
+    if (parsed.version !== 1 && parsed.version !== 2) return null
     if (!parsed.state || !Array.isArray(parsed.state.tiles) || !Array.isArray(parsed.state.players)) return null
     if (!parsed.gameSettings || !parsed.loadouts) return null
 
@@ -691,6 +703,13 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     if (selectedCardId && !hand.some((card) => card.id === selectedCardId)) {
       selectedCardId = null
       pendingOrder = null
+    }
+
+    if (parsed.version === 2 && parsed.localMode === 'bot') {
+      applyPlayMode('bot')
+      planningPlayer = BOT_HUMAN_PLAYER
+    } else {
+      applyPlayMode('local')
     }
 
     return restoredScreen
@@ -903,7 +922,20 @@ function nextOnlineCommandId(): string {
   return value
 }
 
+function invalidateBotPlanning(): void {
+  botPlanToken += 1
+  botThinking = false
+}
+
+function isBotPlanningLocked(): boolean {
+  return mode === 'bot' && botThinking
+}
+
 function applyPlayMode(next: PlayMode): void {
+  invalidateBotPlanning()
+  if (next === 'bot') {
+    planningPlayer = BOT_HUMAN_PLAYER
+  }
   mode = next
   resetCardVisualState()
 }
@@ -1393,15 +1425,61 @@ function tryStartActionPhase(): void {
   }
 }
 
+function scheduleBotPlanningTurn(): void {
+  if (mode !== 'bot') return
+  if (state.phase !== 'planning') return
+  if (!state.ready[BOT_HUMAN_PLAYER]) return
+  const token = botPlanToken + 1
+  botPlanToken = token
+  botThinking = true
+
+  window.setTimeout(() => {
+    if (token !== botPlanToken) return
+    if (mode !== 'bot' || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
+      botThinking = false
+      render()
+      return
+    }
+
+    const botState = state.players[BOT_PLAYER]
+    botState.orders = []
+    state.ready[BOT_PLAYER] = false
+    const plan = buildBotPlan(state, BOT_PLAYER, {
+      thinkTimeMs: 50,
+      beamWidth: 10,
+      maxCandidatesPerCard: 12,
+    })
+
+    if (token !== botPlanToken) return
+    if (mode !== 'bot' || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
+      botThinking = false
+      render()
+      return
+    }
+
+    for (const order of plan.orders) {
+      const queued = planOrder(state, BOT_PLAYER, order.cardId, order.params)
+      if (!queued) break
+    }
+
+    setPlayerReady(BOT_PLAYER, true)
+    botThinking = false
+    statusEl.textContent = 'You are ready. Bot ready.'
+    tryStartActionPhase()
+    render()
+  }, 0)
+}
+
 function resetGameState(statusMessage: string): void {
   if (mode === 'online') {
     statusEl.textContent = 'Reset is disabled in online matches.'
     return
   }
+  invalidateBotPlanning()
   resetCardVisualState()
   clearActionAnimationState()
   state = createGameState(gameSettings, loadouts)
-  planningPlayer = 0
+  planningPlayer = mode === 'bot' ? BOT_HUMAN_PLAYER : 0
   selectedCardId = null
   pendingOrder = null
   winnerModal.classList.add('hidden')
@@ -2009,6 +2087,9 @@ function drawStrengthDots(
 }
 
 function setScreen(next: typeof screen): void {
+  if (mode === 'bot' && next !== 'game') {
+    invalidateBotPlanning()
+  }
   screen = next
   applyCardAssetCssVars()
   menuScreen.classList.toggle('hidden', screen !== 'menu')
@@ -2790,13 +2871,10 @@ function renderHand(): void {
           <button class="card type-${def.type} card-placeholder" data-card-id="${card.id}" data-card-layer="hand"></button>
         `
       }
-      const apCost = def.actionCost ?? 1
       const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
         <button class="card type-${def.type} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-layer="hand" ${hiddenStyle}>
-          ${renderApBadge(apCost)}
-          <div class="card-title">${def.name}</div>
-          <div class="card-desc">${def.description}</div>
+          ${renderCardFace(def)}
         </button>
       `
     })
@@ -2806,6 +2884,7 @@ function renderHand(): void {
   cardButtons.forEach((button) => {
     button.addEventListener('click', () => {
       if (state.phase !== 'planning') return
+      if (isBotPlanningLocked()) return
       if (state.ready[planningPlayer]) return
       const cardId = button.dataset.cardId ?? null
       if (!cardId) return
@@ -2845,7 +2924,6 @@ function renderOrders(): void {
   ordersEl.innerHTML = ordersToShow
     .map((order, index) => {
       const def = CARD_DEFS[order.defId]
-      const apCost = def.actionCost ?? 1
       const isValid = inPlanning ? validity[index] ?? true : true
       const teamClass = `order-team-${order.player}`
       const resolvedClass = playedIds?.has(order.id) ? 'order-resolved' : ''
@@ -2859,10 +2937,7 @@ function renderOrders(): void {
       const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
         <div class="card order-card type-${def.type} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${hiddenStyle}>
-          ${renderApBadge(apCost)}
-          <div class="card-title">${def.name}</div>
-          <div class="card-desc">${def.description}</div>
-          <div class="order-index">#${index + 1}</div>
+          ${renderCardFace(def, { orderIndex: index + 1 })}
         </div>
       `
     })
@@ -2872,7 +2947,7 @@ function renderOrders(): void {
     const cards = Array.from(ordersEl.querySelectorAll<HTMLDivElement>('.order-card'))
     cards.forEach((card) => {
       card.addEventListener('dragstart', (event) => {
-        if (state.ready[planningPlayer]) {
+        if (state.ready[planningPlayer] || isBotPlanningLocked()) {
           event.preventDefault()
           return
         }
@@ -2901,6 +2976,7 @@ function renderOrders(): void {
 
       card.addEventListener('drop', (event) => {
         event.preventDefault()
+        if (isBotPlanningLocked()) return
         if (state.ready[planningPlayer]) return
         const target = event.currentTarget as HTMLDivElement
         const fromId = event.dataTransfer?.getData('text/plain')
@@ -2927,7 +3003,7 @@ function renderOrders(): void {
       })
 
       card.addEventListener('click', () => {
-        if (isDraggingOrder || state.phase !== 'planning' || state.ready[planningPlayer]) return
+        if (isDraggingOrder || state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
         const orderId = card.dataset.orderId
         if (!orderId) return
         if (mode === 'online') {
@@ -3078,6 +3154,28 @@ function renderApBadge(cost: number): string {
   const zeroMark = cost <= 0 ? '<span class="ap-zero">✕</span>' : ''
   return `<div class="card-ap">${orbs}${zeroMark}</div>`
 }
+
+function renderCardArt(defId: CardDefId): string {
+  return `<div class="card-art" aria-hidden="true">${getCardArtSvg(defId)}</div>`
+}
+
+function renderCardFace(
+  def: { id: CardDefId; name: string; description: string; actionCost?: number },
+  options: { metaText?: string; orderIndex?: number } = {}
+): string {
+  const apCost = def.actionCost ?? 1
+  const meta = options.metaText ? `<div class="card-meta">${options.metaText}</div>` : ''
+  const orderIndex = options.orderIndex ? `<div class="order-index">#${options.orderIndex}</div>` : ''
+  return [
+    renderApBadge(apCost),
+    `<div class="card-title">${def.name}</div>`,
+    renderCardArt(def.id),
+    `<div class="card-desc">${def.description}</div>`,
+    meta,
+    orderIndex,
+  ].join('')
+}
+
 function captureCardRects(container: HTMLElement): Map<string, DOMRect> {
   const rects = new Map<string, DOMRect>()
   container.querySelectorAll<HTMLElement>('[data-card-id]').forEach((el) => {
@@ -3293,15 +3391,11 @@ function renderLoadout(): void {
     .map((def) => {
       const count = counts[def.id] ?? 0
       const disabled = deck.length >= gameSettings.deckSize || count >= gameSettings.maxCopies
-      const apCost = def.actionCost ?? 1
       return `
         <button class="card loadout-card type-${def.type} ${disabled ? 'disabled' : ''}" data-add-id="${def.id}" ${
           disabled ? 'disabled' : ''
         }>
-          ${renderApBadge(apCost)}
-          <div class="card-title">${def.name}</div>
-          <div class="card-desc">${def.description}</div>
-          <div class="card-meta">${def.type} | ${count}/${gameSettings.maxCopies}</div>
+          ${renderCardFace(def, { metaText: `${def.type} | ${count}/${gameSettings.maxCopies}` })}
         </button>
       `
     })
@@ -3402,6 +3496,7 @@ function updateSeedDisplay(): void {
 }
 
 function applySeed(seed: string): void {
+  invalidateBotPlanning()
   const payload = decodeSeed(seed)
   gameSettings = { ...DEFAULT_SETTINGS, ...payload.settings }
   loadouts = {
@@ -3411,6 +3506,9 @@ function applySeed(seed: string): void {
   resizeDecks(gameSettings.deckSize)
   enforceMaxCopies()
   state = createGameState(gameSettings, loadouts)
+  if (mode === 'bot') {
+    planningPlayer = BOT_HUMAN_PLAYER
+  }
   if (screen === 'settings') renderSettings()
   if (screen === 'loadout') renderLoadout()
   updateSeedDisplay()
@@ -3420,14 +3518,13 @@ function renderMeta(): void {
   turnEl.textContent = `Turn ${state.turn}`
   activeEl.textContent = `Active Player: ${state.activePlayer + 1}`
   const compactLabels = window.matchMedia('(max-width: 720px)').matches
-  plannerNameEl.textContent =
-    mode === 'online'
-      ? compactLabels
-        ? `P${planningPlayer + 1} Online`
-        : `Player ${planningPlayer + 1} Online`
-      : compactLabels
-        ? `P${planningPlayer + 1}`
-        : `Player ${planningPlayer + 1}`
+  if (mode === 'online') {
+    plannerNameEl.textContent = compactLabels ? `P${planningPlayer + 1} Online` : `Player ${planningPlayer + 1} Online`
+  } else if (mode === 'bot') {
+    plannerNameEl.textContent = compactLabels ? 'P1' : 'Player 1'
+  } else {
+    plannerNameEl.textContent = compactLabels ? `P${planningPlayer + 1}` : `Player ${planningPlayer + 1}`
+  }
   plannerNameEl.classList.toggle('team-0', planningPlayer === 0)
   plannerNameEl.classList.toggle('team-1', planningPlayer === 1)
   const usedAP = state.players[planningPlayer].orders.reduce((sum, order) => {
@@ -3507,14 +3604,15 @@ function render(): void {
 
   const inPlanning = state.phase === 'planning'
   const inOnlineMode = mode === 'online'
+  const inBotMode = mode === 'bot'
   const inOnlineReplayAction = inOnlineMode && isOnlineResolutionReplayActive()
   const roomPaused = inOnlineMode ? onlineSession?.presence.paused ?? false : false
   const disconnected = inOnlineMode ? !(onlineSession?.connected ?? false) : false
   readyButton.classList.toggle('hidden', !inPlanning)
   resolveNextButton.classList.toggle('hidden', inPlanning || (inOnlineMode && !inOnlineReplayAction))
   resolveAllButton.classList.toggle('hidden', inPlanning || (inOnlineMode && !inOnlineReplayAction))
-  switchPlannerButton.classList.toggle('hidden', inOnlineMode)
-  readyButton.disabled = !inPlanning || state.ready[planningPlayer] || roomPaused || disconnected
+  switchPlannerButton.classList.toggle('hidden', mode !== 'local')
+  readyButton.disabled = !inPlanning || state.ready[planningPlayer] || roomPaused || disconnected || (inBotMode && botThinking)
   resolveNextButton.disabled = state.phase !== 'action' || isAnimating
   resolveAllButton.disabled = state.phase !== 'action' || isAnimating
   resetGameButton.disabled = inOnlineMode
@@ -3777,6 +3875,7 @@ function resolveNextActionAnimated(): void {
 
 function tryAutoAddOrder(): void {
   if (!pendingOrder || state.phase !== 'planning') return
+  if (isBotPlanningLocked()) return
   const defId = getCardDefId(pendingOrder.cardId)
   if (!defId) return
   if (getNextRequirement(defId, pendingOrder.params) !== null) return
@@ -3841,6 +3940,107 @@ function getCardDefId(cardId: string): CardDefId | null {
 
 type SelectionStep = 'unit' | 'unit2' | 'tile' | 'direction' | 'moveDirection' | 'faceDirection' | 'distance'
 
+type MoveSemantics = {
+  directionSource: 'facing' | { type: 'param'; key: 'direction' | 'moveDirection' }
+  distanceSource: { type: 'fixed'; value: number } | { type: 'param'; key: 'distance' }
+}
+
+type DistanceSelectionTarget = {
+  tile: Hex
+  direction?: Direction
+  distance?: number
+}
+
+function deriveMoveSemantics(defId: CardDefId): MoveSemantics | null {
+  const def = CARD_DEFS[defId]
+  const moveEffect = def.effects.find(
+    (effect): effect is Extract<CardEffect, { type: 'move' }> => effect.type === 'move' && effect.unitParam === 'unitId'
+  )
+  if (!moveEffect) return null
+
+  const directionSource =
+    moveEffect.direction === 'facing' ? 'facing' : moveEffect.direction.type === 'param' ? moveEffect.direction : null
+  if (!directionSource) return null
+
+  const distanceSource =
+    typeof moveEffect.distance === 'number'
+      ? { type: 'fixed' as const, value: moveEffect.distance }
+      : { type: 'param' as const, key: moveEffect.distance.key }
+
+  return {
+    directionSource,
+    distanceSource,
+  }
+}
+
+function getDistanceSelectionTargets(
+  snapshot: GameState,
+  defId: CardDefId,
+  params: OrderParams,
+  player: PlayerId
+): DistanceSelectionTarget[] {
+  const semantics = deriveMoveSemantics(defId)
+  const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
+  if (!semantics || !unitSnapshot) return []
+
+  const directionCandidates: Direction[] = []
+  if (semantics.directionSource === 'facing') {
+    directionCandidates.push(unitSnapshot.facing)
+  } else {
+    const selectedDirection =
+      semantics.directionSource.key === 'direction' ? params.direction : params.moveDirection
+    if (selectedDirection === undefined) {
+      DIRECTIONS.forEach((_, index) => directionCandidates.push(index as Direction))
+    } else {
+      directionCandidates.push(selectedDirection)
+    }
+  }
+
+  const distanceCandidates =
+    semantics.distanceSource.type === 'fixed'
+      ? [semantics.distanceSource.value]
+      : CARD_DEFS[defId].requires.distanceOptions ?? (params.distance !== undefined ? [params.distance] : [])
+  if (distanceCandidates.length === 0) return []
+
+  const targets: DistanceSelectionTarget[] = []
+  directionCandidates.forEach((direction) => {
+    distanceCandidates.forEach((distance) => {
+      const tile = stepInDirection(unitSnapshot.pos, direction, distance)
+      if (!isTile(tile)) return
+      targets.push({
+        tile,
+        direction: semantics.directionSource === 'facing' ? undefined : direction,
+        distance: semantics.distanceSource.type === 'param' ? distance : undefined,
+      })
+    })
+  })
+
+  return targets
+}
+
+function resolveDistanceClick(
+  snapshot: GameState,
+  defId: CardDefId,
+  params: OrderParams,
+  player: PlayerId,
+  clickedHex: Hex
+): { matched: false } | { matched: true; directionKey?: 'direction' | 'moveDirection'; direction?: Direction; distance?: number } {
+  const semantics = deriveMoveSemantics(defId)
+  if (!semantics) return { matched: false }
+
+  const match = getDistanceSelectionTargets(snapshot, defId, params, player).find(
+    (candidate) => candidate.tile.q === clickedHex.q && candidate.tile.r === clickedHex.r
+  )
+  if (!match) return { matched: false }
+
+  return {
+    matched: true,
+    directionKey: semantics.directionSource === 'facing' ? undefined : semantics.directionSource.key,
+    direction: match.direction,
+    distance: match.distance,
+  }
+}
+
 function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionStep | null {
   const def = CARD_DEFS[defId]
   if (def.requires.unit && !params.unitId) return 'unit'
@@ -3855,8 +4055,13 @@ function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionSte
     if (params.faceDirection === undefined) return 'faceDirection'
   }
   if (defId === 'attack_fwd' && params.direction === undefined) return 'direction'
-  if (defId === 'move_any' || defId === 'move_forward') {
-    if (params.distance === undefined || params.direction === undefined) return 'distance'
+  const moveSemantics = deriveMoveSemantics(defId)
+  if (moveSemantics?.directionSource !== 'facing' && moveSemantics?.distanceSource.type === 'param') {
+    const directionResolved =
+      moveSemantics.directionSource.key === 'direction'
+        ? params.direction !== undefined
+        : params.moveDirection !== undefined
+    if (!directionResolved || params.distance === undefined) return 'distance'
   }
   if (def.requires.moveDirection && params.moveDirection === undefined) return 'moveDirection'
   if (def.requires.faceDirection && params.faceDirection === undefined) return 'faceDirection'
@@ -3932,28 +4137,8 @@ function getSelectableHexes(
   }
 
   if (step === 'distance') {
-    const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
-    if (!unitSnapshot) return []
-    const { pos, facing } = unitSnapshot
-    const def = CARD_DEFS[defId]
-    if (!def.requires.distanceOptions) return []
-
-    const targets: Hex[] = []
-    if (defId === 'move_any' || defId === 'move_forward') {
-      DIRECTIONS.forEach((_, dirIndex) => {
-        def.requires.distanceOptions?.forEach((distance) => {
-          const target = stepInDirection(pos, dirIndex as Direction, distance)
-          if (isTile(target)) targets.push(target)
-        })
-      })
-    } else {
-      def.requires.distanceOptions.forEach((distance) => {
-        const target = stepInDirection(pos, facing, distance)
-        if (isTile(target)) targets.push(target)
-      })
-    }
-
-    return targets
+    const targets = getDistanceSelectionTargets(snapshot, defId, params, player)
+    return dedupeHexes(targets.map((target) => target.tile))
   }
 
   return []
@@ -4110,6 +4295,7 @@ function handleBoardClick(hex: Hex): void {
     statusEl.textContent = 'Waiting for connection...'
     return
   }
+  if (isBotPlanningLocked()) return
   if (!pendingOrder || state.phase !== 'planning') return
   const activeOrder = pendingOrder
   const defId = getCardDefId(activeOrder.cardId)
@@ -4188,34 +4374,23 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'distance') {
-    const snapshot = getUnitSnapshot(selectionState, activeOrder.params.unitId ?? '', planningPlayer)
-    if (!snapshot) {
+    const unitSnapshot = getUnitSnapshot(selectionState, activeOrder.params.unitId ?? '', planningPlayer)
+    if (!unitSnapshot) {
       statusEl.textContent = 'Select a unit first.'
     } else {
-      const def = CARD_DEFS[defId]
-      if (!def.requires.distanceOptions) return
-      let matched = false
-      if (defId === 'move_any' || defId === 'move_forward') {
-        DIRECTIONS.forEach((_, dirIndex) => {
-          def.requires.distanceOptions?.forEach((distance) => {
-            const target = stepInDirection(snapshot.pos, dirIndex as Direction, distance)
-            if (target.q === hex.q && target.r === hex.r) {
-              activeOrder.params.direction = dirIndex as Direction
-              activeOrder.params.distance = distance
-              matched = true
-            }
-          })
-        })
-      } else {
-        def.requires.distanceOptions.forEach((distance) => {
-          const target = stepInDirection(snapshot.pos, snapshot.facing, distance)
-          if (target.q === hex.q && target.r === hex.r) {
-            activeOrder.params.distance = distance
-            matched = true
-          }
-        })
+      const resolution = resolveDistanceClick(selectionState, defId, activeOrder.params, planningPlayer, hex)
+      if (resolution.matched) {
+        if (resolution.directionKey === 'direction' && resolution.direction !== undefined) {
+          activeOrder.params.direction = resolution.direction
+        }
+        if (resolution.directionKey === 'moveDirection' && resolution.direction !== undefined) {
+          activeOrder.params.moveDirection = resolution.direction
+        }
+        if (resolution.distance !== undefined) {
+          activeOrder.params.distance = resolution.distance
+        }
       }
-      statusEl.textContent = matched ? 'Distance selected.' : 'Click a highlighted tile.'
+      statusEl.textContent = resolution.matched ? 'Distance selected.' : 'Click a highlighted tile.'
     }
   }
 
@@ -4226,10 +4401,21 @@ function handleBoardClick(hex: Hex): void {
 menuStartButton.addEventListener('click', () => {
   if (mode === 'online') {
     teardownOnlineSession(true)
-    applyPlayMode('local')
     setOnlineStatus('')
   }
+  applyPlayMode('local')
   resetGameState('Select a card to start planning.')
+  setScreen('game')
+})
+
+menuStartBotButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+    setOnlineStatus('')
+  }
+  applyPlayMode('bot')
+  resetGameState('Select a card to start planning.')
+  planningPlayer = BOT_HUMAN_PLAYER
   setScreen('game')
 })
 
@@ -4411,7 +4597,7 @@ settingActionBudgetP2.addEventListener('change', () => {
 })
 
 switchPlannerButton.addEventListener('click', () => {
-  if (mode === 'online') return
+  if (mode !== 'local') return
   planningPlayer = planningPlayer === 0 ? 1 : 0
   selectedCardId = null
   pendingOrder = null
@@ -4424,6 +4610,19 @@ readyButton.addEventListener('click', () => {
     if (state.ready[planningPlayer]) return
     sendOnlineCommand({ type: 'ready' })
     statusEl.textContent = 'Marking ready...'
+    return
+  }
+  if (isBotPlanningLocked()) return
+  if (mode === 'bot') {
+    if (state.phase !== 'planning') return
+    if (state.ready[BOT_HUMAN_PLAYER]) return
+    planningPlayer = BOT_HUMAN_PLAYER
+    setPlayerReady(BOT_HUMAN_PLAYER, true)
+    selectedCardId = null
+    pendingOrder = null
+    statusEl.textContent = 'You are ready. Bot planning...'
+    scheduleBotPlanningTurn()
+    render()
     return
   }
   if (state.phase !== 'planning') return
