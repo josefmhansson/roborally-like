@@ -13,6 +13,7 @@ import {
   startActionPhase,
 } from './engine/game'
 import { buildBotPlan } from './engine/bot'
+import { generateClusteredBotDeck } from './engine/botDeck'
 import { getCardArtSvg } from './ui/cardArt'
 import { OnlineClient } from './net/client'
 import type { OnlineSessionState, PlayMode } from './net/types'
@@ -4414,6 +4415,7 @@ menuStartBotButton.addEventListener('click', () => {
     setOnlineStatus('')
   }
   applyPlayMode('bot')
+  loadouts.p2 = generateClusteredBotDeck(gameSettings)
   resetGameState('Select a card to start planning.')
   planningPlayer = BOT_HUMAN_PLAYER
   setScreen('game')
