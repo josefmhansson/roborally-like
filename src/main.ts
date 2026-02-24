@@ -2,8 +2,10 @@ import './style.css'
 import { CARD_DEFS, STARTING_DECK } from './engine/cards'
 import { DIRECTIONS, hexToPixel, neighbor, rotateDirection } from './engine/hex'
 import {
+  canCardTargetUnit,
   createGameState,
   DEFAULT_SETTINGS,
+  getBarricadeSpawnTiles,
   getSpawnTiles,
   getPlannedMoveSegments,
   getPlannedOrderValidity,
@@ -18,6 +20,7 @@ import { getCardArtSvg } from './ui/cardArt'
 import { OnlineClient } from './net/client'
 import type { OnlineSessionState, PlayMode } from './net/types'
 import type { ClientGameCommand, RoomSetup, ServerMessage } from './shared/net/protocol'
+import type { MatchTelemetrySubmission } from './shared/telemetry'
 import type { GameStateView, PresenceState, ViewMeta } from './shared/net/view'
 import type {
   CardInstance,
@@ -106,6 +109,7 @@ app.innerHTML = `
           <div class="menu-actions loadout-actions">
             <button id="loadout-toggle" class="btn ghost">Player 1</button>
             <button id="loadout-clear" class="btn ghost">Clear Deck</button>
+            <button id="loadout-random" class="btn ghost">Random Deck</button>
             <button id="loadout-filters" class="btn ghost">Filter</button>
             <button id="loadout-continue" class="btn hidden">Continue to Match</button>
             <button id="loadout-back" class="btn ghost">Back</button>
@@ -206,6 +210,7 @@ app.innerHTML = `
             </div>
             <div id="planner-ap" class="planner-ap board-ap-rail"></div>
             <canvas id="board" aria-label="Game board"></canvas>
+            <div id="unit-status-popover" class="unit-status-popover hidden" aria-live="polite"></div>
             <div class="hud">
               <div id="status">Select a card to start planning.</div>
               <div class="meta">
@@ -272,6 +277,7 @@ const onlineStatusEl = document.querySelector<HTMLDivElement>('#online-status')!
 const loadoutBackButton = document.querySelector<HTMLButtonElement>('#loadout-back')!
 const loadoutToggleButton = document.querySelector<HTMLButtonElement>('#loadout-toggle')!
 const loadoutClearButton = document.querySelector<HTMLButtonElement>('#loadout-clear')!
+const loadoutRandomButton = document.querySelector<HTMLButtonElement>('#loadout-random')!
 const loadoutFilterToggleButton = document.querySelector<HTMLButtonElement>('#loadout-filters')!
 const loadoutContinueButton = document.querySelector<HTMLButtonElement>('#loadout-continue')!
 const loadoutCountLabel = document.querySelector<HTMLDivElement>('#loadout-count')!
@@ -293,6 +299,7 @@ const settingActionBudgetP1 = document.querySelector<HTMLInputElement>('#setting
 const settingActionBudgetP2 = document.querySelector<HTMLInputElement>('#setting-action-budget-p2')!
 
 const canvas = document.querySelector<HTMLCanvasElement>('#board')!
+const unitStatusPopoverEl = document.querySelector<HTMLDivElement>('#unit-status-popover')!
 const statusEl = document.querySelector<HTMLDivElement>('#status')!
 const handEl = document.querySelector<HTMLDivElement>('#hand')!
 const ordersEl = document.querySelector<HTMLDivElement>('#orders')!
@@ -340,6 +347,8 @@ if (
   !onlineStatusEl ||
   !loadoutBackButton ||
   !loadoutToggleButton ||
+  !loadoutClearButton ||
+  !loadoutRandomButton ||
   !loadoutFilterToggleButton ||
   !loadoutContinueButton ||
   !loadoutCountLabel ||
@@ -357,6 +366,7 @@ if (
   !settingActionBudgetP1 ||
   !settingActionBudgetP2 ||
   !canvas ||
+  !unitStatusPopoverEl ||
   !statusEl ||
   !handEl ||
   !ordersEl ||
@@ -410,7 +420,14 @@ type TouchPanState = { startX: number; startY: number; originX: number; originY:
 let pinchZoomState: PinchZoomState | null = null
 let touchPanState: TouchPanState | null = null
 
-type UnitSnapshot = { pos: Hex; facing: Direction; strength: number; owner: PlayerId; kind: Unit['kind'] }
+type UnitSnapshot = {
+  pos: Hex
+  facing: Direction
+  strength: number
+  owner: PlayerId
+  kind: Unit['kind']
+  modifiers: Unit['modifiers']
+}
 type MoveAnimation = { type: 'move'; unitId: string; from: Hex; to: Hex; duration: number }
 type LungeAnimation = { type: 'lunge'; unitId: string; from: Hex; dir: Direction; duration: number }
 type SpawnAnimation = { type: 'spawn'; unitId: string; duration: number }
@@ -500,7 +517,10 @@ const strongholdBaseImage = loadImage(resolveAssetUrl('assets/buildings/strongho
 const strongholdTeamImage = loadImage(resolveAssetUrl('assets/buildings/stronghold_team.png'))
 const unitBaseImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_base.png'))
 const unitTeamImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_team.png'))
+const barricadeBaseImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_base.png'))
+const barricadeTeamImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_team.png'))
 const unitTeamCache = new Map<PlayerId, HTMLCanvasElement>()
+const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const strongholdTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 
@@ -529,6 +549,11 @@ let overlayHideSeq = 0
 let overlayShowSeq = 0
 let hoverCardId: string | null = null
 let hasPointer = false
+let hoveredStatusUnitId: string | null = null
+let pinnedStatusUnitId: string | null = null
+let lastInputWasTouch = false
+let touchTapCandidate = false
+let suppressWinnerModalForRestoredOutcome = false
 const hiddenCardIds = new Set<string>()
 
 let mode: PlayMode = 'local'
@@ -559,6 +584,19 @@ const ONLINE_RECONNECT_DELAY_MS = 2000
 const BOT_HUMAN_PLAYER: PlayerId = 0
 const BOT_PLAYER: PlayerId = 1
 
+type LocalMatchTelemetryState = {
+  matchId: string
+  mode: 'local' | 'bot'
+  startedAt: number
+  playedCards: [CardDefId[], CardDefId[]]
+  enqueued: boolean
+  allowSubmission: boolean
+}
+
+let localTelemetry: LocalMatchTelemetryState = createLocalTelemetryState('local')
+let pendingTelemetryQueue: MatchTelemetrySubmission[] = restorePendingTelemetryQueue()
+let telemetryUploadInFlight = false
+
 isInitialized = true
 
 let screen: 'menu' | 'loadout' | 'settings' | 'game' = 'menu'
@@ -586,6 +624,8 @@ const SPAWN_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.5
 const SPAWN_ANCHOR_Y = BUILDING_ANCHOR_Y - 0.08
 const UNIT_IMAGE_SCALE = 1.1
 const UNIT_ANCHOR_Y = 0.78
+const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
+const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
 const GHOST_ALPHA = 0.6
 
 type SeedPayload = {
@@ -615,6 +655,7 @@ type PersistedOnlineSession = {
 
 const PROGRESS_STORAGE_KEY = 'untitled_game_progress_v1'
 const PROGRESS_SAVE_DEBOUNCE_MS = 250
+const TELEMETRY_QUEUE_STORAGE_KEY = 'untitled_game_telemetry_queue_v1'
 let progressSaveTimer: number | null = null
 
 function normalizeDeckInput(input: unknown): CardDefId[] {
@@ -673,6 +714,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
       p2: normalizeDeckInput(parsed.loadouts.p2),
     }
     state = parsed.state as GameState
+    suppressWinnerModalForRestoredOutcome = state.winner !== null
     planningPlayer = parsed.planningPlayer === 1 ? 1 : 0
     selectedCardId = typeof parsed.selectedCardId === 'string' ? parsed.selectedCardId : null
     pendingOrder =
@@ -713,6 +755,12 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
       applyPlayMode('local')
     }
 
+    if (state.winner !== null) {
+      markLocalTelemetryAsRestoredOutcome()
+    } else {
+      resetLocalTelemetryForCurrentMatch()
+    }
+
     return restoredScreen
   } catch {
     return null
@@ -724,6 +772,166 @@ function getDefaultSocketUrl(): string {
   if (typeof configured === 'string' && configured.length > 0) return configured
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   return `${protocol}://${window.location.host}/ws`
+}
+
+function createLocalTelemetryState(modeValue: 'local' | 'bot', now = Date.now()): LocalMatchTelemetryState {
+  return {
+    matchId: createMatchId(now),
+    mode: modeValue,
+    startedAt: now,
+    playedCards: [[], []],
+    enqueued: false,
+    allowSubmission: true,
+  }
+}
+
+function resetLocalTelemetryForCurrentMatch(now = Date.now()): void {
+  if (mode === 'online') return
+  localTelemetry = createLocalTelemetryState(mode === 'bot' ? 'bot' : 'local', now)
+}
+
+function markLocalTelemetryAsRestoredOutcome(): void {
+  if (mode === 'online') return
+  localTelemetry = createLocalTelemetryState(mode === 'bot' ? 'bot' : 'local')
+  localTelemetry.allowSubmission = false
+}
+
+function recordActionQueueTelemetry(sourceState: GameState): void {
+  if (mode === 'online') return
+  sourceState.actionQueue.forEach((order) => {
+    localTelemetry.playedCards[order.player].push(order.defId)
+  })
+}
+
+function trySubmitLocalTelemetryIfNeeded(): void {
+  if (mode === 'online') return
+  if (state.winner === null) return
+  if (localTelemetry.enqueued || !localTelemetry.allowSubmission) return
+  const submission = buildLocalMatchTelemetrySubmission()
+  if (!submission) return
+  localTelemetry.enqueued = true
+  enqueuePendingTelemetrySubmission(submission)
+  void flushPendingTelemetryQueue()
+}
+
+function buildLocalMatchTelemetrySubmission(now = Date.now()): MatchTelemetrySubmission | null {
+  if (mode === 'online') return null
+  return {
+    schemaVersion: 1,
+    matchId: localTelemetry.matchId,
+    mode: localTelemetry.mode,
+    startedAt: localTelemetry.startedAt,
+    endedAt: now,
+    winner: state.winner,
+    endReason: 'victory',
+    settings: { ...state.settings },
+    players: [
+      {
+        seat: 0,
+        decklist: [...loadouts.p1],
+        cardsPlayed: [...localTelemetry.playedCards[0]],
+        cardsInHandNotPlayed: state.players[0].hand.map((card) => card.defId),
+      },
+      {
+        seat: 1,
+        decklist: [...loadouts.p2],
+        cardsPlayed: [...localTelemetry.playedCards[1]],
+        cardsInHandNotPlayed: state.players[1].hand.map((card) => card.defId),
+      },
+    ],
+  }
+}
+
+async function postLocalMatchTelemetry(submission: MatchTelemetrySubmission): Promise<boolean> {
+  const endpoint = getTelemetryEndpointUrl()
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(submission),
+      keepalive: true,
+    })
+    return response.ok
+  } catch {
+    // Local/bot games should still complete even if telemetry server is unavailable.
+    return false
+  }
+  return false
+}
+
+function getTelemetryEndpointUrl(): string {
+  try {
+    const socketUrl = new URL(getDefaultSocketUrl(), window.location.href)
+    const protocol = socketUrl.protocol === 'wss:' ? 'https:' : 'http:'
+    return `${protocol}//${socketUrl.host}/telemetry/match`
+  } catch {
+    return '/telemetry/match'
+  }
+}
+
+function createMatchId(now = Date.now()): string {
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return cryptoApi.randomUUID()
+  }
+  const random = Math.random().toString(36).slice(2, 12)
+  return `local_${now.toString(36)}_${random}`
+}
+
+function restorePendingTelemetryQueue(): MatchTelemetrySubmission[] {
+  try {
+    const raw = localStorage.getItem(TELEMETRY_QUEUE_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(isTelemetrySubmission)
+  } catch {
+    return []
+  }
+}
+
+function persistPendingTelemetryQueue(): void {
+  try {
+    localStorage.setItem(TELEMETRY_QUEUE_STORAGE_KEY, JSON.stringify(pendingTelemetryQueue))
+  } catch {
+    // Ignore storage write issues.
+  }
+}
+
+function enqueuePendingTelemetrySubmission(submission: MatchTelemetrySubmission): void {
+  pendingTelemetryQueue.push(submission)
+  persistPendingTelemetryQueue()
+}
+
+async function flushPendingTelemetryQueue(): Promise<void> {
+  if (telemetryUploadInFlight) return
+  if (pendingTelemetryQueue.length === 0) return
+  telemetryUploadInFlight = true
+  try {
+    while (pendingTelemetryQueue.length > 0) {
+      const current = pendingTelemetryQueue[0]
+      const posted = await postLocalMatchTelemetry(current)
+      if (!posted) break
+      pendingTelemetryQueue.shift()
+      persistPendingTelemetryQueue()
+    }
+  } finally {
+    telemetryUploadInFlight = false
+  }
+}
+
+function isTelemetrySubmission(value: unknown): value is MatchTelemetrySubmission {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<MatchTelemetrySubmission>
+  if (candidate.schemaVersion !== 1) return false
+  if (typeof candidate.matchId !== 'string' || candidate.matchId.length === 0) return false
+  if (candidate.mode !== 'local' && candidate.mode !== 'bot' && candidate.mode !== 'online') return false
+  if (typeof candidate.startedAt !== 'number' || typeof candidate.endedAt !== 'number') return false
+  if (candidate.winner !== null && candidate.winner !== 0 && candidate.winner !== 1) return false
+  if (typeof candidate.endReason !== 'string' || candidate.endReason.length === 0) return false
+  if (!candidate.settings || typeof candidate.settings !== 'object') return false
+  if (!Array.isArray(candidate.players) || candidate.players.length !== 2) return false
+  return true
 }
 
 function setOnlineStatus(message: string): void {
@@ -938,6 +1146,9 @@ function applyPlayMode(next: PlayMode): void {
     planningPlayer = BOT_HUMAN_PLAYER
   }
   mode = next
+  if (next !== 'online') {
+    resetLocalTelemetryForCurrentMatch()
+  }
   resetCardVisualState()
 }
 
@@ -1130,12 +1341,14 @@ function mapViewToState(view: GameStateView): GameState {
       hand: cloneCards(view.players[0].hand),
       discard: [],
       orders: cloneOrders(view.players[0].orders),
+      modifiers: [],
     },
     {
       deck: [],
       hand: cloneCards(view.players[1].hand),
       discard: [],
       orders: cloneOrders(view.players[1].orders),
+      modifiers: [],
     },
   ]
 
@@ -1144,6 +1357,7 @@ function mapViewToState(view: GameStateView): GameState {
     units[id] = {
       ...unit,
       pos: { ...unit.pos },
+      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
 
@@ -1181,6 +1395,7 @@ function cloneOrders(orders: GameState['actionQueue'] | null): GameState['action
     params: {
       ...order.params,
       tile: order.params.tile ? { ...order.params.tile } : undefined,
+      tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
     },
   }))
 }
@@ -1419,6 +1634,7 @@ function clearReady(player?: PlayerId): void {
 function tryStartActionPhase(): void {
   if (state.ready[0] && state.ready[1]) {
     startActionPhase(state)
+    recordActionQueueTelemetry(state)
     selectedCardId = null
     pendingOrder = null
     statusEl.textContent = 'Action phase in progress.'
@@ -1480,6 +1696,8 @@ function resetGameState(statusMessage: string): void {
   resetCardVisualState()
   clearActionAnimationState()
   state = createGameState(gameSettings, loadouts)
+  resetLocalTelemetryForCurrentMatch()
+  suppressWinnerModalForRestoredOutcome = false
   planningPlayer = mode === 'bot' ? BOT_HUMAN_PLAYER : 0
   selectedCardId = null
   pendingOrder = null
@@ -1990,6 +2208,18 @@ function drawUnitSprite(center: { x: number; y: number }, owner: PlayerId): void
   drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, UNIT_IMAGE_SCALE, UNIT_ANCHOR_Y)
 }
 
+function drawBarricadeSprite(
+  center: { x: number; y: number },
+  owner: PlayerId,
+  context: CanvasRenderingContext2D = ctx
+): void {
+  if (!barricadeBaseImage.loaded) return
+  drawAnchoredImageTo(context, barricadeBaseImage, center, BARRICADE_IMAGE_SCALE, BARRICADE_ANCHOR_Y)
+  const tinted = getTintedTeamLayer(owner, barricadeTeamImage, barricadeTeamCache)
+  if (!tinted) return
+  drawAnchoredSource(context, tinted, tinted.width, tinted.height, center, BARRICADE_IMAGE_SCALE, BARRICADE_ANCHOR_Y)
+}
+
 function drawStructureSprite(
   center: { x: number; y: number },
   owner: PlayerId,
@@ -2087,6 +2317,139 @@ function drawStrengthDots(
   ctx.restore()
 }
 
+function getUnitAtStateHex(hex: Hex): Unit | null {
+  for (const unit of Object.values(state.units)) {
+    if (unit.pos.q === hex.q && unit.pos.r === hex.r) return unit
+  }
+  return null
+}
+
+function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: string; kind: 'buff' | 'debuff' } {
+  if (modifier.type === 'cannotMove') {
+    return { label: 'Cannot move', kind: 'debuff' }
+  }
+  return { label: modifier.type, kind: 'debuff' }
+}
+
+function getUnitPopoverLabel(unit: Unit): string {
+  if (unit.kind === 'stronghold') return 'Stronghold'
+  if (unit.kind === 'barricade') return 'Barricade'
+  return 'Unit'
+}
+
+function hideUnitStatusPopover(): void {
+  unitStatusPopoverEl.classList.add('hidden')
+  unitStatusPopoverEl.innerHTML = ''
+}
+
+function clearUnitStatusPopoverState(): void {
+  hoveredStatusUnitId = null
+  pinnedStatusUnitId = null
+  hideUnitStatusPopover()
+}
+
+function isUnitStatusInspectionEnabled(): boolean {
+  return selectedCardId === null && pendingOrder === null
+}
+
+function renderUnitStatusPopover(): void {
+  if (screen !== 'game' || gameScreen.classList.contains('hidden')) {
+    hideUnitStatusPopover()
+    return
+  }
+  if (!isUnitStatusInspectionEnabled()) {
+    clearUnitStatusPopoverState()
+    return
+  }
+
+  const unitId = pinnedStatusUnitId ?? hoveredStatusUnitId
+  if (!unitId) {
+    hideUnitStatusPopover()
+    return
+  }
+
+  const unit = state.units[unitId]
+  if (!unit) {
+    if (pinnedStatusUnitId === unitId) pinnedStatusUnitId = null
+    if (hoveredStatusUnitId === unitId) hoveredStatusUnitId = null
+    hideUnitStatusPopover()
+    return
+  }
+
+  const rows =
+    unit.modifiers.length > 0
+      ? unit.modifiers
+          .map((modifier) => {
+            const details = describeUnitModifier(modifier)
+            const turns = `${modifier.turnsRemaining} turn${modifier.turnsRemaining === 1 ? '' : 's'}`
+            return `<li class="unit-status-row ${details.kind}"><span class="unit-status-kind">${details.kind}</span><span class="unit-status-name">${details.label}</span><span class="unit-status-turns">${turns}</span></li>`
+          })
+          .join('')
+      : '<li class="unit-status-row none"><span class="unit-status-name">No active effects.</span></li>'
+
+  unitStatusPopoverEl.innerHTML = [
+    `<div class="unit-status-title">${getUnitPopoverLabel(unit)} ${unit.id}</div>`,
+    `<ul class="unit-status-list">${rows}</ul>`,
+  ].join('')
+  unitStatusPopoverEl.classList.remove('hidden')
+
+  const center = getAnimatedCenter(unit)
+  const panelRect = boardPanel.getBoundingClientRect()
+  const canvasRect = canvas.getBoundingClientRect()
+  const canvasX = boardOffset.x + center.x * boardScale
+  const canvasY = boardOffset.y + center.y * boardScale
+  const idealX = canvasRect.left - panelRect.left + canvasX
+  const idealY = canvasRect.top - panelRect.top + canvasY
+  const halfWidth = unitStatusPopoverEl.offsetWidth / 2
+  const popoverHeight = unitStatusPopoverEl.offsetHeight
+  const clampedX = clamp(idealX, 12 + halfWidth, panelRect.width - 12 - halfWidth)
+  const clampedY = clamp(idealY, 16 + popoverHeight + 8, panelRect.height - 12)
+
+  unitStatusPopoverEl.style.left = `${clampedX}px`
+  unitStatusPopoverEl.style.top = `${clampedY}px`
+}
+
+function updateUnitStatusHoverFromPointer(clientX: number, clientY: number): void {
+  if (!isUnitStatusInspectionEnabled()) {
+    clearUnitStatusPopoverState()
+    return
+  }
+  if (lastInputWasTouch || pinnedStatusUnitId || overlayLocked || isPanning) return
+  if (screen !== 'game' || gameScreen.classList.contains('hidden')) return
+
+  const rect = canvas.getBoundingClientRect()
+  if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+    if (hoveredStatusUnitId !== null) {
+      hoveredStatusUnitId = null
+      renderUnitStatusPopover()
+    }
+    return
+  }
+
+  const hex = pickHexFromClient(clientX, clientY)
+  const unit = hex ? getUnitAtStateHex(hex) : null
+  const nextUnitId = unit ? unit.id : null
+  if (nextUnitId !== hoveredStatusUnitId) {
+    hoveredStatusUnitId = nextUnitId
+    renderUnitStatusPopover()
+  }
+}
+
+function togglePinnedUnitStatusFromHex(hex: Hex): void {
+  if (!isUnitStatusInspectionEnabled()) {
+    clearUnitStatusPopoverState()
+    return
+  }
+  const unit = getUnitAtStateHex(hex)
+  if (!unit) {
+    pinnedStatusUnitId = null
+    renderUnitStatusPopover()
+    return
+  }
+  pinnedStatusUnitId = pinnedStatusUnitId === unit.id ? null : unit.id
+  renderUnitStatusPopover()
+}
+
 function setScreen(next: typeof screen): void {
   if (mode === 'bot' && next !== 'game') {
     invalidateBotPlanning()
@@ -2097,7 +2460,10 @@ function setScreen(next: typeof screen): void {
   loadoutScreen.classList.toggle('hidden', screen !== 'loadout')
   settingsScreen.classList.toggle('hidden', screen !== 'settings')
   gameScreen.classList.toggle('hidden', screen !== 'game')
-  winnerModal.classList.toggle('hidden', screen !== 'game' || state.winner === null)
+  winnerModal.classList.toggle('hidden', screen !== 'game' || state.winner === null || suppressWinnerModalForRestoredOutcome)
+  if (screen !== 'game') {
+    clearUnitStatusPopoverState()
+  }
   if (screen === 'menu') updateSeedDisplay()
   if (screen === 'loadout') renderLoadout()
   if (screen === 'settings') renderSettings()
@@ -2485,7 +2851,7 @@ function drawSelectableHighlights(): void {
   const selectable = getSelectableHexes(selectionState, defId, pendingOrder.params, planningPlayer, nextStep)
   if (selectable.length === 0) return
 
-  const isUnitStep = nextStep === 'unit'
+  const isUnitStep = nextStep === 'unit' || nextStep === 'unit2'
   const isDirectionStep = nextStep === 'direction' || nextStep === 'moveDirection' || nextStep === 'faceDirection'
   const useDirectionArrows = isDirectionStep && !(defId === 'move_forward_face' && nextStep === 'moveDirection')
   const stroke = isUnitStep ? '#ffe66a' : '#7bd8ff'
@@ -2578,7 +2944,7 @@ function drawStrongholdPreviewOverlays(): void {
 
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
-  const radius = unit.kind === 'stronghold' ? 20 : 14
+  const radius = unit.kind === 'stronghold' ? 20 : unit.kind === 'barricade' ? 12 : 14
   const color = getRingTint(unit.owner)
   const border = unit.kind === 'stronghold' ? '#101425' : '#0b0f1b'
   const preview = previewState?.units[unit.id]
@@ -2595,6 +2961,28 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
       : 1
   const overrideAlpha = alphaOverride ?? 1
   ctx.globalAlpha = animationAlpha * overrideAlpha
+
+  if (unit.modifiers.length > 0 && unit.kind !== 'stronghold') {
+    const glowRadius = unit.kind === 'barricade' ? layout.size * 0.55 : layout.size * 0.72
+    const glowGradient = ctx.createRadialGradient(
+      center.x,
+      center.y,
+      glowRadius * 0.18,
+      center.x,
+      center.y,
+      glowRadius
+    )
+    glowGradient.addColorStop(0, 'rgba(180, 255, 195, 0.95)')
+    glowGradient.addColorStop(0.58, 'rgba(95, 227, 142, 0.45)')
+    glowGradient.addColorStop(1, 'rgba(38, 98, 62, 0)')
+    ctx.save()
+    ctx.globalCompositeOperation = 'screen'
+    ctx.beginPath()
+    ctx.ellipse(center.x, center.y, glowRadius, glowRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+    ctx.fillStyle = glowGradient
+    ctx.fill()
+    ctx.restore()
+  }
 
   if (
     currentAnimation &&
@@ -2687,16 +3075,29 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
 
   if (unit.kind === 'unit' && unitBaseImage.loaded) {
     drawUnitSprite(center, unit.owner)
+  } else if (unit.kind === 'barricade' && barricadeBaseImage.loaded) {
+    drawBarricadeSprite(center, unit.owner)
   } else if (unit.kind === 'stronghold' && strongholdBaseImage.loaded) {
     // Stronghold sprite already drawn as structure; skip circle.
   } else {
-    ctx.beginPath()
-    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2)
-    ctx.fillStyle = unit.kind === 'stronghold' ? '#0c0f1d' : color
-    ctx.fill()
-    ctx.lineWidth = unit.kind === 'stronghold' ? 3 : 2
-    ctx.strokeStyle = border
-    ctx.stroke()
+    if (unit.kind === 'barricade') {
+      const size = radius * 1.9
+      ctx.beginPath()
+      ctx.rect(center.x - size / 2, center.y - (size * BOARD_TILT) / 2, size, size * BOARD_TILT)
+      ctx.fillStyle = '#8c5a2b'
+      ctx.fill()
+      ctx.lineWidth = 2
+      ctx.strokeStyle = border
+      ctx.stroke()
+    } else {
+      ctx.beginPath()
+      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2)
+      ctx.fillStyle = unit.kind === 'stronghold' ? '#0c0f1d' : color
+      ctx.fill()
+      ctx.lineWidth = unit.kind === 'stronghold' ? 3 : 2
+      ctx.strokeStyle = border
+      ctx.stroke()
+    }
   }
 
   drawStrengthDots(center, unit.strength, previewStrength, color)
@@ -2735,7 +3136,6 @@ function drawPlannedMoves(snapshot: GameState): void {
 }
 
 function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringColor: string): void {
-  if (!unitBaseImage.loaded) return
   const ghostSize = Math.ceil(layout.size * 4)
   if (ghostCanvas.width !== ghostSize) {
     ghostCanvas.width = ghostSize
@@ -2745,51 +3145,72 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
   ghostCtx.clearRect(0, 0, ghostCanvas.width, ghostCanvas.height)
 
   const localCenter = { x: ghostCanvas.width / 2, y: ghostCanvas.height / 2 }
-  const next = neighbor(unit.pos, unit.facing)
-  const target = projectHex(next)
-  const base = projectHex(unit.pos)
-  const dir = {
-    x: target.x - base.x,
-    y: (target.y - base.y) / BOARD_TILT,
+  if (unit.kind === 'barricade') {
+    ghostCtx.save()
+    ghostCtx.translate(localCenter.x, localCenter.y)
+    ghostCtx.scale(1, BOARD_TILT)
+    const size = layout.size * 0.5
+    ghostCtx.lineWidth = 2
+    ghostCtx.strokeStyle = ringColor
+    ghostCtx.strokeRect(-size / 2, -size / 2, size, size)
+    ghostCtx.restore()
+
+    if (barricadeBaseImage.loaded) {
+      ghostCtx.save()
+      ghostCtx.filter = 'grayscale(1) brightness(1.8)'
+      drawBarricadeSprite(localCenter, unit.owner, ghostCtx)
+      ghostCtx.filter = 'none'
+      ghostCtx.restore()
+    }
+  } else {
+    const next = neighbor(unit.pos, unit.facing)
+    const target = projectHex(next)
+    const base = projectHex(unit.pos)
+    const dir = {
+      x: target.x - base.x,
+      y: (target.y - base.y) / BOARD_TILT,
+    }
+    const length = Math.hypot(dir.x, dir.y) || 1
+    const nx = dir.x / length
+    const ny = dir.y / length
+    const tipDistance = layout.size * 0.66
+    const baseDistance = layout.size * 0.38
+    const baseHalfWidth = layout.size * 0.156
+    const tipX = nx * tipDistance
+    const tipY = ny * tipDistance
+    const baseX = nx * baseDistance
+    const baseY = ny * baseDistance
+    const perpX = -ny
+    const perpY = nx
+
+    ghostCtx.save()
+    ghostCtx.translate(localCenter.x, localCenter.y)
+    ghostCtx.scale(1, BOARD_TILT)
+
+    ghostCtx.beginPath()
+    ghostCtx.arc(0, 0, layout.size * 0.38, 0, Math.PI * 2)
+    ghostCtx.strokeStyle = ringColor
+    ghostCtx.lineWidth = 2
+    ghostCtx.stroke()
+
+    ghostCtx.beginPath()
+    ghostCtx.moveTo(tipX, tipY)
+    ghostCtx.lineTo(baseX + perpX * baseHalfWidth, baseY + perpY * baseHalfWidth)
+    ghostCtx.lineTo(baseX - perpX * baseHalfWidth, baseY - perpY * baseHalfWidth)
+    ghostCtx.closePath()
+    ghostCtx.fillStyle = ringColor
+    ghostCtx.fill()
+
+    ghostCtx.restore()
+
+    if (unitBaseImage.loaded) {
+      ghostCtx.save()
+      ghostCtx.filter = 'grayscale(1) brightness(1.8)'
+      drawAnchoredImageTo(ghostCtx, unitBaseImage, localCenter, UNIT_IMAGE_SCALE, UNIT_ANCHOR_Y)
+      ghostCtx.filter = 'none'
+      ghostCtx.restore()
+    }
   }
-  const length = Math.hypot(dir.x, dir.y) || 1
-  const nx = dir.x / length
-  const ny = dir.y / length
-  const tipDistance = layout.size * 0.66
-  const baseDistance = layout.size * 0.38
-  const baseHalfWidth = layout.size * 0.156
-  const tipX = nx * tipDistance
-  const tipY = ny * tipDistance
-  const baseX = nx * baseDistance
-  const baseY = ny * baseDistance
-  const perpX = -ny
-  const perpY = nx
-
-  ghostCtx.save()
-  ghostCtx.translate(localCenter.x, localCenter.y)
-  ghostCtx.scale(1, BOARD_TILT)
-
-  ghostCtx.beginPath()
-  ghostCtx.arc(0, 0, layout.size * 0.38, 0, Math.PI * 2)
-  ghostCtx.strokeStyle = ringColor
-  ghostCtx.lineWidth = 2
-  ghostCtx.stroke()
-
-  ghostCtx.beginPath()
-  ghostCtx.moveTo(tipX, tipY)
-  ghostCtx.lineTo(baseX + perpX * baseHalfWidth, baseY + perpY * baseHalfWidth)
-  ghostCtx.lineTo(baseX - perpX * baseHalfWidth, baseY - perpY * baseHalfWidth)
-  ghostCtx.closePath()
-  ghostCtx.fillStyle = ringColor
-  ghostCtx.fill()
-
-  ghostCtx.restore()
-
-  ghostCtx.save()
-  ghostCtx.filter = 'grayscale(1) brightness(1.8)'
-  drawAnchoredImageTo(ghostCtx, unitBaseImage, localCenter, UNIT_IMAGE_SCALE, UNIT_ANCHOR_Y)
-  ghostCtx.filter = 'none'
-  ghostCtx.restore()
 
   ctx.save()
   ctx.globalAlpha = GHOST_ALPHA
@@ -2804,7 +3225,7 @@ function drawGhostUnits(snapshot: GameState): void {
   const snapshotUnitIds = new Set(Object.keys(snapshot.units))
 
   for (const unit of Object.values(snapshot.units)) {
-    if (unit.kind !== 'unit') continue
+    if (unit.kind === 'stronghold') continue
     const actual = state.units[unit.id]
     const moved =
       !actual ||
@@ -2838,7 +3259,7 @@ function drawGhostUnits(snapshot: GameState): void {
   }
 
   for (const unit of Object.values(state.units)) {
-    if (unit.kind !== 'unit') continue
+    if (unit.kind === 'stronghold') continue
     if (snapshotUnitIds.has(unit.id)) continue
 
     const center = projectHex(unit.pos)
@@ -3098,6 +3519,9 @@ function renderOrderSummary(params: OrderParams): string {
   if (params.tile) {
     parts.push(`Tile: ${params.tile.q},${params.tile.r}`)
   }
+  if (params.tile2) {
+    parts.push(`Tile 2: ${params.tile2.q},${params.tile2.r}`)
+  }
   if (params.direction !== undefined) {
     parts.push(`Direction: ${params.direction}`)
   }
@@ -3123,7 +3547,9 @@ function stepHint(step: SelectionStep): string {
     case 'unit2':
       return 'Click a different unit (or planned spawn) for the second boost.'
     case 'tile':
-      return 'Click a highlighted spawn tile.'
+      return 'Click a highlighted tile.'
+    case 'tile2':
+      return 'Click a different highlighted tile for the second placement.'
     case 'direction':
       return 'Click an adjacent tile (arrow shown) to set direction.'
     case 'moveDirection':
@@ -3507,6 +3933,7 @@ function applySeed(seed: string): void {
   resizeDecks(gameSettings.deckSize)
   enforceMaxCopies()
   state = createGameState(gameSettings, loadouts)
+  resetLocalTelemetryForCurrentMatch()
   if (mode === 'bot') {
     planningPlayer = BOT_HUMAN_PLAYER
   }
@@ -3580,6 +4007,7 @@ function render(): void {
   const ordersScroll = ordersEl.scrollLeft
   computeLayout()
   drawBoard()
+  renderUnitStatusPopover()
   renderMeta()
   renderHand()
   renderOrderForm()
@@ -3591,14 +4019,21 @@ function render(): void {
   scheduleOverlayPrewarm()
   syncOverlayFromSelection()
   updateHoverFromPointer()
+  if (hasPointer && !lastInputWasTouch) {
+    updateUnitStatusHoverFromPointer(lastPointer.x, lastPointer.y)
+  } else {
+    renderUnitStatusPopover()
+  }
 
   if (state.winner !== null) {
+    trySubmitLocalTelemetryIfNeeded()
     statusEl.textContent = `Player ${state.winner + 1} wins!`
     winnerTextEl.textContent = `Player ${state.winner + 1} wins the game.`
     winnerNoteEl.textContent =
       mode === 'online' && onlineRematchRequested ? 'Rematch requested, waiting for opponent.' : ''
-    winnerModal.classList.remove('hidden')
+    winnerModal.classList.toggle('hidden', suppressWinnerModalForRestoredOutcome)
   } else {
+    suppressWinnerModalForRestoredOutcome = false
     winnerNoteEl.textContent = ''
     winnerModal.classList.add('hidden')
   }
@@ -3624,6 +4059,7 @@ function renderBoardOnly(): void {
   previewState = state.phase === 'planning' ? simulatePlannedState(state, planningPlayer) : null
   computeLayout()
   drawBoard()
+  renderUnitStatusPopover()
 }
 
 function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
@@ -3635,6 +4071,7 @@ function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
       strength: unit.strength,
       owner: unit.owner,
       kind: unit.kind,
+      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
   return snap
@@ -3674,7 +4111,7 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
 
   for (const effect of def.effects) {
     if (effect.type === 'spawn') {
-      const tile = order.params.tile
+      const tile = effect.tileParam === 'tile2' ? order.params.tile2 : order.params.tile
       if (!tile) continue
       let spawnedId: string | undefined = state.spawnedByOrder[order.id]
       if (!spawnedId) {
@@ -3793,6 +4230,7 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
       strength: unit.strength,
       pos: unit.pos,
       facing: unit.facing,
+      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     })
     deathAlphaOverrides.set(unitId, 1)
     animations.push({
@@ -3939,7 +4377,15 @@ function getCardDefId(cardId: string): CardDefId | null {
   return card?.defId ?? null
 }
 
-type SelectionStep = 'unit' | 'unit2' | 'tile' | 'direction' | 'moveDirection' | 'faceDirection' | 'distance'
+type SelectionStep =
+  | 'unit'
+  | 'unit2'
+  | 'tile'
+  | 'tile2'
+  | 'direction'
+  | 'moveDirection'
+  | 'faceDirection'
+  | 'distance'
 
 type MoveSemantics = {
   directionSource: 'facing' | { type: 'param'; key: 'direction' | 'moveDirection' }
@@ -4050,6 +4496,10 @@ function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionSte
     if (hasSecondaryBoostTarget(selectionState, planningPlayer, params.unitId)) return 'unit2'
   }
   if (def.requires.tile && !params.tile) return 'tile'
+  if (def.requires.tile2 && !params.tile2) return 'tile2'
+  if (defId === 'reinforce_barricade' && params.tile && params.tile2) {
+    if (params.tile.q === params.tile2.q && params.tile.r === params.tile2.r) return 'tile2'
+  }
   if (defId === 'reinforce_spawn' && params.tile && params.direction === undefined) return 'direction'
   if (defId === 'move_forward_face') {
     if (params.moveDirection === undefined) return 'moveDirection'
@@ -4101,9 +4551,9 @@ function getSelectableHexes(
 ): Hex[] {
   if (step === 'unit') {
     const requirement = CARD_DEFS[defId].requires.unit
-    const units = Object.values(snapshot.units).filter((unit) => unit.kind === 'unit')
+    const units = Object.values(snapshot.units).filter((unit) => canCardTargetUnit(defId, unit))
     if (requirement === 'any') {
-      const currentUnits = Object.values(state.units).filter((unit) => unit.kind === 'unit')
+      const currentUnits = Object.values(state.units).filter((unit) => canCardTargetUnit(defId, unit))
       return dedupeHexes([
         ...units.map((unit) => ({ ...unit.pos })),
         ...currentUnits.map((unit) => ({ ...unit.pos })),
@@ -4116,7 +4566,9 @@ function getSelectableHexes(
   }
 
   if (step === 'unit2') {
-    const units = Object.values(snapshot.units).filter((unit) => unit.owner === player && unit.kind === 'unit')
+    const units = Object.values(snapshot.units).filter(
+      (unit) => unit.owner === player && canCardTargetUnit(defId, unit)
+    )
     const unitHexes = units.map((unit) => ({ ...unit.pos }))
     const planned = getPlannedSpawnTiles(player)
     const selected = params.unitId ? getUnitSnapshot(snapshot, params.unitId, player) : null
@@ -4128,7 +4580,20 @@ function getSelectableHexes(
     if (CARD_DEFS[defId].requires.tile === 'any') {
       return snapshot.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
     }
+    if (CARD_DEFS[defId].requires.tile === 'barricade') {
+      return getBarricadeSpawnTiles(snapshot, player)
+    }
     return getSpawnTiles(snapshot, player)
+  }
+
+  if (step === 'tile2') {
+    if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
+      const blocked = params.tile
+      return getBarricadeSpawnTiles(snapshot, player).filter((hex) =>
+        blocked ? hex.q !== blocked.q || hex.r !== blocked.r : true
+      )
+    }
+    return []
   }
 
   if (step === 'direction' || step === 'moveDirection' || step === 'faceDirection') {
@@ -4246,8 +4711,8 @@ function getTouchMidpoint(touches: TouchList): { x: number; y: number } {
   }
 }
 
-function pickHexFromEvent(event: MouseEvent): Hex | null {
-  const { x, y } = screenToWorld(event.clientX, event.clientY)
+function pickHexFromClient(clientX: number, clientY: number): Hex | null {
+  const { x, y } = screenToWorld(clientX, clientY)
 
   const yUnscaled = (y - layout.origin.y) / BOARD_TILT
   const r = Math.round(yUnscaled / (1.5 * layout.size))
@@ -4257,25 +4722,34 @@ function pickHexFromEvent(event: MouseEvent): Hex | null {
   return rounded
 }
 
+function pickHexFromEvent(event: MouseEvent): Hex | null {
+  return pickHexFromClient(event.clientX, event.clientY)
+}
+
 function resolveSelectableUnitId(
   selectionState: GameState,
+  defId: CardDefId,
   hex: Hex,
   player: PlayerId,
   requirement: 'friendly' | 'any'
 ): string | null {
   if (requirement === 'any') {
     const unit = Object.values(selectionState.units).find(
-      (item) => item.pos.q === hex.q && item.pos.r === hex.r && item.kind === 'unit'
+      (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardTargetUnit(defId, item)
     )
     if (unit) return unit.id
     const currentUnit = Object.values(state.units).find(
-      (item) => item.pos.q === hex.q && item.pos.r === hex.r && item.kind === 'unit'
+      (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardTargetUnit(defId, item)
     )
     return currentUnit ? currentUnit.id : null
   }
 
   const unit = Object.values(selectionState.units).find(
-    (item) => item.pos.q === hex.q && item.pos.r === hex.r && item.owner === player && item.kind === 'unit'
+    (item) =>
+      item.pos.q === hex.q &&
+      item.pos.r === hex.r &&
+      item.owner === player &&
+      canCardTargetUnit(defId, item)
   )
   if (unit) {
     if (state.units[unit.id]) {
@@ -4307,7 +4781,7 @@ function handleBoardClick(hex: Hex): void {
 
   if (nextStep === 'unit') {
     const requirement = CARD_DEFS[defId].requires.unit ?? 'friendly'
-    const selectionId = resolveSelectableUnitId(selectionState, hex, planningPlayer, requirement)
+    const selectionId = resolveSelectableUnitId(selectionState, defId, hex, planningPlayer, requirement)
     if (selectionId) {
       activeOrder.params.unitId = selectionId
       statusEl.textContent =
@@ -4318,7 +4792,7 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'unit2') {
-    const selectionId = resolveSelectableUnitId(selectionState, hex, planningPlayer, 'friendly')
+    const selectionId = resolveSelectableUnitId(selectionState, defId, hex, planningPlayer, 'friendly')
     if (!selectionId) {
       statusEl.textContent = 'Select a different unit or planned spawn.'
     } else if (selectionId === activeOrder.params.unitId) {
@@ -4330,18 +4804,37 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'tile') {
-    if (CARD_DEFS[defId].requires.tile === 'any') {
+    const tileRequirement = CARD_DEFS[defId].requires.tile
+    if (tileRequirement === 'any') {
       if (isTile(hex)) {
         activeOrder.params.tile = hex
         statusEl.textContent = 'Tile selected.'
       } else {
         statusEl.textContent = 'Select a tile.'
       }
-    } else if (getSpawnTiles(selectionState, planningPlayer).some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-      activeOrder.params.tile = hex
-      statusEl.textContent = 'Spawn tile selected.'
     } else {
-      statusEl.textContent = 'Select a spawn tile.'
+      const validTiles =
+        tileRequirement === 'barricade'
+          ? getBarricadeSpawnTiles(selectionState, planningPlayer)
+          : getSpawnTiles(selectionState, planningPlayer)
+      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        activeOrder.params.tile = hex
+        statusEl.textContent = tileRequirement === 'barricade' ? 'Barricade tile selected.' : 'Spawn tile selected.'
+      } else {
+        statusEl.textContent = tileRequirement === 'barricade' ? 'Select a valid barricade tile.' : 'Select a spawn tile.'
+      }
+    }
+  }
+
+  if (nextStep === 'tile2') {
+    const validTiles = getBarricadeSpawnTiles(selectionState, planningPlayer)
+    if (!validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+      statusEl.textContent = 'Select a valid second barricade tile.'
+    } else if (activeOrder.params.tile && activeOrder.params.tile.q === hex.q && activeOrder.params.tile.r === hex.r) {
+      statusEl.textContent = 'Second tile must be different.'
+    } else {
+      activeOrder.params.tile2 = hex
+      statusEl.textContent = 'Second barricade tile selected.'
     }
   }
 
@@ -4513,6 +5006,17 @@ loadoutClearButton.addEventListener('click', () => {
     loadouts.p1 = []
   } else {
     loadouts.p2 = []
+  }
+  renderLoadout()
+})
+
+loadoutRandomButton.addEventListener('click', () => {
+  const targetPlayer: PlayerId = mode === 'online' ? 0 : loadoutPlayer
+  const randomizedDeck = generateClusteredBotDeck(gameSettings)
+  if (targetPlayer === 0) {
+    loadouts.p1 = randomizedDeck
+  } else {
+    loadouts.p2 = randomizedDeck
   }
   renderLoadout()
 })
@@ -4698,7 +5202,9 @@ canvas.addEventListener(
 canvas.addEventListener(
   'touchstart',
   (event) => {
+    lastInputWasTouch = true
     if (event.touches.length === 2) {
+      touchTapCandidate = false
       const startDistance = getTouchDistance(event.touches)
       if (startDistance <= 0) return
       pinchZoomState = { startDistance, startZoom: boardZoom }
@@ -4709,6 +5215,7 @@ canvas.addEventListener(
       return
     }
     if (event.touches.length === 1 && !pinchZoomState) {
+      touchTapCandidate = true
       const touch = event.touches[0]
       touchPanState = {
         startX: touch.clientX,
@@ -4726,6 +5233,7 @@ canvas.addEventListener(
   'touchmove',
   (event) => {
     if (pinchZoomState && event.touches.length === 2) {
+      touchTapCandidate = false
       const distance = getTouchDistance(event.touches)
       if (distance <= 0 || pinchZoomState.startDistance <= 0) return
       const midpoint = getTouchMidpoint(event.touches)
@@ -4740,6 +5248,7 @@ canvas.addEventListener(
       const dy = touch.clientY - touchPanState.startY
       if (Math.abs(dx) + Math.abs(dy) > 4) {
         touchPanState.didMove = true
+        touchTapCandidate = false
       }
       boardPan.x = touchPanState.originX + dx
       boardPan.y = touchPanState.originY + dy
@@ -4753,6 +5262,7 @@ canvas.addEventListener(
 canvas.addEventListener('touchend', (event) => {
   if (pinchZoomState && event.touches.length < 2) {
     pinchZoomState = null
+    touchTapCandidate = false
     ignoreClick = true
     if (event.touches.length === 1) {
       const touch = event.touches[0]
@@ -4767,20 +5277,30 @@ canvas.addEventListener('touchend', (event) => {
     return
   }
   if (touchPanState && event.touches.length === 0) {
-    if (touchPanState.didMove) {
-      ignoreClick = true
+    const wasTap = !touchPanState.didMove && touchTapCandidate
+    if (wasTap) {
+      const touch = event.changedTouches[0]
+      const hex = touch ? pickHexFromClient(touch.clientX, touch.clientY) : null
+      if (hex) {
+        handleBoardClick(hex)
+        togglePinnedUnitStatusFromHex(hex)
+      }
     }
+    ignoreClick = true
     touchPanState = null
+    touchTapCandidate = false
   }
 })
 
 canvas.addEventListener('touchcancel', () => {
   pinchZoomState = null
   touchPanState = null
+  touchTapCandidate = false
 })
 
 canvas.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return
+  lastInputWasTouch = false
   isPanning = true
   didPan = false
   panStart = { x: event.clientX, y: event.clientY }
@@ -4793,6 +5313,7 @@ window.addEventListener('mousemove', (event) => {
   lastPointer.x = event.clientX
   lastPointer.y = event.clientY
   hasPointer = true
+  updateUnitStatusHoverFromPointer(event.clientX, event.clientY)
   if (!isPanning) return
   const dx = event.clientX - panStart.x
   const dy = event.clientY - panStart.y
@@ -4829,6 +5350,7 @@ canvas.addEventListener('click', (event) => {
     ignoreClick = false
     return
   }
+  if (lastInputWasTouch) return
   const hex = pickHexFromEvent(event)
   if (!hex) return
   handleBoardClick(hex)
@@ -4837,7 +5359,9 @@ canvas.addEventListener('click', (event) => {
 window.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     persistProgressNow()
+    return
   }
+  void flushPendingTelemetryQueue()
 })
 
 window.addEventListener('pagehide', () => {
@@ -4848,6 +5372,7 @@ const restoredScreen = restoreProgressFromStorage()
 setScreen(restoredScreen ?? 'menu')
 registerServiceWorker()
 refreshOnlineLobbyUi()
+void flushPendingTelemetryQueue()
 
 const inviteJoin = readInviteFromUrl()
 if (inviteJoin) {
@@ -4865,6 +5390,10 @@ if (inviteJoin) {
 
 window.addEventListener('resize', () => {
   render()
+})
+
+window.addEventListener('online', () => {
+  void flushPendingTelemetryQueue()
 })
 
 

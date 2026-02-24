@@ -12,6 +12,7 @@
     "dev:lan:https": "vite --mode lan-https --host 0.0.0.0 --port 5173",
     "server:dev": "tsx watch server/index.ts",
     "server:start": "tsx server/index.ts",
+    "telemetry:cards": "tsx server/scripts/telemetryCards.ts",
     "test:server": "node --import tsx --test --test-concurrency=1 --experimental-test-isolation=none server/tests/*.test.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",

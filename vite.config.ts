@@ -17,6 +17,18 @@ export default defineConfig(({ mode }) => {
           xfwd: true,
           secure: false,
         },
+        '/telemetry': {
+          target: wsProxyTarget,
+          changeOrigin: false,
+          xfwd: true,
+          secure: false,
+        },
+        '/health': {
+          target: wsProxyTarget,
+          changeOrigin: false,
+          xfwd: true,
+          secure: false,
+        },
       },
     },
     preview: {
@@ -25,6 +37,18 @@ export default defineConfig(({ mode }) => {
         '/ws': {
           target: wsProxyTarget,
           ws: true,
+          changeOrigin: false,
+          xfwd: true,
+          secure: false,
+        },
+        '/telemetry': {
+          target: wsProxyTarget,
+          changeOrigin: false,
+          xfwd: true,
+          secure: false,
+        },
+        '/health': {
+          target: wsProxyTarget,
           changeOrigin: false,
           xfwd: true,
           secure: false,

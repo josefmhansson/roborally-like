@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
-import { RoomManager } from '../roomManager'
-import type { CardDefId } from '../../src/engine/types'
+import { RoomManager, buildRoomTelemetrySubmission, markRoomTelemetrySubmitted, recordRoomPlayedCards } from '../roomManager'
+import type { CardDefId, GameState } from '../../src/engine/types'
 
 function mockSocket(): WebSocket {
   return {
@@ -92,6 +92,64 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
   const paddedCards = [...roomPadded.state.players[1].hand, ...roomPadded.state.players[1].deck].map((card) => card.defId)
   assert.equal(paddedCards.length, 6)
   assert.equal(paddedCards.filter((defId) => defId === 'spell_meteor').length, 1)
+})
+
+test('room telemetry submission includes played cards and final hand', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom({
+    settings: {
+      boardRows: 6,
+      boardCols: 6,
+      strongholdStrength: 5,
+      deckSize: 6,
+      drawPerTurn: 2,
+      maxCopies: 3,
+      actionBudgetP1: 3,
+      actionBudgetP2: 3,
+    },
+    loadouts: {
+      p1: ['attack_arrow', 'spell_invest'],
+      p2: ['move_any', 'spell_invest'],
+    },
+  })
+
+  const actionStartState: GameState = {
+    ...room.state,
+    actionQueue: [
+      {
+        id: 'o1',
+        player: 0,
+        cardId: 'p1-c1',
+        defId: 'attack_arrow',
+        params: {},
+      },
+      {
+        id: 'o2',
+        player: 1,
+        cardId: 'p2-c1',
+        defId: 'move_any',
+        params: {},
+      },
+    ],
+  }
+  recordRoomPlayedCards(room, actionStartState)
+
+  room.state.players[0].hand = [{ id: 'h1', defId: 'spell_invest' }]
+  room.state.players[1].hand = [{ id: 'h2', defId: 'spell_invest' }]
+  room.state.winner = 0
+  room.endReason = 'victory'
+
+  const telemetry = buildRoomTelemetrySubmission(room, 5000)
+  assert.ok(telemetry)
+  assert.equal(telemetry?.mode, 'online')
+  assert.equal(telemetry?.winner, 0)
+  assert.equal(telemetry?.players[0].cardsPlayed[0], 'attack_arrow')
+  assert.equal(telemetry?.players[1].cardsPlayed[0], 'move_any')
+  assert.deepEqual(telemetry?.players[0].cardsInHandNotPlayed, ['spell_invest'])
+
+  markRoomTelemetrySubmitted(room)
+  const afterSubmit = buildRoomTelemetrySubmission(room, 5100)
+  assert.equal(afterSubmit, null)
 })
 
 function sortDefIds(values: CardDefId[]): CardDefId[] {

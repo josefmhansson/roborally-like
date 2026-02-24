@@ -3,6 +3,7 @@ import type { WebSocket } from 'ws'
 import { CARD_DEFS, STARTING_DECK } from '../src/engine/cards'
 import { createGameState, DEFAULT_SETTINGS } from '../src/engine/game'
 import type { CardDefId, GameSettings, GameState, PlayerId } from '../src/engine/types'
+import type { MatchTelemetrySubmission } from '../src/shared/telemetry'
 import type { RoomSetup } from '../src/shared/net/protocol'
 
 type SeatState = {
@@ -11,6 +12,13 @@ type SeatState = {
   connected: boolean
   lastSeen: number
   loadoutLocked: boolean
+}
+
+type RoomTelemetryState = {
+  matchId: string
+  startedAt: number
+  playedCards: [CardDefId[], CardDefId[]]
+  submitted: boolean
 }
 
 export type Room = {
@@ -24,6 +32,7 @@ export type Room = {
   ended: boolean
   endReason: string | null
   createdAt: number
+  telemetry: RoomTelemetryState
 }
 
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -42,6 +51,7 @@ export class RoomManager {
     const roomCode = this.generateRoomCode()
     const settings = normalizeSettings(setup?.settings)
     const loadouts = normalizeLoadouts(settings, setup?.loadouts)
+    const now = Date.now()
     const room: Room = {
       code: roomCode,
       state: createGameState(settings, loadouts),
@@ -50,14 +60,14 @@ export class RoomManager {
           token: createToken(),
           socket: null,
           connected: false,
-          lastSeen: Date.now(),
+          lastSeen: now,
           loadoutLocked: true,
         },
         {
           token: createToken(),
           socket: null,
           connected: false,
-          lastSeen: Date.now(),
+          lastSeen: now,
           loadoutLocked: false,
         },
       ],
@@ -67,7 +77,8 @@ export class RoomManager {
       reconnectDeadlineAt: null,
       ended: false,
       endReason: null,
-      createdAt: Date.now(),
+      createdAt: now,
+      telemetry: createRoomTelemetryState(now),
     }
     this.rooms.set(room.code, room)
     return room
@@ -215,6 +226,7 @@ export function requestRoomRematch(room: Room, seat: PlayerId): { started: boole
 }
 
 function resetRoomForRematch(room: Room): void {
+  const now = Date.now()
   room.state = createGameState(room.state.settings, {
     p1: [...room.seatLoadouts[0]],
     p2: [...room.seatLoadouts[1]],
@@ -224,6 +236,46 @@ function resetRoomForRematch(room: Room): void {
   room.rematchReady = [false, false]
   room.paused = false
   room.reconnectDeadlineAt = null
+  room.telemetry = createRoomTelemetryState(now)
+}
+
+export function recordRoomPlayedCards(room: Room, actionStartState: GameState): void {
+  actionStartState.actionQueue.forEach((order) => {
+    room.telemetry.playedCards[order.player].push(order.defId)
+  })
+}
+
+export function buildRoomTelemetrySubmission(room: Room, now = Date.now()): MatchTelemetrySubmission | null {
+  if (room.telemetry.submitted) return null
+  return {
+    schemaVersion: 1,
+    matchId: room.telemetry.matchId,
+    mode: 'online',
+    roomCode: room.code,
+    startedAt: room.telemetry.startedAt,
+    endedAt: now,
+    winner: room.state.winner,
+    endReason: room.endReason ?? 'ended',
+    settings: { ...room.state.settings },
+    players: [
+      {
+        seat: 0,
+        decklist: [...room.seatLoadouts[0]],
+        cardsPlayed: [...room.telemetry.playedCards[0]],
+        cardsInHandNotPlayed: room.state.players[0].hand.map((card) => card.defId),
+      },
+      {
+        seat: 1,
+        decklist: [...room.seatLoadouts[1]],
+        cardsPlayed: [...room.telemetry.playedCards[1]],
+        cardsInHandNotPlayed: room.state.players[1].hand.map((card) => card.defId),
+      },
+    ],
+  }
+}
+
+export function markRoomTelemetrySubmitted(room: Room): void {
+  room.telemetry.submitted = true
 }
 
 function isPregameLoadoutWindow(room: Room): boolean {
@@ -237,6 +289,19 @@ function isPregameLoadoutWindow(room: Room): boolean {
 
 function createToken(): string {
   return randomBytes(24).toString('hex')
+}
+
+function createRoomTelemetryState(now: number): RoomTelemetryState {
+  return {
+    matchId: createMatchId(now),
+    startedAt: now,
+    playedCards: [[], []],
+    submitted: false,
+  }
+}
+
+function createMatchId(now: number): string {
+  return `m_${now.toString(36)}_${randomBytes(6).toString('hex')}`
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -311,6 +376,7 @@ function createPlayerStateFromDeck(
     hand,
     discard: [],
     orders: [],
+    modifiers: [],
   }
 }
 
