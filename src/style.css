@@ -595,6 +595,80 @@ input[type='number'] {
   font-size: 14px;
 }
 
+.unit-status-popover {
+  position: absolute;
+  z-index: 6;
+  min-width: 190px;
+  max-width: 260px;
+  transform: translate(-50%, calc(-100% - 10px));
+  border-radius: 10px;
+  border: 1px solid rgba(104, 236, 150, 0.55);
+  background: rgba(9, 18, 16, 0.92);
+  color: #e5ffec;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  padding: 8px 10px;
+}
+
+.unit-status-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #9df5b7;
+  margin-bottom: 6px;
+}
+
+.unit-status-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.unit-status-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.unit-status-row.none {
+  grid-template-columns: 1fr;
+  color: #b5cfc0;
+}
+
+.unit-status-kind {
+  text-transform: uppercase;
+  letter-spacing: 0.55px;
+  font-size: 9px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+.unit-status-row.buff .unit-status-kind {
+  color: #dfffe8;
+  background: rgba(78, 201, 127, 0.38);
+}
+
+.unit-status-row.debuff .unit-status-kind {
+  color: #0d2414;
+  background: rgba(158, 248, 190, 0.9);
+}
+
+.unit-status-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.unit-status-turns {
+  color: #b8dec8;
+  font-size: 10px;
+}
+
 .meta {
   display: flex;
   gap: 12px;
@@ -1478,6 +1552,24 @@ body.debug-cards .hidden-card {
     padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
     background: linear-gradient(0deg, rgba(6, 10, 20, 0.8) 0%, rgba(6, 10, 20, 0.45) 65%, rgba(6, 10, 20, 0) 100%);
     backdrop-filter: blur(1px);
+  }
+
+  .unit-status-popover {
+    min-width: 170px;
+    max-width: min(220px, calc(100% - 18px));
+    padding: 6px 8px;
+    border-radius: 8px;
+    transform: translate(-50%, calc(-100% - 8px));
+  }
+
+  .unit-status-title {
+    font-size: 11px;
+    margin-bottom: 5px;
+  }
+
+  .unit-status-row {
+    font-size: 10px;
+    gap: 6px;
   }
 
   #status {

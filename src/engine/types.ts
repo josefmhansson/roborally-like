@@ -9,7 +9,14 @@ export type Direction = 0 | 1 | 2 | 3 | 4 | 5
 
 export type UnitId = string
 
-export type UnitKind = 'unit' | 'stronghold'
+export type UnitKind = 'unit' | 'stronghold' | 'barricade'
+
+export type UnitModifierType = 'cannotMove'
+
+export type UnitModifier = {
+  type: UnitModifierType
+  turnsRemaining: number
+}
 
 export type Unit = {
   id: UnitId
@@ -18,6 +25,7 @@ export type Unit = {
   strength: number
   pos: Hex
   facing: Direction
+  modifiers: UnitModifier[]
 }
 
 export type TileKind = 'grass' | 'forest' | 'mountain' | 'pond' | 'rocky' | 'rough' | 'shrub'
@@ -37,6 +45,7 @@ export type CardDefId =
   | 'reinforce_spawn'
   | 'reinforce_boost'
   | 'reinforce_boost_spawn'
+  | 'reinforce_barricade'
   | 'move_forward'
   | 'move_any'
   | 'move_forward_face'
@@ -44,12 +53,17 @@ export type CardDefId =
   | 'attack_fwd_lr'
   | 'attack_fwd'
   | 'attack_arrow'
+  | 'attack_charge'
   | 'spell_lightning'
   | 'spell_meteor'
   | 'spell_invest'
+  | 'spell_trip'
+  | 'spell_snare'
+  | 'spell_dispel'
+  | 'spell_divination'
   | 'move_pivot'
 
-export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile'
+export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2'
 
 export type DirectionSource =
   | 'facing'
@@ -59,9 +73,11 @@ export type DirectionSource =
 export type CardEffect =
   | {
       type: 'spawn'
+      kind?: 'unit' | 'barricade'
       strength: number
-      tileParam: 'tile'
-      facingParam: 'direction'
+      tileParam: 'tile' | 'tile2'
+      facingParam?: 'direction'
+      facing?: Direction
       mapToOrder?: boolean
     }
   | {
@@ -91,6 +107,22 @@ export type CardEffect =
       amount: number
     }
   | {
+      type: 'applyUnitModifier'
+      unitParam: 'unitId'
+      modifier: UnitModifierType
+      turns: number
+    }
+  | {
+      type: 'clearUnitModifiers'
+      unitParam: 'unitId'
+    }
+  | {
+      type: 'applyPlayerModifier'
+      modifier: 'extraDraw'
+      amount: number
+      turns: number
+    }
+  | {
       type: 'move'
       unitParam: 'unitId'
       direction: DirectionSource
@@ -118,6 +150,7 @@ export type OrderParams = {
   unitId?: UnitId
   unitId2?: UnitId
   tile?: Hex
+  tile2?: Hex
   direction?: Direction
   moveDirection?: Direction
   faceDirection?: Direction
@@ -137,6 +170,15 @@ export type PlayerState = {
   hand: CardInstance[]
   discard: CardInstance[]
   orders: Order[]
+  modifiers: PlayerModifier[]
+}
+
+export type PlayerModifierType = 'extraDraw'
+
+export type PlayerModifier = {
+  type: PlayerModifierType
+  amount: number
+  turnsRemaining: number
 }
 
 export type GameState = {

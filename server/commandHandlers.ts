@@ -157,6 +157,18 @@ function sanitizeOrderParams(input: OrderParams): OrderParams {
       r: Math.floor(input.tile.r),
     }
   }
+  if (
+    input.tile2 &&
+    typeof input.tile2.q === 'number' &&
+    typeof input.tile2.r === 'number' &&
+    Number.isFinite(input.tile2.q) &&
+    Number.isFinite(input.tile2.r)
+  ) {
+    out.tile2 = {
+      q: Math.floor(input.tile2.q),
+      r: Math.floor(input.tile2.r),
+    }
+  }
   return out
 }
 
@@ -175,6 +187,7 @@ function cloneGameState(source: GameState): GameState {
     units[unitId] = {
       ...unit,
       pos: { ...unit.pos },
+      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
 
@@ -184,12 +197,14 @@ function cloneGameState(source: GameState): GameState {
       hand: cloneCards(source.players[0].hand),
       discard: cloneCards(source.players[0].discard),
       orders: cloneOrders(source.players[0].orders),
+      modifiers: source.players[0].modifiers.map((modifier) => ({ ...modifier })),
     },
     {
       deck: cloneCards(source.players[1].deck),
       hand: cloneCards(source.players[1].hand),
       discard: cloneCards(source.players[1].discard),
       orders: cloneOrders(source.players[1].orders),
+      modifiers: source.players[1].modifiers.map((modifier) => ({ ...modifier })),
     },
   ]
 
@@ -225,6 +240,7 @@ function cloneOrders(orders: GameState['players'][number]['orders']): GameState[
     params: {
       ...order.params,
       tile: order.params.tile ? { ...order.params.tile } : undefined,
+      tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
     },
   }))
 }

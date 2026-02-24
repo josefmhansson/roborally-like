@@ -3,7 +3,8 @@ import { DIRECTION_NAMES } from './hex'
 
 export type CardTargetRequirement = {
   unit?: 'friendly' | 'any'
-  tile?: 'spawn' | 'any'
+  tile?: 'spawn' | 'any' | 'barricade'
+  tile2?: 'barricade'
   direction?: boolean
   moveDirection?: boolean
   faceDirection?: boolean
@@ -16,6 +17,7 @@ export type CardDef = {
   description: string
   type: CardType
   requires: CardTargetRequirement
+  canTargetBarricades?: boolean
   actionCost?: number
   effects: CardEffect[]
 }
@@ -70,6 +72,29 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         amount: 3,
         unitParam: 'unitId',
         requireSpawnTile: true,
+      },
+    ],
+  },
+  reinforce_barricade: {
+    id: 'reinforce_barricade',
+    name: 'Barricade',
+    description: 'Spawns 2 1-strength barricades adjacent to an existing unit or building.',
+    type: 'reinforcement',
+    requires: { tile: 'barricade', tile2: 'barricade' },
+    effects: [
+      {
+        type: 'spawn',
+        kind: 'barricade',
+        strength: 1,
+        tileParam: 'tile',
+        facing: 0,
+      },
+      {
+        type: 'spawn',
+        kind: 'barricade',
+        strength: 1,
+        tileParam: 'tile2',
+        facing: 0,
       },
     ],
   },
@@ -198,6 +223,34 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  attack_charge: {
+    id: 'attack_charge',
+    name: 'Charge',
+    description: 'Face a direction, move up to 4 tiles, then deal 2 damage to the tile in front.',
+    type: 'attack',
+    actionCost: 2,
+    requires: { unit: 'friendly', direction: true },
+    effects: [
+      {
+        type: 'face',
+        unitParam: 'unitId',
+        directionParam: 'direction',
+      },
+      {
+        type: 'move',
+        unitParam: 'unitId',
+        direction: { type: 'param', key: 'direction' },
+        distance: 4,
+      },
+      {
+        type: 'attack',
+        unitParam: 'unitId',
+        mode: 'nearest',
+        directions: 'facing',
+        damage: 2,
+      },
+    ],
+  },
   spell_lightning: {
     id: 'spell_lightning',
     name: 'Lightning',
@@ -257,23 +310,89 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  spell_trip: {
+    id: 'spell_trip',
+    name: 'Trip',
+    description: "Target unit can't move this turn.",
+    type: 'spell',
+    actionCost: 0,
+    requires: { unit: 'any' },
+    effects: [
+      {
+        type: 'applyUnitModifier',
+        unitParam: 'unitId',
+        modifier: 'cannotMove',
+        turns: 1,
+      },
+    ],
+  },
+  spell_snare: {
+    id: 'spell_snare',
+    name: 'Snare',
+    description: "Target unit can't move for 2 turns.",
+    type: 'spell',
+    requires: { unit: 'any' },
+    effects: [
+      {
+        type: 'applyUnitModifier',
+        unitParam: 'unitId',
+        modifier: 'cannotMove',
+        turns: 2,
+      },
+    ],
+  },
+  spell_dispel: {
+    id: 'spell_dispel',
+    name: 'Dispel',
+    description: 'Remove all buffs and debuffs from a target unit.',
+    type: 'spell',
+    requires: { unit: 'any' },
+    canTargetBarricades: true,
+    effects: [
+      {
+        type: 'clearUnitModifiers',
+        unitParam: 'unitId',
+      },
+    ],
+  },
+  spell_divination: {
+    id: 'spell_divination',
+    name: 'Divination',
+    description: 'Draw 2 extra cards next turn.',
+    type: 'spell',
+    requires: {},
+    effects: [
+      {
+        type: 'applyPlayerModifier',
+        modifier: 'extraDraw',
+        amount: 2,
+        turns: 1,
+      },
+    ],
+  },
 }
 
 export const STARTING_DECK: CardDefId[] = [
   'reinforce_spawn',
   'reinforce_boost',
   'reinforce_boost_spawn',
+  'reinforce_barricade',
   'move_forward',
   'move_any',
   'move_forward_face',
+  'move_pivot',
   'attack_line',
   'attack_fwd_lr',
   'attack_fwd',
   'attack_arrow',
+  'attack_charge',
   'spell_lightning',
   'spell_meteor',
-  'move_pivot',
   'spell_invest',
+  'spell_trip',
+  'spell_snare',
+  'spell_dispel',
+  'spell_divination',
 ]
 
 export const DIRECTION_LABELS: { label: string; value: Direction }[] = DIRECTION_NAMES.map((name, index) => ({

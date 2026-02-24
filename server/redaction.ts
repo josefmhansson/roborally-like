@@ -36,6 +36,7 @@ export function buildStateViewForState(
     units[unitId] = {
       ...unit,
       pos: { ...unit.pos },
+      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
 
@@ -98,6 +99,7 @@ function cloneOrders(orders: Order[]): Order[] {
     params: {
       ...order.params,
       tile: order.params.tile ? { ...order.params.tile } : undefined,
+      tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
     },
   }))
 }

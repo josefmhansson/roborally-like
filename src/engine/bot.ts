@@ -1,5 +1,5 @@
 import { CARD_DEFS } from './cards'
-import { getSpawnTiles, planOrder, simulatePlannedState } from './game'
+import { canCardTargetUnit, getBarricadeSpawnTiles, getSpawnTiles, planOrder, simulatePlannedState } from './game'
 import { neighbor, offsetToAxial } from './hex'
 import type { CardDefId, Direction, GameState, Hex, Order, OrderParams, PlayerId, Unit } from './types'
 
@@ -255,6 +255,20 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
     return refs.map((unitId) => ({ unitId }))
   }
 
+  if (defId === 'reinforce_barricade') {
+    const candidates = getBarricadeSpawnTiles(projected, player)
+    const params: OrderParams[] = []
+    for (let first = 0; first < candidates.length; first += 1) {
+      for (let second = first + 1; second < candidates.length; second += 1) {
+        params.push({
+          tile: { ...candidates[first] },
+          tile2: { ...candidates[second] },
+        })
+      }
+    }
+    return params
+  }
+
   return [{}]
 }
 
@@ -320,7 +334,7 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   const refs = getFriendlyUnitRefs(state, projected, player)
   if (refs.length === 0) return []
   const params: OrderParams[] = []
-  if (defId === 'attack_fwd') {
+  if (defId === 'attack_fwd' || defId === 'attack_charge') {
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
         params.push({ unitId: ref.refId, direction })
@@ -335,16 +349,21 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   return params
 }
 
-function generateSpellParams(state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
-  if (defId === 'spell_invest') return [{}]
+function generateSpellParams(_state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
+  if (defId === 'spell_invest' || defId === 'spell_divination') return [{}]
 
-  if (defId === 'spell_lightning') {
-    const enemyUnits = Object.values(state.units).filter((unit) => unit.kind === 'unit' && unit.owner !== player)
+  if (
+    defId === 'spell_lightning' ||
+    defId === 'spell_trip' ||
+    defId === 'spell_snare' ||
+    defId === 'spell_dispel'
+  ) {
+    const targetableUnits = getTargetableUnitsForCard(projected, defId)
+    const enemyUnits = targetableUnits.filter((unit) => unit.owner !== player)
     if (enemyUnits.length > 0) {
       return enemyUnits.map((unit) => ({ unitId: unit.id }))
     }
-    const anyUnits = Object.values(state.units).filter((unit) => unit.kind === 'unit')
-    return anyUnits.map((unit) => ({ unitId: unit.id }))
+    return targetableUnits.map((unit) => ({ unitId: unit.id }))
   }
 
   if (defId === 'spell_meteor') {
@@ -373,6 +392,10 @@ function generateSpellParams(state: GameState, projected: GameState, player: Pla
   }
 
   return [{}]
+}
+
+function getTargetableUnitsForCard(state: GameState, defId: CardDefId): Unit[] {
+  return Object.values(state.units).filter((unit) => canCardTargetUnit(defId, unit))
 }
 
 function addHexCandidate(map: Map<string, Hex>, hex: Hex): void {
@@ -658,6 +681,7 @@ function serializeParams(params: OrderParams): string {
     params.unitId ?? '',
     params.unitId2 ?? '',
     params.tile ? `${params.tile.q},${params.tile.r}` : '',
+    params.tile2 ? `${params.tile2.q},${params.tile2.r}` : '',
     params.direction === undefined ? '' : String(params.direction),
     params.moveDirection === undefined ? '' : String(params.moveDirection),
     params.faceDirection === undefined ? '' : String(params.faceDirection),
@@ -710,6 +734,7 @@ function cloneGameState(source: GameState): GameState {
     units[unitId] = {
       ...unit,
       pos: { ...unit.pos },
+      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
 
@@ -719,12 +744,14 @@ function cloneGameState(source: GameState): GameState {
       hand: source.players[0].hand.map((card) => ({ ...card })),
       discard: source.players[0].discard.map((card) => ({ ...card })),
       orders: source.players[0].orders.map(cloneOrder),
+      modifiers: source.players[0].modifiers.map((modifier) => ({ ...modifier })),
     },
     {
       deck: source.players[1].deck.map((card) => ({ ...card })),
       hand: source.players[1].hand.map((card) => ({ ...card })),
       discard: source.players[1].discard.map((card) => ({ ...card })),
       orders: source.players[1].orders.map(cloneOrder),
+      modifiers: source.players[1].modifiers.map((modifier) => ({ ...modifier })),
     },
   ]
 
@@ -761,6 +788,7 @@ function cloneParams(params: OrderParams): OrderParams {
   return {
     ...params,
     tile: params.tile ? { ...params.tile } : undefined,
+    tile2: params.tile2 ? { ...params.tile2 } : undefined,
   }
 }
 

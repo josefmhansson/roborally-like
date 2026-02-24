@@ -194,7 +194,7 @@ function buildGenericScene(ctx: CardArtBuildContext): CardArtScene {
   } else if (isAnyTileCard(ctx.def.requires)) {
     buildAnyTileScene(panels[0], ctx)
   } else if (ctx.def.effects.some((effect) => effect.type === 'spawn')) {
-    buildSpawnScene(panels[0])
+    buildSpawnScene(panels[0], ctx.def.requires.direction === true, ctx.def.requires.tile2 === 'barricade')
   } else {
     buildFriendlyUnitScene(panels, ctx, visualRange)
   }
@@ -308,16 +308,28 @@ function buildAnyTileScene(panel: CardArtPanel, ctx: CardArtBuildContext): void 
   })
 }
 
-function buildSpawnScene(panel: CardArtPanel): void {
+function buildSpawnScene(panel: CardArtPanel, requiresDirection: boolean, hasSecondTile: boolean): void {
+  const secondTile = hasSecondTile ? addHex(ORIGIN, DIRECTIONS[0]) : null
   panel.primitives.push({ type: 'tileHighlight', tile: ORIGIN, mode: 'selected' })
+  if (secondTile) {
+    panel.primitives.push({ type: 'tileHighlight', tile: secondTile, mode: 'selected' })
+  }
   panel.primitives.push({ type: 'spawnRequirement', tile: ORIGIN })
+  if (secondTile) {
+    panel.primitives.push({ type: 'spawnRequirement', tile: secondTile })
+  }
   panel.primitives.push({ type: 'unit', tile: ORIGIN, owner: 'friendly', facing: 0, showFacing: false })
-  panel.primitives.push({
-    type: 'directionArrows',
-    tile: ORIGIN,
-    directions: [0, 1, 2, 3, 4, 5],
-    mode: 'option',
-  })
+  if (secondTile) {
+    panel.primitives.push({ type: 'unit', tile: secondTile, owner: 'friendly', facing: 0, showFacing: false })
+  }
+  if (requiresDirection) {
+    panel.primitives.push({
+      type: 'directionArrows',
+      tile: ORIGIN,
+      directions: [0, 1, 2, 3, 4, 5],
+      mode: 'option',
+    })
+  }
 }
 
 type MovementArtSemantics = {
