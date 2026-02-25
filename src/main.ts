@@ -2,7 +2,7 @@ import './style.css'
 import { CARD_DEFS, STARTING_DECK } from './engine/cards'
 import { DIRECTIONS, hexToPixel, neighbor, rotateDirection } from './engine/hex'
 import {
-  canCardTargetUnit,
+  canCardSelectUnit,
   createGameState,
   DEFAULT_SETTINGS,
   getBarricadeSpawnTiles,
@@ -17,6 +17,7 @@ import {
 import { buildBotPlan } from './engine/bot'
 import { generateClusteredBotDeck } from './engine/botDeck'
 import { getCardArtSvg } from './ui/cardArt'
+import { createQrSvgDataUrl } from './ui/qr'
 import { OnlineClient } from './net/client'
 import type { OnlineSessionState, PlayMode } from './net/types'
 import type { ClientGameCommand, RoomSetup, ServerMessage } from './shared/net/protocol'
@@ -942,11 +943,6 @@ function setOnlineLinks(message: string): void {
   onlineLinksEl.textContent = message
 }
 
-function buildInviteQrUrl(inviteLink: string): string {
-  const data = encodeURIComponent(inviteLink)
-  return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${data}`
-}
-
 function renderOnlineInviteLinks(selfSeat: PlayerId, inviteLinks: { seat0: string; seat1: string }): void {
   const opponentSeat: PlayerId = selfSeat === 0 ? 1 : 0
   const opponentLink = opponentSeat === 0 ? inviteLinks.seat0 : inviteLinks.seat1
@@ -1002,16 +998,21 @@ function renderOnlineInviteLinks(selfSeat: PlayerId, inviteLinks: { seat0: strin
 
   container.appendChild(actions)
 
-  const qr = document.createElement('img')
-  qr.className = 'online-invite-qr'
-  qr.alt = `QR code for Player ${opponentSeat + 1} invite`
-  qr.loading = 'lazy'
-  qr.src = buildInviteQrUrl(opponentLink)
-  container.appendChild(qr)
-
   const note = document.createElement('div')
   note.className = 'online-invite-note'
-  note.textContent = 'Scan QR from phone camera or tap/copy the invite link.'
+  note.textContent = 'Scan the QR code with your phone camera, or copy the invite link.'
+
+  try {
+    const qr = document.createElement('img')
+    qr.className = 'online-invite-qr'
+    qr.alt = `QR code for Player ${opponentSeat + 1} invite`
+    qr.loading = 'lazy'
+    qr.src = createQrSvgDataUrl(opponentLink)
+    container.appendChild(qr)
+  } catch {
+    note.textContent = 'QR could not be generated locally for this link. Copy the invite link instead.'
+  }
+
   container.appendChild(note)
 
   onlineLinksEl.appendChild(container)
@@ -2328,6 +2329,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'cannotMove') {
     return { label: 'Cannot move', kind: 'debuff' }
   }
+  if (modifier.type === 'burn') {
+    return { label: 'Burn', kind: 'debuff' }
+  }
   return { label: modifier.type, kind: 'debuff' }
 }
 
@@ -2381,7 +2385,10 @@ function renderUnitStatusPopover(): void {
       ? unit.modifiers
           .map((modifier) => {
             const details = describeUnitModifier(modifier)
-            const turns = `${modifier.turnsRemaining} turn${modifier.turnsRemaining === 1 ? '' : 's'}`
+            const turns =
+              modifier.turnsRemaining === 'indefinite'
+                ? 'indefinite'
+                : `${modifier.turnsRemaining} turn${modifier.turnsRemaining === 1 ? '' : 's'}`
             return `<li class="unit-status-row ${details.kind}"><span class="unit-status-kind">${details.kind}</span><span class="unit-status-name">${details.label}</span><span class="unit-status-turns">${turns}</span></li>`
           })
           .join('')
@@ -3587,17 +3594,22 @@ function renderCardArt(defId: CardDefId): string {
 }
 
 function renderCardFace(
-  def: { id: CardDefId; name: string; description: string; actionCost?: number },
+  def: { id: CardDefId; name: string; description: string; actionCost?: number; keywords?: string[] },
   options: { metaText?: string; orderIndex?: number } = {}
 ): string {
   const apCost = def.actionCost ?? 1
   const meta = options.metaText ? `<div class="card-meta">${options.metaText}</div>` : ''
+  const keywords =
+    def.keywords && def.keywords.length > 0
+      ? `<div class="card-keywords">${def.keywords.map((keyword) => `<span class="card-keyword">${keyword}</span>`).join('')}</div>`
+      : ''
   const orderIndex = options.orderIndex ? `<div class="order-index">#${options.orderIndex}</div>` : ''
   return [
     renderApBadge(apCost),
     `<div class="card-title">${def.name}</div>`,
     renderCardArt(def.id),
     `<div class="card-desc">${def.description}</div>`,
+    keywords,
     meta,
     orderIndex,
   ].join('')
@@ -4221,6 +4233,26 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
     }
   }
 
+  const animatedMoveIds = new Set<string>()
+  animations.forEach((animation) => {
+    if (animation.type === 'move') {
+      animatedMoveIds.add(animation.unitId)
+    }
+  })
+  Object.entries(before).forEach(([unitId, previous]) => {
+    if (animatedMoveIds.has(unitId)) return
+    const afterUnit = state.units[unitId]
+    if (!afterUnit) return
+    if (previous.pos.q === afterUnit.pos.q && previous.pos.r === afterUnit.pos.r) return
+    animations.push({
+      type: 'move',
+      unitId,
+      from: previous.pos,
+      to: afterUnit.pos,
+      duration: MOVE_DURATION_MS,
+    })
+  })
+
   Object.entries(before).forEach(([unitId, unit]) => {
     if (state.units[unitId]) return
     pendingDeathUnits.set(unitId, {
@@ -4551,9 +4583,9 @@ function getSelectableHexes(
 ): Hex[] {
   if (step === 'unit') {
     const requirement = CARD_DEFS[defId].requires.unit
-    const units = Object.values(snapshot.units).filter((unit) => canCardTargetUnit(defId, unit))
+    const units = Object.values(snapshot.units).filter((unit) => canCardSelectUnit(defId, unit))
     if (requirement === 'any') {
-      const currentUnits = Object.values(state.units).filter((unit) => canCardTargetUnit(defId, unit))
+      const currentUnits = Object.values(state.units).filter((unit) => canCardSelectUnit(defId, unit))
       return dedupeHexes([
         ...units.map((unit) => ({ ...unit.pos })),
         ...currentUnits.map((unit) => ({ ...unit.pos })),
@@ -4567,7 +4599,7 @@ function getSelectableHexes(
 
   if (step === 'unit2') {
     const units = Object.values(snapshot.units).filter(
-      (unit) => unit.owner === player && canCardTargetUnit(defId, unit)
+      (unit) => unit.owner === player && canCardSelectUnit(defId, unit)
     )
     const unitHexes = units.map((unit) => ({ ...unit.pos }))
     const planned = getPlannedSpawnTiles(player)
@@ -4735,11 +4767,11 @@ function resolveSelectableUnitId(
 ): string | null {
   if (requirement === 'any') {
     const unit = Object.values(selectionState.units).find(
-      (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardTargetUnit(defId, item)
+      (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardSelectUnit(defId, item)
     )
     if (unit) return unit.id
     const currentUnit = Object.values(state.units).find(
-      (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardTargetUnit(defId, item)
+      (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardSelectUnit(defId, item)
     )
     return currentUnit ? currentUnit.id : null
   }
@@ -4749,7 +4781,7 @@ function resolveSelectableUnitId(
       item.pos.q === hex.q &&
       item.pos.r === hex.r &&
       item.owner === player &&
-      canCardTargetUnit(defId, item)
+      canCardSelectUnit(defId, item)
   )
   if (unit) {
     if (state.units[unit.id]) {

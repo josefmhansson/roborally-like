@@ -310,16 +310,23 @@ function clamp(value: number, min: number, max: number): number {
 
 function normalizeSettings(input?: GameSettings): GameSettings {
   if (!input) return { ...DEFAULT_SETTINGS }
+  const defaults = DEFAULT_SETTINGS
   return {
-    boardRows: clamp(Number(input.boardRows ?? DEFAULT_SETTINGS.boardRows), 4, 14),
-    boardCols: clamp(Number(input.boardCols ?? DEFAULT_SETTINGS.boardCols), 4, 14),
-    strongholdStrength: clamp(Number(input.strongholdStrength ?? DEFAULT_SETTINGS.strongholdStrength), 1, 20),
-    deckSize: clamp(Number(input.deckSize ?? DEFAULT_SETTINGS.deckSize), 5, 40),
-    drawPerTurn: clamp(Number(input.drawPerTurn ?? DEFAULT_SETTINGS.drawPerTurn), 1, 10),
-    maxCopies: clamp(Number(input.maxCopies ?? DEFAULT_SETTINGS.maxCopies), 1, 10),
-    actionBudgetP1: clamp(Number(input.actionBudgetP1 ?? DEFAULT_SETTINGS.actionBudgetP1), 1, 10),
-    actionBudgetP2: clamp(Number(input.actionBudgetP2 ?? DEFAULT_SETTINGS.actionBudgetP2), 1, 10),
+    boardRows: toBoundedInt(input.boardRows, defaults.boardRows, 4, 14),
+    boardCols: toBoundedInt(input.boardCols, defaults.boardCols, 4, 14),
+    strongholdStrength: toBoundedInt(input.strongholdStrength, defaults.strongholdStrength, 1, 20),
+    deckSize: toBoundedInt(input.deckSize, defaults.deckSize, 5, 40),
+    drawPerTurn: toBoundedInt(input.drawPerTurn, defaults.drawPerTurn, 1, 10),
+    maxCopies: toBoundedInt(input.maxCopies, defaults.maxCopies, 1, 10),
+    actionBudgetP1: toBoundedInt(input.actionBudgetP1, defaults.actionBudgetP1, 1, 10),
+    actionBudgetP2: toBoundedInt(input.actionBudgetP2, defaults.actionBudgetP2, 1, 10),
   }
+}
+
+function toBoundedInt(input: unknown, fallback: number, min: number, max: number): number {
+  const numeric = typeof input === 'number' ? input : Number(input)
+  if (!Number.isFinite(numeric)) return fallback
+  return clamp(Math.floor(numeric), min, max)
 }
 
 function normalizeLoadouts(

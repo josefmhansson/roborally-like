@@ -17,10 +17,13 @@ export type CardDef = {
   description: string
   type: CardType
   requires: CardTargetRequirement
+  keywords?: CardKeyword[]
   canTargetBarricades?: boolean
   actionCost?: number
   effects: CardEffect[]
 }
+
+export type CardKeyword = 'Priority'
 
 export type { CardEffect }
 
@@ -98,6 +101,21 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  reinforce_quick_boost: {
+    id: 'reinforce_quick_boost',
+    name: 'Quick Boost',
+    description: 'Increase a unit strength by 1.',
+    type: 'reinforcement',
+    keywords: ['Priority'],
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'boost',
+        amount: 1,
+        unitParam: 'unitId',
+      },
+    ],
+  },
   move_forward: {
     id: 'move_forward',
     name: 'Advance',
@@ -150,6 +168,22 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'face',
         unitParam: 'unitId',
         directionParam: 'faceDirection',
+      },
+    ],
+  },
+  move_quickstep: {
+    id: 'move_quickstep',
+    name: 'Quickstep',
+    description: 'Take one step in the forward direction.',
+    type: 'movement',
+    keywords: ['Priority'],
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'move',
+        unitParam: 'unitId',
+        direction: 'facing',
+        distance: 1,
       },
     ],
   },
@@ -251,6 +285,65 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  attack_jab: {
+    id: 'attack_jab',
+    name: 'Jab',
+    description: 'Face a direction, then deal 2 damage to an adjacent unit.',
+    type: 'attack',
+    keywords: ['Priority'],
+    requires: { unit: 'friendly', direction: true },
+    effects: [
+      {
+        type: 'face',
+        unitParam: 'unitId',
+        directionParam: 'direction',
+      },
+      {
+        type: 'attack',
+        unitParam: 'unitId',
+        mode: 'nearest',
+        directions: 'facing',
+        damage: 2,
+      },
+    ],
+  },
+  attack_shove: {
+    id: 'attack_shove',
+    name: 'Shove',
+    description: 'Push an adjacent unit backwards 1 tile. If occupied, deal 3 damage to both.',
+    type: 'attack',
+    requires: { unit: 'friendly', direction: true },
+    effects: [
+      {
+        type: 'face',
+        unitParam: 'unitId',
+        directionParam: 'direction',
+      },
+      {
+        type: 'shove',
+        unitParam: 'unitId',
+        direction: 'facing',
+        distance: 1,
+        collisionDamage: 3,
+      },
+    ],
+  },
+  attack_whirlwind: {
+    id: 'attack_whirlwind',
+    name: 'Whirlwind',
+    description: 'Deal 3 damage to surrounding units and push them back 1 tile if possible.',
+    type: 'attack',
+    actionCost: 3,
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'whirlwind',
+        unitParam: 'unitId',
+        damage: 3,
+        pushDistance: 1,
+      },
+    ],
+  },
   spell_lightning: {
     id: 'spell_lightning',
     name: 'Lightning',
@@ -313,7 +406,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   spell_trip: {
     id: 'spell_trip',
     name: 'Trip',
-    description: "Target unit can't move this turn.",
+    description: "Target unit can't move for 2 turns.",
     type: 'spell',
     actionCost: 0,
     requires: { unit: 'any' },
@@ -322,14 +415,14 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'applyUnitModifier',
         unitParam: 'unitId',
         modifier: 'cannotMove',
-        turns: 1,
+        turns: 2,
       },
     ],
   },
   spell_snare: {
     id: 'spell_snare',
     name: 'Snare',
-    description: "Target unit can't move for 2 turns.",
+    description: "Target unit can't move for 4 turns.",
     type: 'spell',
     requires: { unit: 'any' },
     effects: [
@@ -337,7 +430,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'applyUnitModifier',
         unitParam: 'unitId',
         modifier: 'cannotMove',
-        turns: 2,
+        turns: 4,
       },
     ],
   },
@@ -370,6 +463,21 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  spell_burn: {
+    id: 'spell_burn',
+    name: 'Burn',
+    description: 'Apply Burn to a unit (takes 1 damage at end of each turn).',
+    type: 'spell',
+    requires: { unit: 'any' },
+    effects: [
+      {
+        type: 'applyUnitModifier',
+        unitParam: 'unitId',
+        modifier: 'burn',
+        turns: 'indefinite',
+      },
+    ],
+  },
 }
 
 export const STARTING_DECK: CardDefId[] = [
@@ -377,15 +485,20 @@ export const STARTING_DECK: CardDefId[] = [
   'reinforce_boost',
   'reinforce_boost_spawn',
   'reinforce_barricade',
+  'reinforce_quick_boost',
   'move_forward',
   'move_any',
   'move_forward_face',
+  'move_quickstep',
   'move_pivot',
   'attack_line',
   'attack_fwd_lr',
   'attack_fwd',
   'attack_arrow',
   'attack_charge',
+  'attack_jab',
+  'attack_shove',
+  'attack_whirlwind',
   'spell_lightning',
   'spell_meteor',
   'spell_invest',
@@ -393,6 +506,7 @@ export const STARTING_DECK: CardDefId[] = [
   'spell_snare',
   'spell_dispel',
   'spell_divination',
+  'spell_burn',
 ]
 
 export const DIRECTION_LABELS: { label: string; value: Direction }[] = DIRECTION_NAMES.map((name, index) => ({

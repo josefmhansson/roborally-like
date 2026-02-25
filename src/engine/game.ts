@@ -5,6 +5,7 @@ import type {
   DirectionSource,
   GameState,
   Hex,
+  ModifierDuration,
   Order,
   OrderParams,
   PlayerId,
@@ -50,7 +51,9 @@ function isDamageableUnit(unit: Unit): boolean {
 }
 
 function isCardAllowedToTargetBarricades(defId: CardDefId): boolean {
-  return CARD_DEFS[defId].canTargetBarricades === true
+  const def = CARD_DEFS[defId]
+  if (typeof def.canTargetBarricades === 'boolean') return def.canTargetBarricades
+  return true
 }
 
 export function canCardTargetUnit(defId: CardDefId, unit: Unit): boolean {
@@ -59,8 +62,45 @@ export function canCardTargetUnit(defId: CardDefId, unit: Unit): boolean {
   return true
 }
 
-function hasUnitModifier(unit: Unit, modifierType: 'cannotMove'): boolean {
-  return unit.modifiers.some((modifier) => modifier.type === modifierType && modifier.turnsRemaining > 0)
+function isActiveDuration(duration: ModifierDuration): boolean {
+  return duration === 'indefinite' || duration > 0
+}
+
+function hasUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['type']): boolean {
+  return unit.modifiers.some((modifier) => modifier.type === modifierType && isActiveDuration(modifier.turnsRemaining))
+}
+
+function isActingUnitRequirement(defId: CardDefId): boolean {
+  const def = CARD_DEFS[defId]
+  if (def.requires.unit !== 'friendly') return false
+  return def.effects.some(
+    (effect) =>
+      (effect.type === 'move' ||
+        effect.type === 'face' ||
+        effect.type === 'attack' ||
+        effect.type === 'shove' ||
+        effect.type === 'whirlwind') &&
+      effect.unitParam === 'unitId'
+  )
+}
+
+export function canCardSelectUnit(defId: CardDefId, unit: Unit): boolean {
+  if (isActingUnitRequirement(defId)) {
+    return unit.kind === 'unit'
+  }
+  return canCardTargetUnit(defId, unit)
+}
+
+function mergeDurations(current: ModifierDuration, incoming: ModifierDuration): ModifierDuration {
+  if (current === 'indefinite' || incoming === 'indefinite') return 'indefinite'
+  return Math.max(current, incoming)
+}
+
+function normalizeDuration(turns: ModifierDuration): ModifierDuration | null {
+  if (turns === 'indefinite') return 'indefinite'
+  const normalized = Math.max(0, Math.floor(turns))
+  if (normalized <= 0) return null
+  return normalized
 }
 
 function pickWeightedKind(weights: Array<{ kind: TileKind; weight: number }>): TileKind {
@@ -308,13 +348,15 @@ function consumePlayerDrawModifiers(state: GameState, player: PlayerId): number 
   const playerState = state.players[player]
   let bonusDraw = 0
   playerState.modifiers.forEach((modifier) => {
-    if (modifier.turnsRemaining <= 0) return
+    if (!isActiveDuration(modifier.turnsRemaining)) return
     if (modifier.type === 'extraDraw') {
       bonusDraw += modifier.amount
     }
-    modifier.turnsRemaining -= 1
+    if (modifier.turnsRemaining !== 'indefinite') {
+      modifier.turnsRemaining -= 1
+    }
   })
-  playerState.modifiers = playerState.modifiers.filter((modifier) => modifier.turnsRemaining > 0)
+  playerState.modifiers = playerState.modifiers.filter((modifier) => isActiveDuration(modifier.turnsRemaining))
   return Math.max(0, bonusDraw)
 }
 
@@ -329,7 +371,6 @@ export function planOrder(
   const cardIndex = playerState.hand.findIndex((card) => card.id === cardId)
   if (cardIndex === -1) return null
   const card = playerState.hand[cardIndex]
-  const def = CARD_DEFS[card.defId]
   const nextCost = getOrderCost(card.defId)
   const budget =
     state.actionBudgets[player] ??
@@ -350,7 +391,7 @@ export function planOrder(
     params,
   }
   playerState.orders.push(order)
-  state.log.push(`Player ${player + 1} plans ${def.name}.`)
+  state.log.push(`Player ${player + 1} plans a card.`)
   return order
 }
 
@@ -378,17 +419,45 @@ function playersReady(state: GameState): boolean {
   return state.ready[0] && state.ready[1]
 }
 
+function isPriorityOrder(order: Order): boolean {
+  return CARD_DEFS[order.defId].keywords?.includes('Priority') ?? false
+}
+
 function buildActionQueue(state: GameState): Order[] {
-  const active = state.activePlayer
-  const other: PlayerId = active === 0 ? 1 : 0
+  const nextIndex: [number, number] = [0, 0]
   const queue: Order[] = []
-  const maxOrders = Math.max(state.players[0].orders.length, state.players[1].orders.length)
-  for (let i = 0; i < maxOrders; i += 1) {
-    const activeOrder = state.players[active].orders[i]
-    const otherOrder = state.players[other].orders[i]
-    if (activeOrder) queue.push(activeOrder)
-    if (otherOrder) queue.push(otherOrder)
+  let turn: PlayerId = state.activePlayer
+
+  for (;;) {
+    const other: PlayerId = turn === 0 ? 1 : 0
+    const turnOrder = state.players[turn].orders[nextIndex[turn]]
+    const otherOrder = state.players[other].orders[nextIndex[other]]
+
+    if (!turnOrder && !otherOrder) break
+
+    let next: Order | undefined
+    if (!turnOrder) {
+      next = otherOrder
+    } else if (!otherOrder) {
+      next = turnOrder
+    } else {
+      const turnPriority = isPriorityOrder(turnOrder)
+      const otherPriority = isPriorityOrder(otherOrder)
+      if (turnPriority && !otherPriority) {
+        next = turnOrder
+      } else if (!turnPriority && otherPriority) {
+        next = otherOrder
+      } else {
+        next = turnOrder
+      }
+    }
+
+    if (!next) break
+    queue.push(next)
+    nextIndex[next.player] += 1
+    turn = turn === 0 ? 1 : 0
   }
+
   return queue
 }
 
@@ -610,12 +679,27 @@ function finishTurn(state: GameState): void {
 }
 
 function tickUnitModifiers(state: GameState): void {
-  Object.values(state.units).forEach((unit) => {
+  const unitIds = Object.keys(state.units)
+  unitIds.forEach((unitId) => {
+    const unit = state.units[unitId]
+    if (!unit) return
     if (unit.modifiers.length === 0) return
-    unit.modifiers.forEach((modifier) => {
+
+    const burnStacks = unit.modifiers.filter(
+      (modifier) => modifier.type === 'burn' && isActiveDuration(modifier.turnsRemaining)
+    ).length
+    if (burnStacks > 0) {
+      state.log.push(`Burn deals ${burnStacks} damage to unit ${unit.id}.`)
+      applyDamage(state, unit, burnStacks)
+    }
+
+    const afterDamage = state.units[unitId]
+    if (!afterDamage) return
+    afterDamage.modifiers.forEach((modifier) => {
+      if (modifier.turnsRemaining === 'indefinite') return
       modifier.turnsRemaining -= 1
     })
-    unit.modifiers = unit.modifiers.filter((modifier) => modifier.turnsRemaining > 0)
+    afterDamage.modifiers = afterDamage.modifiers.filter((modifier) => isActiveDuration(modifier.turnsRemaining))
   })
 }
 
@@ -635,13 +719,20 @@ function validateOrderParams(
       if (!unit) return false
       if (!canCardTargetUnit(defId, unit)) return false
     } else {
+      const requireActingUnit = isActingUnitRequirement(defId)
       if (isPlannedUnitReference(state, player, params.unitId)) {
-        // Planned spawn is allowed as a future unit reference.
+        if (!requireActingUnit) {
+          // Planned spawn is allowed as a future unit reference.
+        }
       } else {
         const unit = state.units[params.unitId]
         if (!unit) return false
         if (unit.owner !== player) return false
-        if (!canCardTargetUnit(defId, unit)) return false
+        if (requireActingUnit) {
+          if (unit.kind !== 'unit') return false
+        } else if (!canCardTargetUnit(defId, unit)) {
+          return false
+        }
       }
     }
   }
@@ -734,16 +825,17 @@ function boostUnit(state: GameState, unit: Unit, amount: number): void {
   state.log.push(`Unit ${unit.id} gains ${amount} strength.`)
 }
 
-function addUnitModifier(state: GameState, unit: Unit, modifier: 'cannotMove', turns: number): void {
-  const normalizedTurns = Math.max(0, Math.floor(turns))
-  if (normalizedTurns <= 0) return
+function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers'][number]['type'], turns: ModifierDuration): void {
+  const normalizedTurns = normalizeDuration(turns)
+  if (!normalizedTurns) return
   const existing = unit.modifiers.find((entry) => entry.type === modifier)
   if (existing) {
-    existing.turnsRemaining = Math.max(existing.turnsRemaining, normalizedTurns)
+    existing.turnsRemaining = mergeDurations(existing.turnsRemaining, normalizedTurns)
   } else {
     unit.modifiers.push({ type: modifier, turnsRemaining: normalizedTurns })
   }
-  state.log.push(`Unit ${unit.id} is affected: ${modifier} for ${normalizedTurns} turn(s).`)
+  const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
+  state.log.push(`Unit ${unit.id} is affected: ${modifier} ${durationLabel}.`)
 }
 
 function clearUnitModifiers(state: GameState, unit: Unit): void {
@@ -757,17 +849,17 @@ function addPlayerModifier(
   player: PlayerId,
   modifier: 'extraDraw',
   amount: number,
-  turns: number
+  turns: ModifierDuration
 ): void {
   const normalizedAmount = Math.max(0, Math.floor(amount))
-  const normalizedTurns = Math.max(0, Math.floor(turns))
-  if (normalizedAmount <= 0 || normalizedTurns <= 0) return
+  const normalizedTurns = normalizeDuration(turns)
+  if (normalizedAmount <= 0 || !normalizedTurns) return
   const playerState = state.players[player]
   const existing = playerState.modifiers.find(
     (entry) => entry.type === modifier && entry.amount === normalizedAmount
   )
   if (existing) {
-    existing.turnsRemaining = Math.max(existing.turnsRemaining, normalizedTurns)
+    existing.turnsRemaining = mergeDurations(existing.turnsRemaining, normalizedTurns)
   } else {
     playerState.modifiers.push({
       type: modifier,
@@ -775,8 +867,9 @@ function addPlayerModifier(
       turnsRemaining: normalizedTurns,
     })
   }
+  const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
   state.log.push(
-    `Player ${player + 1} gains ${normalizedAmount} extra draw for ${normalizedTurns} turn(s).`
+    `Player ${player + 1} gains ${normalizedAmount} extra draw ${durationLabel}.`
   )
 }
 
@@ -862,6 +955,22 @@ function attackLine(state: GameState, origin: Unit, direction: Direction, damage
       applyDamage(state, target, damage)
     }
   }
+}
+
+function pushUnit(state: GameState, unit: Unit, direction: Direction, distance: number): boolean {
+  if (distance <= 0) return false
+  if (unit.kind === 'stronghold') return false
+  let current = { ...unit.pos }
+  for (let step = 0; step < distance; step += 1) {
+    const next = neighbor(current, direction)
+    if (!inBounds(state.boardRows, state.boardCols, next)) return false
+    if (getUnitAt(state, next)) return false
+    current = next
+  }
+  if (sameHex(current, unit.pos)) return false
+  setUnitPosition(unit, current)
+  state.log.push(`Unit ${unit.id} is pushed to ${current.q},${current.r}.`)
+  return true
 }
 
 function applyOrder(state: GameState, order: Order): void {
@@ -993,6 +1102,26 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       if (!unit || unit.kind !== 'unit') return false
       const directions = resolveDirections(unit.facing, params, effect.directions)
       if (directions.length === 0) return false
+      continue
+    }
+
+    if (effect.type === 'shove') {
+      if (!params.unitId) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || unit.kind !== 'unit') return false
+      const direction = resolveDirection(unit.facing, params, effect.direction)
+      if (direction === null) return false
+      continue
+    }
+
+    if (effect.type === 'whirlwind') {
+      if (!params.unitId) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || unit.kind !== 'unit') return false
       continue
     }
   }
@@ -1145,6 +1274,71 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
           attackNearestTile(state, unit, dir, damage)
         }
       })
+      return
+    }
+    case 'shove': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || actingUnit.kind !== 'unit') return
+
+      const direction = resolveDirection(actingUnit.facing, params, effect.direction)
+      if (direction === null) return
+      const targetTile = neighbor(actingUnit.pos, direction)
+      if (!inBounds(state.boardRows, state.boardCols, targetTile)) return
+
+      const target = getUnitAt(state, targetTile)
+      if (!target || !canCardTargetUnit(order.defId, target)) return
+
+      let destination = { ...target.pos }
+      let blocker: Unit | null = null
+      for (let step = 0; step < effect.distance; step += 1) {
+        const next = neighbor(destination, direction)
+        if (!inBounds(state.boardRows, state.boardCols, next)) {
+          state.log.push(`Unit ${target.id} cannot be pushed.`)
+          return
+        }
+        const occupied = getUnitAt(state, next)
+        if (occupied) {
+          blocker = occupied
+          break
+        }
+        destination = next
+      }
+
+      if (blocker) {
+        state.log.push(`Unit ${target.id} collides with ${blocker.id}.`)
+        applyDamage(state, target, effect.collisionDamage)
+        const remainingBlocker = state.units[blocker.id]
+        if (remainingBlocker) {
+          applyDamage(state, remainingBlocker, effect.collisionDamage)
+        }
+        return
+      }
+
+      if (!sameHex(destination, target.pos)) {
+        setUnitPosition(target, destination)
+        state.log.push(`Unit ${target.id} is shoved to ${destination.q},${destination.r}.`)
+      }
+      return
+    }
+    case 'whirlwind': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || actingUnit.kind !== 'unit') return
+
+      for (let dir = 0 as Direction; dir < 6; dir += 1) {
+        const targetTile = neighbor(actingUnit.pos, dir)
+        if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
+        const target = getUnitAt(state, targetTile)
+        if (!target || !canCardTargetUnit(order.defId, target)) continue
+        applyDamage(state, target, effect.damage)
+
+        const surviving = state.units[target.id]
+        if (!surviving) continue
+        pushUnit(state, surviving, dir, effect.pushDistance)
+      }
       return
     }
     default:

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
+import { STARTING_DECK } from '../../src/engine/cards'
 import { RoomManager, buildRoomTelemetrySubmission, markRoomTelemetrySubmitted, recordRoomPlayedCards } from '../roomManager'
 import type { CardDefId, GameState } from '../../src/engine/types'
 
@@ -27,6 +28,35 @@ test('disconnect timeout forfeits to connected seat', () => {
   assert.equal(timedOut.some((item) => item.code === room.code), true)
   assert.equal(room.state.winner, 0)
   assert.equal(room.ended, true)
+})
+
+test('room settings sanitize non-finite numbers to safe defaults', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom({
+    settings: {
+      boardRows: Number.NaN,
+      boardCols: Number.NaN,
+      strongholdStrength: Number.NaN,
+      deckSize: Number.NaN,
+      drawPerTurn: Number.NaN,
+      maxCopies: Number.NaN,
+      actionBudgetP1: Number.NaN,
+      actionBudgetP2: Number.NaN,
+    },
+    loadouts: {
+      p1: ['reinforce_spawn'],
+      p2: ['reinforce_spawn'],
+    },
+  })
+
+  assert.equal(room.state.settings.boardRows, 6)
+  assert.equal(room.state.settings.boardCols, 6)
+  assert.equal(room.state.settings.strongholdStrength, 5)
+  assert.equal(room.state.settings.deckSize, STARTING_DECK.length)
+  assert.equal(room.state.settings.drawPerTurn, 5)
+  assert.equal(room.state.settings.maxCopies, 3)
+  assert.equal(room.state.settings.actionBudgetP1, 3)
+  assert.equal(room.state.settings.actionBudgetP2, 3)
 })
 
 test('first join loadout uses submitted P1 deck, pads to deck size, and trims excess', () => {

@@ -55,7 +55,7 @@ export function buildStateViewForState(
     turn: sourceState.turn,
     nextUnitId: sourceState.nextUnitId,
     nextOrderId: sourceState.nextOrderId,
-    log: [...sourceState.log],
+    log: buildVisibleLog(sourceState),
     winner: sourceState.winner,
     spawnedByOrder: { ...sourceState.spawnedByOrder },
     settings: { ...sourceState.settings },
@@ -102,4 +102,15 @@ function cloneOrders(orders: Order[]): Order[] {
       tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
     },
   }))
+}
+
+function buildVisibleLog(sourceState: GameState): string[] {
+  if (sourceState.phase !== 'planning') return [...sourceState.log]
+  return sourceState.log.map(redactPlanningLogEntry)
+}
+
+function redactPlanningLogEntry(entry: string): string {
+  const planningMatch = entry.match(/^(Player [12]) plans .+$/)
+  if (!planningMatch) return entry
+  return `${planningMatch[1]} plans a card.`
 }

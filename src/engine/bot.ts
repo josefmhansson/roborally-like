@@ -236,7 +236,7 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
   }
 
   if (defId === 'reinforce_boost') {
-    const refs = getFriendlyUnitRefs(state, projected, player)
+    const refs = getFriendlyUnitRefs(state, projected, player, true)
     const params: OrderParams[] = []
     for (const first of refs) {
       params.push({ unitId: first.refId })
@@ -249,10 +249,14 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
   }
 
   if (defId === 'reinforce_boost_spawn') {
-    const refs = getFriendlyUnitRefs(state, projected, player)
+    const refs = getFriendlyUnitRefs(state, projected, player, true)
       .filter((ref) => isSpawnTile(projected, player, ref.snapshot.pos))
       .map((ref) => ref.refId)
     return refs.map((unitId) => ({ unitId }))
+  }
+
+  if (defId === 'reinforce_quick_boost') {
+    return getFriendlyUnitRefs(state, projected, player, true).map((ref) => ({ unitId: ref.refId }))
   }
 
   if (defId === 'reinforce_barricade') {
@@ -327,6 +331,10 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
     return params
   }
 
+  if (defId === 'move_quickstep') {
+    return refs.map((ref) => ({ unitId: ref.refId }))
+  }
+
   return []
 }
 
@@ -334,7 +342,7 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   const refs = getFriendlyUnitRefs(state, projected, player)
   if (refs.length === 0) return []
   const params: OrderParams[] = []
-  if (defId === 'attack_fwd' || defId === 'attack_charge') {
+  if (defId === 'attack_fwd' || defId === 'attack_charge' || defId === 'attack_jab' || defId === 'attack_shove') {
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
         params.push({ unitId: ref.refId, direction })
@@ -354,6 +362,7 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
 
   if (
     defId === 'spell_lightning' ||
+    defId === 'spell_burn' ||
     defId === 'spell_trip' ||
     defId === 'spell_snare' ||
     defId === 'spell_dispel'
@@ -368,7 +377,7 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
 
   if (defId === 'spell_meteor') {
     const candidates = new Map<string, Hex>()
-    const enemyUnits = Object.values(projected.units).filter((unit) => unit.kind === 'unit' && unit.owner !== player)
+    const enemyUnits = Object.values(projected.units).filter((unit) => unit.kind !== 'stronghold' && unit.owner !== player)
     enemyUnits.forEach((unit) => {
       addHexCandidate(candidates, unit.pos)
       DIRECTIONS.forEach((direction) => {
@@ -402,14 +411,20 @@ function addHexCandidate(map: Map<string, Hex>, hex: Hex): void {
   map.set(hexKey(hex), { ...hex })
 }
 
-function getFriendlyUnitRefs(state: GameState, projected: GameState, player: PlayerId): UnitRef[] {
+function getFriendlyUnitRefs(
+  state: GameState,
+  projected: GameState,
+  player: PlayerId,
+  includeBarricades = false
+): UnitRef[] {
   const refs: UnitRef[] = []
 
   Object.values(state.units)
-    .filter((unit) => unit.owner === player && unit.kind === 'unit')
+    .filter((unit) => unit.owner === player && (unit.kind === 'unit' || (includeBarricades && unit.kind === 'barricade')))
     .forEach((unit) => {
       const projectedUnit = projected.units[unit.id]
-      if (!projectedUnit || projectedUnit.kind !== 'unit') return
+      if (!projectedUnit) return
+      if (projectedUnit.kind !== 'unit' && !(includeBarricades && projectedUnit.kind === 'barricade')) return
       refs.push({ refId: unit.id, snapshot: projectedUnit })
     })
 

@@ -952,9 +952,34 @@ body.debug-cards .card.card-placeholder::after {
   line-height: 1.4;
 }
 
+.card-keywords {
+  position: absolute;
+  top: 153px;
+  left: 18px;
+  right: 36px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.card-keyword {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 1px 5px;
+  font-size: 6.5px;
+  font-weight: 700;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+  color: #2a1800;
+  background: rgba(255, 218, 120, 0.95);
+  border: 1px solid rgba(96, 54, 8, 0.35);
+}
+
 .card-meta {
   position: absolute;
-  top: 166px;
+  top: 174px;
   left: 18px;
   right: 36px;
   font-size: 8px;
@@ -1637,8 +1662,21 @@ body.debug-cards .hidden-card {
     line-height: 1.25;
   }
 
+  .card-keywords {
+    top: 106px;
+    left: 12px;
+    right: 22px;
+    gap: 3px;
+  }
+
+  .card-keyword {
+    padding: 1px 4px;
+    font-size: 5.8px;
+    letter-spacing: 0.38px;
+  }
+
   .card-meta {
-    top: 116px;
+    top: 127px;
     left: 12px;
     right: 22px;
     font-size: 6.5px;

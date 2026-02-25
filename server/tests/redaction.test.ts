@@ -18,3 +18,35 @@ test('redaction hides opponent hand and planning orders', () => {
   assert.equal(seat1View.stateView.players[0].hand, null)
   assert.equal(seat1View.stateView.players[0].orders, null)
 })
+
+test('redaction strips detailed planned card names during planning', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom()
+  room.state.phase = 'planning'
+  room.state.log.push('Player 1 plans Meteor.')
+  room.state.log.push('Player 2 plans Charge.')
+  room.state.log.push('Turn 1 draw complete. Active player: 1.')
+
+  const seat0View = buildStateView(room, 0)
+
+  assert.equal(
+    seat0View.stateView.log.includes('Player 1 plans Meteor.'),
+    false
+  )
+  assert.equal(
+    seat0View.stateView.log.includes('Player 2 plans Charge.'),
+    false
+  )
+  assert.equal(
+    seat0View.stateView.log.includes('Player 1 plans a card.'),
+    true
+  )
+  assert.equal(
+    seat0View.stateView.log.includes('Player 2 plans a card.'),
+    true
+  )
+  assert.equal(
+    seat0View.stateView.log.includes('Turn 1 draw complete. Active player: 1.'),
+    true
+  )
+})

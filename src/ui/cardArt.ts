@@ -143,6 +143,7 @@ const AP_SEAL_HREF = resolveAssetUrl('assets/cards/AP_seal.png')
 
 export const CARD_ART_OVERRIDES: Partial<Record<CardDefId, CardArtOverrideFn>> = {
   attack_fwd: buildStrikeOverrideScene,
+  attack_shove: buildShoveOverrideScene,
   spell_invest: buildInvestOverrideScene,
 }
 
@@ -623,6 +624,40 @@ function buildInvestOverrideScene(ctx: CardArtBuildContext): CardArtScene {
         primitives: [
           { type: 'plus', tile: { q: -1, r: 0 } },
           { type: 'actionStamp', tile: { q: 1, r: 0 } },
+        ],
+      },
+    ],
+  }
+}
+
+function buildShoveOverrideScene(ctx: CardArtBuildContext): CardArtScene {
+  const target = addHex(ORIGIN, DIRECTIONS[0])
+  const pushed = addHex(target, DIRECTIONS[0])
+  return {
+    source: 'override',
+    layout: 'single',
+    range: ctx.range,
+    panels: [
+      {
+        id: 'panel-1',
+        grid: { kind: 'hex', radius: 2 },
+        primitives: [
+          { type: 'unit', tile: ORIGIN, owner: 'friendly', facing: 0, showFacing: false },
+          {
+            type: 'directionArrows',
+            tile: ORIGIN,
+            directions: [0, 1, 2, 3, 4, 5],
+            mode: 'option',
+            selectedDirection: 0,
+          },
+          { type: 'tileHighlight', tile: target, mode: 'selected' },
+          { type: 'tileHighlight', tile: pushed, mode: 'selected' },
+          { type: 'beam', from: ORIGIN, to: target, mode: 'selected' },
+          { type: 'upArrow', from: target, to: pushed },
+          { type: 'unit', tile: target, owner: 'enemy', facing: 3, selected: true, showFacing: false },
+          { type: 'unit', tile: pushed, owner: 'enemy', facing: 3, selected: true, showFacing: false },
+          { type: 'damageOrbs', tile: target, count: 3, role: 'example' },
+          { type: 'damageOrbs', tile: pushed, count: 3, role: 'example' },
         ],
       },
     ],

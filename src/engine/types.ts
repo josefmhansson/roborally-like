@@ -11,11 +11,13 @@ export type UnitId = string
 
 export type UnitKind = 'unit' | 'stronghold' | 'barricade'
 
-export type UnitModifierType = 'cannotMove'
+export type UnitModifierType = 'cannotMove' | 'burn'
+
+export type ModifierDuration = number | 'indefinite'
 
 export type UnitModifier = {
   type: UnitModifierType
-  turnsRemaining: number
+  turnsRemaining: ModifierDuration
 }
 
 export type Unit = {
@@ -46,14 +48,19 @@ export type CardDefId =
   | 'reinforce_boost'
   | 'reinforce_boost_spawn'
   | 'reinforce_barricade'
+  | 'reinforce_quick_boost'
   | 'move_forward'
   | 'move_any'
   | 'move_forward_face'
+  | 'move_quickstep'
   | 'attack_line'
   | 'attack_fwd_lr'
   | 'attack_fwd'
   | 'attack_arrow'
   | 'attack_charge'
+  | 'attack_jab'
+  | 'attack_shove'
+  | 'attack_whirlwind'
   | 'spell_lightning'
   | 'spell_meteor'
   | 'spell_invest'
@@ -61,6 +68,7 @@ export type CardDefId =
   | 'spell_snare'
   | 'spell_dispel'
   | 'spell_divination'
+  | 'spell_burn'
   | 'move_pivot'
 
 export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2'
@@ -110,7 +118,7 @@ export type CardEffect =
       type: 'applyUnitModifier'
       unitParam: 'unitId'
       modifier: UnitModifierType
-      turns: number
+      turns: ModifierDuration
     }
   | {
       type: 'clearUnitModifiers'
@@ -120,7 +128,7 @@ export type CardEffect =
       type: 'applyPlayerModifier'
       modifier: 'extraDraw'
       amount: number
-      turns: number
+      turns: ModifierDuration
     }
   | {
       type: 'move'
@@ -139,6 +147,19 @@ export type CardEffect =
       mode: 'nearest' | 'line' | 'ray'
       directions: DirectionSource
       damage: number | { type: 'unitStrength' }
+    }
+  | {
+      type: 'shove'
+      unitParam: 'unitId'
+      direction: DirectionSource
+      distance: number
+      collisionDamage: number
+    }
+  | {
+      type: 'whirlwind'
+      unitParam: 'unitId'
+      damage: number
+      pushDistance: number
     }
 
 export type CardInstance = {
@@ -178,7 +199,7 @@ export type PlayerModifierType = 'extraDraw'
 export type PlayerModifier = {
   type: PlayerModifierType
   amount: number
-  turnsRemaining: number
+  turnsRemaining: ModifierDuration
 }
 
 export type GameState = {

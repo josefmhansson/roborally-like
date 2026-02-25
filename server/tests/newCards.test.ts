@@ -16,6 +16,14 @@ function readyAndResolve(state: GameState): void {
   resolveAllActions(state)
 }
 
+function clearNonStrongholdUnits(state: GameState): void {
+  Object.keys(state.units).forEach((unitId) => {
+    if (!unitId.startsWith('stronghold-')) {
+      delete state.units[unitId]
+    }
+  })
+}
+
 test('barricade card spawns two barricade units on valid tiles', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -36,7 +44,7 @@ test('barricade card spawns two barricade units on valid tiles', () => {
   assert.equal(barricades.length, 2)
 })
 
-test('trip prevents movement this turn and expires at end of turn', () => {
+test('trip prevents movement for two turns', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'spell_trip'),
@@ -68,10 +76,52 @@ test('trip prevents movement this turn and expires at end of turn', () => {
 
   readyAndResolve(state)
 
+  const enemyAfterTurnOne = state.units[enemyUnit.id]
+  assert.ok(enemyAfterTurnOne)
+  assert.deepEqual(enemyAfterTurnOne.pos, enemyStart)
+  const moveLock = enemyAfterTurnOne.modifiers.find((modifier) => modifier.type === 'cannotMove')
+  assert.ok(moveLock)
+  assert.equal(moveLock.turnsRemaining, 1)
+  assert.equal(state.turn, 2)
+
+  const moveCardIdTurnTwo = findCardId(state, 1, 'move_any')
+  const moveAgainPlanned = planOrder(state, 1, moveCardIdTurnTwo, {
+    unitId: enemyUnit.id,
+    direction: moveDirection,
+    distance: 1,
+  })
+  assert.ok(moveAgainPlanned)
+
+  readyAndResolve(state)
+
+  const enemyAfterTurnTwo = state.units[enemyUnit.id]
+  assert.ok(enemyAfterTurnTwo)
+  assert.deepEqual(enemyAfterTurnTwo.pos, enemyStart)
+  assert.equal(enemyAfterTurnTwo.modifiers.length, 0)
+  assert.equal(state.turn, 3)
+})
+
+test('snare now lasts four turns total', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_snare'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const enemyUnit = Object.values(state.units).find((unit) => unit.owner === 1 && unit.kind === 'unit')
+  assert.ok(enemyUnit)
+
+  const cardId = findCardId(state, 0, 'spell_snare')
+  const planned = planOrder(state, 0, cardId, { unitId: enemyUnit.id })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
   const enemyAfter = state.units[enemyUnit.id]
   assert.ok(enemyAfter)
-  assert.deepEqual(enemyAfter.pos, enemyStart)
-  assert.equal(enemyAfter.modifiers.length, 0)
+  const moveLock = enemyAfter.modifiers.find((modifier) => modifier.type === 'cannotMove')
+  assert.ok(moveLock)
+  assert.equal(moveLock.turnsRemaining, 3)
   assert.equal(state.turn, 2)
 })
 
@@ -91,6 +141,86 @@ test('divination grants two extra cards on the next draw phase', () => {
   assert.equal(state.turn, 2)
   assert.equal(state.players[0].hand.length, settings.drawPerTurn + 2)
   assert.equal(state.players[0].modifiers.length, 0)
+})
+
+test('barricades are valid reinforcement targets', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_boost'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  state.units['b-friendly'] = {
+    id: 'b-friendly',
+    owner: 0,
+    kind: 'barricade',
+    strength: 1,
+    pos: { q: 0, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'reinforce_boost')
+  const planned = planOrder(state, 0, cardId, { unitId: 'b-friendly' })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['b-friendly']?.strength, 2)
+})
+
+test('barricades are valid spell targets', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_lightning'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  state.units['b-enemy'] = {
+    id: 'b-enemy',
+    owner: 1,
+    kind: 'barricade',
+    strength: 1,
+    pos: { q: 0, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'spell_lightning')
+  const planned = planOrder(state, 0, cardId, { unitId: 'b-enemy' })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['b-enemy'], undefined)
+})
+
+test('burn deals damage each turn and lasts indefinitely', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 4 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_burn'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const enemyUnit = Object.values(state.units).find((unit) => unit.owner === 1 && unit.kind === 'unit')
+  assert.ok(enemyUnit)
+
+  const burnCardId = findCardId(state, 0, 'spell_burn')
+  const planned = planOrder(state, 0, burnCardId, { unitId: enemyUnit.id })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  const afterFirstTurn = state.units[enemyUnit.id]
+  assert.ok(afterFirstTurn)
+  assert.equal(afterFirstTurn.strength, 1)
+  const burn = afterFirstTurn.modifiers.find((modifier) => modifier.type === 'burn')
+  assert.ok(burn)
+  assert.equal(burn.turnsRemaining, 'indefinite')
+
+  readyAndResolve(state)
+
+  assert.equal(state.units[enemyUnit.id], undefined)
 })
 
 test('dispel can target barricades and removes their modifiers', () => {
@@ -117,4 +247,149 @@ test('dispel can target barricades and removes their modifiers', () => {
   readyAndResolve(state)
 
   assert.equal(state.units['b-test']?.modifiers.length, 0)
+})
+
+test('priority cards jump ahead of opposing non-priority cards', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
+  const state = createGameState(settings, {
+    p1: ['move_any', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  const p1Unit = Object.values(state.units).find((unit) => unit.owner === 0 && unit.kind === 'unit')
+  const p2Unit = Object.values(state.units).find((unit) => unit.owner === 1 && unit.kind === 'unit')
+  assert.ok(p1Unit)
+  assert.ok(p2Unit)
+
+  const p1MoveCardId = findCardId(state, 0, 'move_any')
+  const p1JabCardId = findCardId(state, 0, 'attack_jab')
+  const p2MoveCardId = findCardId(state, 1, 'move_any')
+
+  assert.ok(planOrder(state, 0, p1MoveCardId, { unitId: p1Unit.id, direction: 0, distance: 1 }))
+  assert.ok(planOrder(state, 0, p1JabCardId, { unitId: p1Unit.id, direction: 0 }))
+  assert.ok(planOrder(state, 1, p2MoveCardId, { unitId: p2Unit.id, direction: 3, distance: 1 }))
+
+  state.ready = [true, true]
+  startActionPhase(state)
+
+  assert.deepEqual(
+    state.actionQueue.map((order) => order.defId),
+    ['move_any', 'attack_jab', 'move_any']
+  )
+})
+
+test('shove deals collision damage when push destination is occupied', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_shove'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonStrongholdUnits(state)
+  const actorPos = { q: 2, r: 2 }
+  const targetPos = neighbor(actorPos, 0)
+  const blockerPos = neighbor(targetPos, 0)
+
+  state.units['u-actor'] = {
+    id: 'u-actor',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: actorPos,
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['u-target'] = {
+    id: 'u-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: targetPos,
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['u-blocker'] = {
+    id: 'u-blocker',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: blockerPos,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_shove')
+  const planned = planOrder(state, 0, cardId, { unitId: 'u-actor', direction: 0 })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['u-target']?.strength, 1)
+  assert.equal(state.units['u-blocker']?.strength, 1)
+  assert.deepEqual(state.units['u-target']?.pos, targetPos)
+  assert.deepEqual(state.units['u-blocker']?.pos, blockerPos)
+})
+
+test('whirlwind damages adjacent units and pushes when space is open', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_whirlwind'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonStrongholdUnits(state)
+  const actorPos = { q: 2, r: 2 }
+  const frontPos = neighbor(actorPos, 0)
+  const frontPushPos = neighbor(frontPos, 0)
+  const diagPos = neighbor(actorPos, 1)
+  const diagBlockPos = neighbor(diagPos, 1)
+
+  state.units['ww-actor'] = {
+    id: 'ww-actor',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: actorPos,
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['ww-front'] = {
+    id: 'ww-front',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: frontPos,
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['ww-diag'] = {
+    id: 'ww-diag',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: diagPos,
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['ww-blocker'] = {
+    id: 'ww-blocker',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: diagBlockPos,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_whirlwind')
+  const planned = planOrder(state, 0, cardId, { unitId: 'ww-actor' })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['ww-front']?.strength, 1)
+  assert.deepEqual(state.units['ww-front']?.pos, frontPushPos)
+  assert.equal(state.units['ww-diag']?.strength, 1)
+  assert.deepEqual(state.units['ww-diag']?.pos, diagPos)
+  assert.equal(state.units['ww-blocker']?.strength, 4)
 })

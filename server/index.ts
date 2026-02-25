@@ -436,15 +436,52 @@ function parseClientMessage(raw: WebSocket.RawData): ClientMessage | null {
 
 function parseRoomSetup(value: unknown): RoomSetup | null {
   if (!isObject(value)) return null
-  if (!isObject(value.settings)) return null
   if (!isObject(value.loadouts)) return null
-  if (!Array.isArray(value.loadouts.p1) || !Array.isArray(value.loadouts.p2)) return null
+  const settings = parseRoomSettings(value.settings)
+  if (!settings) return null
+  const p1 = parseJoinLoadout(value.loadouts.p1)
+  const p2 = parseJoinLoadout(value.loadouts.p2)
+  if (!p1 || !p2) return null
   return {
-    settings: value.settings as RoomSetup['settings'],
+    settings,
     loadouts: {
-      p1: value.loadouts.p1 as RoomSetup['loadouts']['p1'],
-      p2: value.loadouts.p2 as RoomSetup['loadouts']['p2'],
+      p1,
+      p2,
     },
+  }
+}
+
+function parseRoomSettings(value: unknown): RoomSetup['settings'] | null {
+  if (!isObject(value)) return null
+  const boardRows = parseFiniteNumber(value.boardRows)
+  const boardCols = parseFiniteNumber(value.boardCols)
+  const strongholdStrength = parseFiniteNumber(value.strongholdStrength)
+  const deckSize = parseFiniteNumber(value.deckSize)
+  const drawPerTurn = parseFiniteNumber(value.drawPerTurn)
+  const maxCopies = parseFiniteNumber(value.maxCopies)
+  const actionBudgetP1 = parseFiniteNumber(value.actionBudgetP1)
+  const actionBudgetP2 = parseFiniteNumber(value.actionBudgetP2)
+  if (
+    boardRows === null ||
+    boardCols === null ||
+    strongholdStrength === null ||
+    deckSize === null ||
+    drawPerTurn === null ||
+    maxCopies === null ||
+    actionBudgetP1 === null ||
+    actionBudgetP2 === null
+  ) {
+    return null
+  }
+  return {
+    boardRows,
+    boardCols,
+    strongholdStrength,
+    deckSize,
+    drawPerTurn,
+    maxCopies,
+    actionBudgetP1,
+    actionBudgetP2,
   }
 }
 
@@ -584,4 +621,9 @@ function isPrivateIpv4(address: string): boolean {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object'
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return value
 }
