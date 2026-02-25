@@ -143,7 +143,6 @@ const AP_SEAL_HREF = resolveAssetUrl('assets/cards/AP_seal.png')
 
 export const CARD_ART_OVERRIDES: Partial<Record<CardDefId, CardArtOverrideFn>> = {
   attack_fwd: buildStrikeOverrideScene,
-  attack_shove: buildShoveOverrideScene,
   spell_invest: buildInvestOverrideScene,
 }
 
@@ -160,10 +159,21 @@ export function getCardArtSvg(defId: CardDefId): string {
   }
 
   const override = CARD_ART_OVERRIDES[defId]
-  const scene = override ? override(context) : buildGenericScene(context)
+  const effectRuleScene = buildEffectRuleScene(context)
+  const scene = override ? override(context) : effectRuleScene ?? buildGenericScene(context)
   const svg = renderSceneToSvg(context, scene)
   CARD_ART_CACHE.set(defId, svg)
   return svg
+}
+
+function buildEffectRuleScene(ctx: CardArtBuildContext): CardArtScene | null {
+  if (ctx.def.effects.some((effect) => effect.type === 'shove')) {
+    return buildImpactAttackRuleScene(ctx, 'shove')
+  }
+  if (ctx.def.effects.some((effect) => effect.type === 'whirlwind')) {
+    return buildImpactAttackRuleScene(ctx, 'whirlwind')
+  }
+  return null
 }
 
 function inferRange(def: CardDef): number {
@@ -630,9 +640,51 @@ function buildInvestOverrideScene(ctx: CardArtBuildContext): CardArtScene {
   }
 }
 
-function buildShoveOverrideScene(ctx: CardArtBuildContext): CardArtScene {
-  const target = addHex(ORIGIN, DIRECTIONS[0])
-  const pushed = addHex(target, DIRECTIONS[0])
+function buildImpactAttackRuleScene(ctx: CardArtBuildContext, mode: 'shove' | 'whirlwind'): CardArtScene {
+  const primitives: CardArtPrimitive[] = [{ type: 'unit', tile: ORIGIN, owner: 'friendly', facing: 0, showFacing: false }]
+
+  if (mode === 'shove') {
+    const target = addHex(ORIGIN, DIRECTIONS[0])
+    const pushed = addHex(target, DIRECTIONS[0])
+    primitives.push(
+      {
+        type: 'directionArrows',
+        tile: ORIGIN,
+        directions: [0, 1, 2, 3, 4, 5],
+        mode: 'option',
+        selectedDirection: 0,
+      },
+      { type: 'tileHighlight', tile: target, mode: 'selected' },
+      { type: 'tileHighlight', tile: pushed, mode: 'selected' },
+      { type: 'beam', from: ORIGIN, to: target, mode: 'selected' },
+      { type: 'upArrow', from: target, to: pushed },
+      { type: 'unit', tile: target, owner: 'enemy', facing: 3, selected: true, showFacing: false },
+      { type: 'unit', tile: pushed, owner: 'enemy', facing: 3, selected: true, showFacing: false },
+      { type: 'damageOrbs', tile: target, count: 3, role: 'example' },
+      { type: 'damageOrbs', tile: pushed, count: 3, role: 'example' }
+    )
+  } else {
+    const ringDirections = [0, 1, 2, 3, 4, 5] as Direction[]
+    const showcasedDirections = [0, 2, 4] as Direction[]
+    ringDirections.forEach((dir) => {
+      const tile = walk(ORIGIN, dir, 1)
+      primitives.push(
+        { type: 'tileHighlight', tile, mode: 'selected' },
+        { type: 'affectedTile', tile, tone: 'attack' },
+        { type: 'damageOrbs', tile, count: 3, role: 'example' }
+      )
+    })
+    showcasedDirections.forEach((dir) => {
+      const tile = walk(ORIGIN, dir, 1)
+      const pushed = walk(ORIGIN, dir, 2)
+      primitives.push(
+        { type: 'unit', tile, owner: 'enemy', facing: normalizeDirection(dir + 3), selected: true, showFacing: false },
+        { type: 'upArrow', from: tile, to: pushed },
+        { type: 'tileHighlight', tile: pushed, mode: 'option' }
+      )
+    })
+  }
+
   return {
     source: 'override',
     layout: 'single',
@@ -641,24 +693,7 @@ function buildShoveOverrideScene(ctx: CardArtBuildContext): CardArtScene {
       {
         id: 'panel-1',
         grid: { kind: 'hex', radius: 2 },
-        primitives: [
-          { type: 'unit', tile: ORIGIN, owner: 'friendly', facing: 0, showFacing: false },
-          {
-            type: 'directionArrows',
-            tile: ORIGIN,
-            directions: [0, 1, 2, 3, 4, 5],
-            mode: 'option',
-            selectedDirection: 0,
-          },
-          { type: 'tileHighlight', tile: target, mode: 'selected' },
-          { type: 'tileHighlight', tile: pushed, mode: 'selected' },
-          { type: 'beam', from: ORIGIN, to: target, mode: 'selected' },
-          { type: 'upArrow', from: target, to: pushed },
-          { type: 'unit', tile: target, owner: 'enemy', facing: 3, selected: true, showFacing: false },
-          { type: 'unit', tile: pushed, owner: 'enemy', facing: 3, selected: true, showFacing: false },
-          { type: 'damageOrbs', tile: target, count: 3, role: 'example' },
-          { type: 'damageOrbs', tile: pushed, count: 3, role: 'example' },
-        ],
+        primitives,
       },
     ],
   }

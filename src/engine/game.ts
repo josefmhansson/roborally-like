@@ -424,39 +424,61 @@ function isPriorityOrder(order: Order): boolean {
 }
 
 function buildActionQueue(state: GameState): Order[] {
-  const nextIndex: [number, number] = [0, 0]
+  const active = state.activePlayer
+  const other: PlayerId = active === 0 ? 1 : 0
   const queue: Order[] = []
-  let turn: PlayerId = state.activePlayer
-
-  for (;;) {
-    const other: PlayerId = turn === 0 ? 1 : 0
-    const turnOrder = state.players[turn].orders[nextIndex[turn]]
-    const otherOrder = state.players[other].orders[nextIndex[other]]
-
-    if (!turnOrder && !otherOrder) break
-
-    let next: Order | undefined
-    if (!turnOrder) {
-      next = otherOrder
-    } else if (!otherOrder) {
-      next = turnOrder
-    } else {
-      const turnPriority = isPriorityOrder(turnOrder)
-      const otherPriority = isPriorityOrder(otherOrder)
-      if (turnPriority && !otherPriority) {
-        next = turnOrder
-      } else if (!turnPriority && otherPriority) {
-        next = otherOrder
-      } else {
-        next = turnOrder
-      }
-    }
-
-    if (!next) break
-    queue.push(next)
-    nextIndex[next.player] += 1
-    turn = turn === 0 ? 1 : 0
+  const maxOrders = Math.max(state.players[0].orders.length, state.players[1].orders.length)
+  for (let i = 0; i < maxOrders; i += 1) {
+    const activeOrder = state.players[active].orders[i]
+    const otherOrder = state.players[other].orders[i]
+    if (activeOrder) queue.push(activeOrder)
+    if (otherOrder) queue.push(otherOrder)
   }
+
+  const playersInResolutionOrder: PlayerId[] = [active, other]
+  playersInResolutionOrder.forEach((player) => {
+    const playerOrders = state.players[player].orders
+    if (playerOrders.length < 2) return
+
+    let previousOrderId: string | null = null
+    playerOrders.forEach((order) => {
+      const currentIndex = queue.findIndex((entry) => entry.id === order.id)
+      if (currentIndex === -1) return
+
+      if (!previousOrderId) {
+        previousOrderId = order.id
+        return
+      }
+      if (!isPriorityOrder(order)) {
+        previousOrderId = order.id
+        return
+      }
+
+      const previousIndex = queue.findIndex((entry) => entry.id === previousOrderId)
+      if (previousIndex === -1 || currentIndex <= previousIndex + 1) {
+        previousOrderId = order.id
+        return
+      }
+
+      let targetIndex = currentIndex
+      while (targetIndex > previousIndex + 1) {
+        const left = queue[targetIndex - 1]
+        if (left.player === player) break
+        if (isPriorityOrder(left)) break
+        targetIndex -= 1
+      }
+
+      if (targetIndex !== currentIndex) {
+        const [moved] = queue.splice(currentIndex, 1)
+        queue.splice(targetIndex, 0, moved)
+        if (previousOrderId === moved.id) {
+          previousOrderId = moved.id
+        }
+      }
+
+      previousOrderId = order.id
+    })
+  })
 
   return queue
 }

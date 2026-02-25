@@ -4556,7 +4556,9 @@ function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionSte
 function hasSecondaryBoostTarget(snapshot: GameState, player: PlayerId, selectedUnitId: string): boolean {
   const selected = getUnitSnapshot(snapshot, selectedUnitId, player)
   if (!selected) return false
-  const units = Object.values(snapshot.units).filter((unit) => unit.owner === player && unit.kind === 'unit')
+  const units = Object.values(snapshot.units).filter(
+    (unit) => unit.owner === player && canCardSelectUnit('reinforce_boost', unit)
+  )
   const unitHexes = units.map((unit) => ({ ...unit.pos }))
   const planned = getPlannedSpawnTiles(player)
   return [...unitHexes, ...planned].some((hex) => hex.q !== selected.pos.q || hex.r !== selected.pos.r)

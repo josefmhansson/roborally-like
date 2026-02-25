@@ -18,9 +18,9 @@ test('every card id renders a non-empty svg', () => {
   })
 })
 
-test('only strike, shove, and invest use override scenes', () => {
+test('only strike, shove/whirlwind impact rules, and invest use override scenes', () => {
   const overrideIds = CARD_IDS.filter((defId) => getCardArtSvg(defId).includes('data-art-source="override"')).sort()
-  assert.deepEqual(overrideIds, ['attack_fwd', 'attack_shove', 'spell_invest'])
+  assert.deepEqual(overrideIds, ['attack_fwd', 'attack_shove', 'attack_whirlwind', 'spell_invest'])
 })
 
 test('boost renders as multi-panel with ellipsis connector', () => {

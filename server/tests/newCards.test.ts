@@ -252,8 +252,8 @@ test('dispel can target barricades and removes their modifiers', () => {
 test('priority cards jump ahead of opposing non-priority cards', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
   const state = createGameState(settings, {
-    p1: ['move_any', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
-    p2: ['move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p1: ['move_any', 'attack_jab', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['move_any', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
   })
 
   const p1Unit = Object.values(state.units).find((unit) => unit.owner === 0 && unit.kind === 'unit')
@@ -267,14 +267,18 @@ test('priority cards jump ahead of opposing non-priority cards', () => {
 
   assert.ok(planOrder(state, 0, p1MoveCardId, { unitId: p1Unit.id, direction: 0, distance: 1 }))
   assert.ok(planOrder(state, 0, p1JabCardId, { unitId: p1Unit.id, direction: 0 }))
+  const p1SecondMoveCardId = findCardId(state, 0, 'move_any')
+  assert.ok(planOrder(state, 0, p1SecondMoveCardId, { unitId: p1Unit.id, direction: 1, distance: 1 }))
   assert.ok(planOrder(state, 1, p2MoveCardId, { unitId: p2Unit.id, direction: 3, distance: 1 }))
+  const p2SecondMoveCardId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 1, p2SecondMoveCardId, { unitId: p2Unit.id, direction: 4, distance: 1 }))
 
   state.ready = [true, true]
   startActionPhase(state)
 
   assert.deepEqual(
-    state.actionQueue.map((order) => order.defId),
-    ['move_any', 'attack_jab', 'move_any']
+    state.actionQueue.map((order) => `${order.player}:${order.defId}`),
+    ['0:move_any', '0:attack_jab', '1:move_any', '1:move_any', '0:move_any']
   )
 })
 
