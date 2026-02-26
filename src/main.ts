@@ -443,6 +443,7 @@ type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
 type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
+type DeathRayAnimation = { type: 'deathRay'; from: Hex; targets: Hex[]; duration: number }
 type BoardAnimation =
   | MoveAnimation
   | LungeAnimation
@@ -452,6 +453,7 @@ type BoardAnimation =
   | LightningAnimation
   | MeteorAnimation
   | ArrowAnimation
+  | DeathRayAnimation
 
 const MOVE_DURATION_MS = 300
 const LUNGE_DURATION_MS = 200
@@ -461,6 +463,7 @@ const DEATH_DURATION_MS = 260
 const LIGHTNING_DURATION_MS = 240
 const METEOR_DURATION_MS = 1600
 const ARROW_DURATION_MS = 300
+const DEATH_RAY_DURATION_MS = 340
 const CARD_TRANSFER_DURATION_MS = 800
 
 let isAnimating = false
@@ -473,6 +476,18 @@ const pendingDeathUnits = new Map<string, Unit>()
 const unitAlphaOverrides = new Map<string, number>()
 const deathAlphaOverrides = new Map<string, number>()
 let isDraggingOrder = false
+let suppressNextOrderClick = false
+let touchOrderDrag:
+  | {
+      pointerId: number
+      fromOrderId: string
+      targetOrderId: string
+      card: HTMLDivElement
+      startX: number
+      startY: number
+      didMove: boolean
+    }
+  | null = null
 let pendingCardTransfer:
   | {
       cardId: string
@@ -598,6 +613,7 @@ const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
   extraDraw: 0.5,
   extraAp: 0.2,
   extraStartingUnit: 0.5,
+  unitStrength: 0.5,
 } as const
 const ROGUELIKE_STARTING_DECK: CardDefId[] = [
   'reinforce_spawn',
@@ -613,7 +629,7 @@ const ROGUELIKE_STARTING_DECK: CardDefId[] = [
 const ALL_CARD_IDS = Object.keys(CARD_DEFS) as CardDefId[]
 
 type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
-type RoguelikeUiStage = 'reward_choice' | 'draft_pick' | 'remove_pick' | 'run_over'
+type RoguelikeUiStage = 'reward_choice' | 'draft_pick' | 'remove_pick' | 'reward_notice' | 'run_over'
 
 type RoguelikeDifficulty = {
   botStrongholdHp: number
@@ -630,9 +646,11 @@ type RoguelikeRunState = {
   bonusDrawPerTurn: number
   bonusActionBudget: number
   bonusStartingUnits: number
+  bonusStartingUnitStrength: number
   resultHandled: boolean
   uiStage: RoguelikeUiStage
   draftOptions: CardDefId[]
+  rewardNoticeMessage: string | null
 }
 
 let roguelikeRun: RoguelikeRunState | null = null
@@ -740,9 +758,11 @@ function createInitialRoguelikeRunState(): RoguelikeRunState {
     bonusDrawPerTurn: 0,
     bonusActionBudget: 0,
     bonusStartingUnits: 0,
+    bonusStartingUnitStrength: 0,
     resultHandled: false,
     uiStage: 'reward_choice',
     draftOptions: [],
+    rewardNoticeMessage: null,
   }
 }
 
@@ -754,6 +774,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     source.uiStage === 'reward_choice' ||
     source.uiStage === 'draft_pick' ||
     source.uiStage === 'remove_pick' ||
+    source.uiStage === 'reward_notice' ||
     source.uiStage === 'run_over'
       ? source.uiStage
       : 'reward_choice'
@@ -765,9 +786,11 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     bonusDrawPerTurn: Math.max(0, Math.floor(Number(source.bonusDrawPerTurn) || 0)),
     bonusActionBudget: Math.max(0, Math.floor(Number(source.bonusActionBudget) || 0)),
     bonusStartingUnits: Math.max(0, Math.floor(Number(source.bonusStartingUnits) || 0)),
+    bonusStartingUnitStrength: Math.max(0, Math.floor(Number(source.bonusStartingUnitStrength) || 0)),
     resultHandled: Boolean(source.resultHandled),
     uiStage,
     draftOptions: normalizeDeckInput(source.draftOptions).slice(0, 3),
+    rewardNoticeMessage: typeof source.rewardNoticeMessage === 'string' ? source.rewardNoticeMessage : null,
   }
 }
 
@@ -2728,6 +2751,71 @@ function drawArrowTrail(from: Hex, to: Hex, progress: number): void {
   ctx.restore()
 }
 
+function drawDeathRay(from: Hex, targets: Hex[], progress: number): void {
+  if (targets.length === 0) return
+  const start = projectHex(from)
+  const t = easeInOutCubic(progress)
+  const alpha = 1 - progress * 0.35
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.lineCap = 'round'
+
+  targets.forEach((targetHex) => {
+    const end = projectHex(targetHex)
+    const current = {
+      x: start.x + (end.x - start.x) * t,
+      y: start.y + (end.y - start.y) * t,
+    }
+
+    ctx.globalAlpha = 0.72 * alpha
+    ctx.strokeStyle = 'rgba(255, 35, 35, 0.95)'
+    ctx.lineWidth = Math.max(3.5, layout.size * 0.22)
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(current.x, current.y)
+    ctx.stroke()
+
+    ctx.globalAlpha = 0.96 * alpha
+    ctx.strokeStyle = 'rgba(255, 220, 220, 0.95)'
+    ctx.lineWidth = Math.max(1.2, layout.size * 0.08)
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(current.x, current.y)
+    ctx.stroke()
+
+    const flareRadius = layout.size * (0.12 + 0.22 * t)
+    const flare = ctx.createRadialGradient(
+      current.x,
+      current.y,
+      flareRadius * 0.2,
+      current.x,
+      current.y,
+      flareRadius
+    )
+    flare.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
+    flare.addColorStop(0.45, 'rgba(255, 90, 90, 0.9)')
+    flare.addColorStop(1, 'rgba(255, 0, 0, 0)')
+    ctx.globalAlpha = alpha
+    ctx.fillStyle = flare
+    ctx.beginPath()
+    ctx.arc(current.x, current.y, flareRadius, 0, Math.PI * 2)
+    ctx.fill()
+  })
+
+  const coreRadius = layout.size * (0.1 + 0.15 * Math.sin(t * Math.PI))
+  const coreGlow = ctx.createRadialGradient(start.x, start.y, coreRadius * 0.2, start.x, start.y, coreRadius)
+  coreGlow.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
+  coreGlow.addColorStop(0.5, 'rgba(255, 90, 90, 0.9)')
+  coreGlow.addColorStop(1, 'rgba(255, 0, 0, 0)')
+  ctx.globalAlpha = alpha
+  ctx.fillStyle = coreGlow
+  ctx.beginPath()
+  ctx.arc(start.x, start.y, coreRadius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
 function getBoardViewportSize(): { width: number; height: number } {
   const panelRect = boardPanel.getBoundingClientRect()
   const hudRect = hudEl.getBoundingClientRect()
@@ -2869,8 +2957,6 @@ function drawBoard(): void {
     }
   }
 
-  drawStrongholdProjectedDestroyIndicators()
-
   structures
     .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q)
     .forEach((item) => {
@@ -2899,6 +2985,7 @@ function drawBoard(): void {
     })
 
   drawStrongholdPreviewOverlays()
+  drawStrongholdProjectedDestroyIndicators()
   drawSelectableHighlights()
 
   if (previewState && state.phase === 'planning') {
@@ -2921,6 +3008,10 @@ function drawBoard(): void {
 
   if (currentAnimation?.type === 'arrow') {
     drawArrowTrail(currentAnimation.from, currentAnimation.to, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'deathRay') {
+    drawDeathRay(currentAnimation.from, currentAnimation.targets, animationProgress)
   }
 
   if (currentAnimation?.type === 'death') {
@@ -3050,14 +3141,22 @@ function drawStrongholdProjectedDestroyIndicators(): void {
   const destroyedStrongholds = getProjectedDestroyedStrongholds()
   destroyedStrongholds.forEach((stronghold) => {
     const center = projectHex(stronghold.pos)
+    const arm = layout.size * 0.82
     ctx.save()
-    ctx.globalAlpha = 0.92
+    ctx.globalAlpha = 0.94
     ctx.translate(center.x, center.y)
     ctx.scale(1, BOARD_TILT)
     ctx.beginPath()
-    ctx.arc(0, 0, layout.size * 0.62, 0, Math.PI * 2)
+    ctx.moveTo(-arm, -arm)
+    ctx.lineTo(arm, arm)
+    ctx.moveTo(-arm, arm)
+    ctx.lineTo(arm, -arm)
+    ctx.strokeStyle = 'rgba(90, 0, 0, 0.9)'
+    ctx.lineWidth = 7
+    ctx.lineCap = 'round'
+    ctx.stroke()
     ctx.strokeStyle = '#ff2b2b'
-    ctx.lineWidth = 4
+    ctx.lineWidth = 4.2
     ctx.stroke()
     ctx.restore()
   })
@@ -3092,9 +3191,7 @@ function drawStrongholdPreviewOverlays(): void {
 
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
-  const radius = unit.kind === 'stronghold' ? 20 : unit.kind === 'barricade' ? 12 : 14
   const color = getRingTint(unit.owner)
-  const border = unit.kind === 'stronghold' ? '#101425' : '#0b0f1b'
   const preview = previewState?.units[unit.id]
   const previewStrength =
     state.phase === 'planning' && preview && preview.strength !== unit.strength ? preview.strength : null
@@ -3111,7 +3208,7 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   ctx.globalAlpha = animationAlpha * overrideAlpha
 
   if (unit.modifiers.length > 0 && unit.kind !== 'stronghold') {
-    const glowRadius = unit.kind === 'barricade' ? layout.size * 0.55 : layout.size * 0.72
+    const glowRadius = unit.kind === 'barricade' ? layout.size * 0.72 : layout.size * 0.9
     const glowGradient = ctx.createRadialGradient(
       center.x,
       center.y,
@@ -3120,9 +3217,9 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
       center.y,
       glowRadius
     )
-    glowGradient.addColorStop(0, 'rgba(180, 255, 195, 0.95)')
-    glowGradient.addColorStop(0.58, 'rgba(95, 227, 142, 0.45)')
-    glowGradient.addColorStop(1, 'rgba(38, 98, 62, 0)')
+    glowGradient.addColorStop(0, 'rgba(255, 60, 60, 1)')
+    glowGradient.addColorStop(0.58, 'rgba(255, 20, 20, 0.72)')
+    glowGradient.addColorStop(1, 'rgba(120, 0, 0, 0)')
     ctx.save()
     ctx.globalCompositeOperation = 'screen'
     ctx.beginPath()
@@ -3227,25 +3324,6 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     drawBarricadeSprite(center, unit.owner)
   } else if (unit.kind === 'stronghold' && strongholdBaseImage.loaded) {
     // Stronghold sprite already drawn as structure; skip circle.
-  } else {
-    if (unit.kind === 'barricade') {
-      const size = radius * 1.9
-      ctx.beginPath()
-      ctx.rect(center.x - size / 2, center.y - (size * BOARD_TILT) / 2, size, size * BOARD_TILT)
-      ctx.fillStyle = '#8c5a2b'
-      ctx.fill()
-      ctx.lineWidth = 2
-      ctx.strokeStyle = border
-      ctx.stroke()
-    } else {
-      ctx.beginPath()
-      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = unit.kind === 'stronghold' ? '#0c0f1d' : color
-      ctx.fill()
-      ctx.lineWidth = unit.kind === 'stronghold' ? 3 : 2
-      ctx.strokeStyle = border
-      ctx.stroke()
-    }
   }
 
   drawStrengthDots(center, unit.strength, previewStrength, color)
@@ -3480,6 +3558,30 @@ function renderHand(): void {
   })
 }
 
+function reorderQueuedOrder(fromId: string, toId: string): void {
+  if (!fromId || !toId || fromId === toId) return
+  if (isBotPlanningLocked()) return
+  if (state.ready[planningPlayer]) return
+  if (mode === 'online') {
+    sendOnlineCommand({
+      type: 'reorder_order',
+      fromOrderId: fromId,
+      toOrderId: toId,
+    })
+    statusEl.textContent = 'Moving order...'
+    return
+  }
+  const playerState = state.players[planningPlayer]
+  const fromIndex = playerState.orders.findIndex((order) => order.id === fromId)
+  const toIndex = playerState.orders.findIndex((order) => order.id === toId)
+  if (fromIndex === -1 || toIndex === -1) return
+  const [moved] = playerState.orders.splice(fromIndex, 1)
+  playerState.orders.splice(toIndex, 0, moved)
+  clearReady(planningPlayer)
+  statusEl.textContent = 'Order moved.'
+  render()
+}
+
 function renderOrders(): void {
   const inPlanning = state.phase === 'planning'
   const playerOrders = state.players[planningPlayer].orders
@@ -3546,33 +3648,81 @@ function renderOrders(): void {
 
       card.addEventListener('drop', (event) => {
         event.preventDefault()
-        if (isBotPlanningLocked()) return
-        if (state.ready[planningPlayer]) return
         const target = event.currentTarget as HTMLDivElement
         const fromId = event.dataTransfer?.getData('text/plain')
         const toId = target.dataset.orderId
         if (!fromId || !toId || fromId === toId) return
-        if (mode === 'online') {
-          sendOnlineCommand({
-            type: 'reorder_order',
-            fromOrderId: fromId,
-            toOrderId: toId,
-          })
-          statusEl.textContent = 'Moving order...'
-          return
+        reorderQueuedOrder(fromId, toId)
+      })
+
+      card.addEventListener('pointerdown', (event) => {
+        if (event.pointerType !== 'touch') return
+        if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
+        const fromOrderId = card.dataset.orderId
+        if (!fromOrderId) return
+        touchOrderDrag = {
+          pointerId: event.pointerId,
+          fromOrderId,
+          targetOrderId: fromOrderId,
+          card,
+          startX: event.clientX,
+          startY: event.clientY,
+          didMove: false,
         }
-        const playerState = state.players[planningPlayer]
-        const fromIndex = playerState.orders.findIndex((order) => order.id === fromId)
-        const toIndex = playerState.orders.findIndex((order) => order.id === toId)
-        if (fromIndex === -1 || toIndex === -1) return
-        const [moved] = playerState.orders.splice(fromIndex, 1)
-        playerState.orders.splice(toIndex, 0, moved)
-        clearReady(planningPlayer)
-        statusEl.textContent = 'Order moved.'
-        render()
+        suppressNextOrderClick = false
+        card.setPointerCapture(event.pointerId)
+      })
+
+      card.addEventListener('pointermove', (event) => {
+        if (!touchOrderDrag || touchOrderDrag.pointerId !== event.pointerId) return
+        if (!touchOrderDrag.didMove) {
+          const dx = event.clientX - touchOrderDrag.startX
+          const dy = event.clientY - touchOrderDrag.startY
+          if (Math.abs(dx) + Math.abs(dy) < 8) return
+          touchOrderDrag.didMove = true
+          isDraggingOrder = true
+          touchOrderDrag.card.classList.add('dragging')
+        }
+        const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
+        const target = element?.closest<HTMLDivElement>('.order-card')
+        cards.forEach((item) => item.classList.remove('drag-over'))
+        const targetOrderId = target?.dataset.orderId
+        if (targetOrderId && targetOrderId !== touchOrderDrag.fromOrderId) {
+          target.classList.add('drag-over')
+          touchOrderDrag.targetOrderId = targetOrderId
+        } else {
+          touchOrderDrag.targetOrderId = touchOrderDrag.fromOrderId
+        }
+        event.preventDefault()
+      })
+
+      const finishTouchReorder = (pointerId: number) => {
+        if (!touchOrderDrag || touchOrderDrag.pointerId !== pointerId) return
+        const { fromOrderId, targetOrderId, card: draggedCard } = touchOrderDrag
+        const didMove = touchOrderDrag.didMove
+        touchOrderDrag = null
+        isDraggingOrder = false
+        draggedCard.classList.remove('dragging')
+        cards.forEach((item) => item.classList.remove('drag-over'))
+        if (!didMove) return
+        if (!targetOrderId || targetOrderId === fromOrderId) return
+        suppressNextOrderClick = true
+        reorderQueuedOrder(fromOrderId, targetOrderId)
+      }
+
+      card.addEventListener('pointerup', (event) => {
+        finishTouchReorder(event.pointerId)
+      })
+
+      card.addEventListener('pointercancel', (event) => {
+        finishTouchReorder(event.pointerId)
       })
 
       card.addEventListener('click', () => {
+        if (suppressNextOrderClick) {
+          suppressNextOrderClick = false
+          return
+        }
         if (isDraggingOrder || state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
         const orderId = card.dataset.orderId
         if (!orderId) return
@@ -4193,6 +4343,47 @@ function addMultipleStartingUnits(sourceState: GameState, owner: PlayerId, count
   }
 }
 
+function shuffleCards<T>(cards: T[]): T[] {
+  const copy = [...cards]
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
+}
+
+function drawCardToHand(sourceState: GameState, player: PlayerId): boolean {
+  const playerState = sourceState.players[player]
+  if (playerState.deck.length === 0) {
+    if (playerState.discard.length === 0) return false
+    playerState.deck = shuffleCards(playerState.discard)
+    playerState.discard = []
+  }
+  const card = playerState.deck.shift()
+  if (!card) return false
+  playerState.hand.push(card)
+  return true
+}
+
+function applyOpeningHandDrawDelta(sourceState: GameState, player: PlayerId, drawDelta: number): void {
+  if (drawDelta === 0) return
+  const playerState = sourceState.players[player]
+  if (drawDelta > 0) {
+    for (let i = 0; i < drawDelta; i += 1) {
+      if (!drawCardToHand(sourceState, player)) break
+    }
+    return
+  }
+
+  const removeCount = Math.min(playerState.hand.length, Math.abs(drawDelta))
+  for (let i = 0; i < removeCount; i += 1) {
+    const card = playerState.hand.pop()
+    if (!card) break
+    // Put cards back on top so opening hand mirrors a reduced draw count.
+    playerState.deck.unshift(card)
+  }
+}
+
 function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunState): void {
   const difficulty = getRoguelikeDifficulty(run.wins)
   const playerStronghold = sourceState.units[`stronghold-${BOT_HUMAN_PLAYER}`]
@@ -4223,6 +4414,7 @@ function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunS
       amount: run.bonusDrawPerTurn,
       turnsRemaining: 'indefinite',
     })
+    applyOpeningHandDrawDelta(sourceState, BOT_HUMAN_PLAYER, run.bonusDrawPerTurn)
   }
   if (difficulty.botDrawBonus !== 0) {
     sourceState.players[BOT_PLAYER].modifiers.push({
@@ -4230,10 +4422,17 @@ function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunS
       amount: difficulty.botDrawBonus,
       turnsRemaining: 'indefinite',
     })
+    applyOpeningHandDrawDelta(sourceState, BOT_PLAYER, difficulty.botDrawBonus)
   }
 
   if (run.bonusStartingUnits > 0) {
     addMultipleStartingUnits(sourceState, BOT_HUMAN_PLAYER, run.bonusStartingUnits, 2)
+  }
+  if (run.bonusStartingUnitStrength > 0) {
+    Object.values(sourceState.units).forEach((unit) => {
+      if (unit.owner !== BOT_HUMAN_PLAYER || unit.kind !== 'unit') return
+      unit.strength = Math.max(1, unit.strength + run.bonusStartingUnitStrength)
+    })
   }
 
   const botUnits = Object.values(sourceState.units)
@@ -4282,6 +4481,7 @@ function startNextRoguelikeMatch(statusMessage: string): void {
   roguelikeRun.resultHandled = false
   roguelikeRun.uiStage = 'reward_choice'
   roguelikeRun.draftOptions = []
+  roguelikeRun.rewardNoticeMessage = null
   planningPlayer = BOT_HUMAN_PLAYER
   selectedCardId = null
   pendingOrder = null
@@ -4324,6 +4524,21 @@ function startRoguelikeMatchAfterReward(statusMessage: string): void {
   startNextRoguelikeMatch(`${statusMessage} Match ${matchNumber} begins.`)
 }
 
+function showRoguelikeRewardNotice(message: string): void {
+  if (!roguelikeRun) return
+  roguelikeRun.rewardNoticeMessage = message
+  roguelikeRun.uiStage = 'reward_notice'
+  render()
+}
+
+function continueAfterRoguelikeRewardNotice(): void {
+  if (!roguelikeRun) return
+  if (roguelikeRun.uiStage !== 'reward_notice') return
+  const message = roguelikeRun.rewardNoticeMessage ?? 'Reward gained.'
+  roguelikeRun.rewardNoticeMessage = null
+  startRoguelikeMatchAfterReward(message)
+}
+
 function chooseRoguelikeRandomReward(): void {
   if (!roguelikeRun || state.winner !== BOT_HUMAN_PLAYER) return
 
@@ -4347,18 +4562,24 @@ function chooseRoguelikeRandomReward(): void {
 
   if (reward === 'extraDraw') {
     roguelikeRun.bonusDrawPerTurn += 1
-    startRoguelikeMatchAfterReward('Reward gained: +1 extra card each hand.')
+    showRoguelikeRewardNotice('Reward gained: +1 extra card each hand.')
     return
   }
 
   if (reward === 'extraAp') {
     roguelikeRun.bonusActionBudget += 1
-    startRoguelikeMatchAfterReward('Reward gained: +1 action budget.')
+    showRoguelikeRewardNotice('Reward gained: +1 action budget.')
     return
   }
 
-  roguelikeRun.bonusStartingUnits += 1
-  startRoguelikeMatchAfterReward('Reward gained: +1 starting unit.')
+  if (reward === 'extraStartingUnit') {
+    roguelikeRun.bonusStartingUnits += 1
+    showRoguelikeRewardNotice('Reward gained: +1 starting unit.')
+    return
+  }
+
+  roguelikeRun.bonusStartingUnitStrength += 1
+  showRoguelikeRewardNotice('Reward gained: +1 starting unit strength.')
 }
 
 function handleRoguelikeMatchResultIfNeeded(): void {
@@ -4392,6 +4613,17 @@ function renderRoguelikeWinnerModal(): void {
 
   if (state.winner === BOT_HUMAN_PLAYER) {
     const nextMatch = roguelikeRun.wins + 1
+    if (roguelikeRun.uiStage === 'reward_notice') {
+      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Reward received.`
+      winnerNoteEl.textContent = roguelikeRun.rewardNoticeMessage ?? 'Reward gained.'
+      winnerMenuButton.textContent = 'End Run'
+      winnerResetButton.classList.add('hidden')
+      winnerRematchButton.classList.add('hidden')
+      winnerExtraEl.innerHTML =
+        '<button class="btn winner-option" data-roguelike-action="continue-reward" type="button">Continue to Next Match</button>'
+      winnerModal.classList.remove('hidden')
+      return
+    }
     if (roguelikeRun.uiStage === 'draft_pick' && roguelikeRun.draftOptions.length < 3) {
       roguelikeRun.draftOptions = pickRandomCardOptions(3)
     }
@@ -4634,6 +4866,18 @@ function findFirstUnitInLine(before: Record<string, UnitSnapshot>, origin: Hex, 
   return null
 }
 
+function findAllUnitsInLine(before: Record<string, UnitSnapshot>, origin: Hex, dir: Direction): UnitSnapshot[] {
+  const targets: UnitSnapshot[] = []
+  let cursor = { ...origin }
+  for (;;) {
+    cursor = neighbor(cursor, dir)
+    if (!isTile(cursor)) break
+    const target = findSnapshotUnitAt(before, cursor)
+    if (target) targets.push(target)
+  }
+  return targets
+}
+
 function buildAnimations(order: GameState['actionQueue'][number], before: Record<string, UnitSnapshot>): BoardAnimation[] {
   const def = CARD_DEFS[order.defId]
   const animations: BoardAnimation[] = []
@@ -4708,6 +4952,16 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
               from: beforeUnit.pos,
               to: target.pos,
               duration: ARROW_DURATION_MS,
+            })
+          }
+        } else if (order.defId === 'attack_line') {
+          const targets = findAllUnitsInLine(before, beforeUnit.pos, dir).map((target) => ({ ...target.pos }))
+          if (targets.length > 0) {
+            animations.push({
+              type: 'deathRay',
+              from: beforeUnit.pos,
+              targets,
+              duration: DEATH_RAY_DURATION_MS,
             })
           }
         }
@@ -5743,7 +5997,7 @@ winnerResetButton.addEventListener('click', () => {
     if (state.winner === BOT_HUMAN_PLAYER) {
       if (roguelikeRun.uiStage !== 'reward_choice') return
       roguelikeRun.strongholdHp += 10
-      startRoguelikeMatchAfterReward('Reward gained: +10 stronghold HP.')
+      showRoguelikeRewardNotice('Reward gained: +10 stronghold HP.')
       return
     }
     startRoguelikeRun()
@@ -5770,10 +6024,15 @@ winnerRematchButton.addEventListener('click', () => {
 
 winnerExtraEl.addEventListener('click', (event) => {
   if (mode !== 'roguelike' || !roguelikeRun || state.winner !== BOT_HUMAN_PLAYER) return
-  const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-roguelike-action][data-card-id]')
+  const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-roguelike-action]')
   if (!target) return
   const action = target.dataset.roguelikeAction
-  const cardId = target.dataset.cardId as CardDefId
+  if (action === 'continue-reward') {
+    continueAfterRoguelikeRewardNotice()
+    return
+  }
+  const cardId = target.dataset.cardId as CardDefId | undefined
+  if (!cardId) return
   if (!(cardId in CARD_DEFS)) return
 
   if (action === 'draft' && roguelikeRun.uiStage === 'draft_pick') {

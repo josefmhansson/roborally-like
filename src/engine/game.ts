@@ -181,14 +181,14 @@ function createDeckFromList(defIds: CardDefId[]): { id: string; defId: CardDefId
   return shuffle(defIds.map((defId, index) => ({ id: `c${index + 1}`, defId })))
 }
 
-function createStronghold(owner: PlayerId, pos: Hex, strength: number): Unit {
+function createStronghold(owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
   return {
     id: `stronghold-${owner}`,
     owner,
     kind: 'stronghold',
     strength,
     pos,
-    facing: owner === 0 ? 5 : 2,
+    facing,
     modifiers: [],
   }
 }
@@ -222,17 +222,19 @@ export function createGameState(
   const tiles = createTiles(rows, cols)
   const [topPos, bottomPos] = getStrongholdPositions(rows, cols)
   const units: Record<UnitId, Unit> = {}
-  units['stronghold-0'] = createStronghold(0, topPos, settings.strongholdStrength)
-  units['stronghold-1'] = createStronghold(1, bottomPos, settings.strongholdStrength)
-  const topFront = neighbor(units['stronghold-0'].pos, units['stronghold-0'].facing)
-  const bottomFront = neighbor(units['stronghold-1'].pos, units['stronghold-1'].facing)
-  if (inBounds(rows, cols, topFront)) {
+  const topFacing: Direction = 5
+  const bottomFacing: Direction = 2
+  units['stronghold-0'] = createStronghold(0, bottomPos, settings.strongholdStrength, bottomFacing)
+  units['stronghold-1'] = createStronghold(1, topPos, settings.strongholdStrength, topFacing)
+  const p1Front = neighbor(units['stronghold-0'].pos, units['stronghold-0'].facing)
+  const p2Front = neighbor(units['stronghold-1'].pos, units['stronghold-1'].facing)
+  if (inBounds(rows, cols, p1Front)) {
     const id = `u0-1`
-    units[id] = createUnit(0, topFront, units['stronghold-0'].facing, 2, id)
+    units[id] = createUnit(0, p1Front, units['stronghold-0'].facing, 2, id)
   }
-  if (inBounds(rows, cols, bottomFront)) {
+  if (inBounds(rows, cols, p2Front)) {
     const id = `u1-2`
-    units[id] = createUnit(1, bottomFront, units['stronghold-1'].facing, 2, id)
+    units[id] = createUnit(1, p2Front, units['stronghold-1'].facing, 2, id)
   }
 
   const p1Deck = decks?.p1 ?? STARTING_DECK.slice(0, settings.deckSize)
@@ -441,7 +443,7 @@ function buildActionQueue(state: GameState): Order[] {
   const playersInResolutionOrder: PlayerId[] = [active, other]
   playersInResolutionOrder.forEach((player) => {
     const playerOrders = state.players[player].orders
-    if (playerOrders.length < 2) return
+    if (playerOrders.length === 0) return
 
     let previousOrderId: string | null = null
     playerOrders.forEach((order) => {
@@ -449,6 +451,19 @@ function buildActionQueue(state: GameState): Order[] {
       if (currentIndex === -1) return
 
       if (!previousOrderId) {
+        if (isPriorityOrder(order)) {
+          let targetIndex = currentIndex
+          while (targetIndex > 0) {
+            const left = queue[targetIndex - 1]
+            if (left.player === player) break
+            if (isPriorityOrder(left)) break
+            targetIndex -= 1
+          }
+          if (targetIndex !== currentIndex) {
+            const [moved] = queue.splice(currentIndex, 1)
+            queue.splice(targetIndex, 0, moved)
+          }
+        }
         previousOrderId = order.id
         return
       }
@@ -853,6 +868,15 @@ function boostUnit(state: GameState, unit: Unit, amount: number): void {
 function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers'][number]['type'], turns: ModifierDuration): void {
   const normalizedTurns = normalizeDuration(turns)
   if (!normalizedTurns) return
+  if (modifier === 'burn') {
+    unit.modifiers.push({ type: modifier, turnsRemaining: normalizedTurns })
+    const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
+    const stacks = unit.modifiers.filter(
+      (entry) => entry.type === 'burn' && isActiveDuration(entry.turnsRemaining)
+    ).length
+    state.log.push(`Unit ${unit.id} is affected: ${modifier} ${durationLabel} (stacks: ${stacks}).`)
+    return
+  }
   const existing = unit.modifiers.find((entry) => entry.type === modifier)
   if (existing) {
     existing.turnsRemaining = mergeDurations(existing.turnsRemaining, normalizedTurns)
@@ -1357,11 +1381,12 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
         const targetTile = neighbor(actingUnit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
         const target = getUnitAt(state, targetTile)
-        if (!target || !canCardTargetUnit(order.defId, target)) continue
+        if (!target) continue
+        if (target.kind !== 'stronghold' && !canCardTargetUnit(order.defId, target)) continue
         applyDamage(state, target, effect.damage)
 
         const surviving = state.units[target.id]
-        if (!surviving) continue
+        if (!surviving || surviving.kind === 'stronghold') continue
         pushUnit(state, surviving, dir, effect.pushDistance)
       }
       return

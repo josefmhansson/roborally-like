@@ -24,6 +24,15 @@ function clearNonStrongholdUnits(state: GameState): void {
   })
 }
 
+test('player 1 starts from the lower side of the board', () => {
+  const state = createGameState()
+  const p1Stronghold = state.units['stronghold-0']
+  const p2Stronghold = state.units['stronghold-1']
+  assert.ok(p1Stronghold)
+  assert.ok(p2Stronghold)
+  assert.ok(p1Stronghold.pos.r > p2Stronghold.pos.r)
+})
+
 test('barricade card spawns two barricade units on valid tiles', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -223,6 +232,37 @@ test('burn deals damage each turn and lasts indefinitely', () => {
   assert.equal(state.units[enemyUnit.id], undefined)
 })
 
+test('burn stacks when applied multiple times and deals damage per stack', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_burn'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const enemyUnit = Object.values(state.units).find((unit) => unit.owner === 1 && unit.kind === 'unit')
+  assert.ok(enemyUnit)
+  enemyUnit.strength = 6
+
+  const burnCardA = findCardId(state, 0, 'spell_burn')
+  assert.ok(planOrder(state, 0, burnCardA, { unitId: enemyUnit.id }))
+  const burnCardB = findCardId(state, 0, 'spell_burn')
+  assert.ok(planOrder(state, 0, burnCardB, { unitId: enemyUnit.id }))
+
+  readyAndResolve(state)
+
+  const afterFirstTurn = state.units[enemyUnit.id]
+  assert.ok(afterFirstTurn)
+  const stacks = afterFirstTurn.modifiers.filter((modifier) => modifier.type === 'burn')
+  assert.equal(stacks.length, 2)
+  assert.equal(afterFirstTurn.strength, 4)
+
+  readyAndResolve(state)
+
+  const afterSecondTurn = state.units[enemyUnit.id]
+  assert.ok(afterSecondTurn)
+  assert.equal(afterSecondTurn.strength, 2)
+})
+
 test('dispel can target barricades and removes their modifiers', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -279,6 +319,33 @@ test('priority cards jump ahead of opposing non-priority cards', () => {
   assert.deepEqual(
     state.actionQueue.map((order) => `${order.player}:${order.defId}`),
     ['0:move_any', '0:attack_jab', '1:move_any', '1:move_any', '0:move_any']
+  )
+})
+
+test('priority card leads even when opponent is active player', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  const p1Unit = Object.values(state.units).find((unit) => unit.owner === 0 && unit.kind === 'unit')
+  const p2Unit = Object.values(state.units).find((unit) => unit.owner === 1 && unit.kind === 'unit')
+  assert.ok(p1Unit)
+  assert.ok(p2Unit)
+
+  const p1JabCardId = findCardId(state, 0, 'attack_jab')
+  const p2MoveCardId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, p1JabCardId, { unitId: p1Unit.id, direction: 0 }))
+  assert.ok(planOrder(state, 1, p2MoveCardId, { unitId: p2Unit.id, direction: 3, distance: 1 }))
+
+  state.activePlayer = 1
+  state.ready = [true, true]
+  startActionPhase(state)
+
+  assert.deepEqual(
+    state.actionQueue.map((order) => `${order.player}:${order.defId}`),
+    ['0:attack_jab', '1:move_any']
   )
 })
 
@@ -396,4 +463,64 @@ test('whirlwind damages adjacent units and pushes when space is open', () => {
   assert.equal(state.units['ww-diag']?.strength, 1)
   assert.deepEqual(state.units['ww-diag']?.pos, diagPos)
   assert.equal(state.units['ww-blocker']?.strength, 4)
+})
+
+test('whirlwind costs 2 AP', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 2 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_whirlwind'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const actor = Object.values(state.units).find((unit) => unit.owner === 0 && unit.kind === 'unit')
+  assert.ok(actor)
+
+  const firstCardId = findCardId(state, 0, 'attack_whirlwind')
+  const firstPlanned = planOrder(state, 0, firstCardId, { unitId: actor.id })
+  assert.ok(firstPlanned)
+
+  const secondCardId = findCardId(state, 0, 'attack_whirlwind')
+  const secondPlanned = planOrder(state, 0, secondCardId, { unitId: actor.id })
+  assert.equal(secondPlanned, null)
+})
+
+test('whirlwind can damage enemy stronghold and does not push it', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_whirlwind'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonStrongholdUnits(state)
+  const enemyStronghold = state.units['stronghold-1']
+  assert.ok(enemyStronghold && enemyStronghold.kind === 'stronghold')
+  const strongholdStartPos = { ...enemyStronghold.pos }
+  const strongholdStartStrength = enemyStronghold.strength
+
+  const actorPos = ([0, 1, 2, 3, 4, 5] as Direction[]).map((dir) => neighbor(enemyStronghold.pos, dir)).find((tile) => {
+    if (tile.q < 0 || tile.q >= state.boardCols || tile.r < 0 || tile.r >= state.boardRows) return false
+    return !Object.values(state.units).some((unit) => unit.pos.q === tile.q && unit.pos.r === tile.r)
+  })
+  assert.ok(actorPos)
+
+  state.units['ww-actor-stronghold'] = {
+    id: 'ww-actor-stronghold',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: actorPos,
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_whirlwind')
+  const planned = planOrder(state, 0, cardId, { unitId: 'ww-actor-stronghold' })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  const strongholdAfter = state.units['stronghold-1']
+  assert.ok(strongholdAfter)
+  assert.equal(strongholdAfter.strength, strongholdStartStrength - 3)
+  assert.deepEqual(strongholdAfter.pos, strongholdStartPos)
 })

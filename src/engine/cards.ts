@@ -189,8 +189,8 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   },
   attack_line: {
     id: 'attack_line',
-    name: 'Sweeping Line',
-    description: 'Deal 1 damage to every tile in the forward direction.',
+    name: 'Death Ray',
+    description: 'Fire a death ray forward, dealing 1 damage to every unit in line.',
     type: 'attack',
     requires: { unit: 'friendly' },
     effects: [
@@ -333,7 +333,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Whirlwind',
     description: 'Deal 3 damage to surrounding units and push them back 1 tile if possible.',
     type: 'attack',
-    actionCost: 3,
+    actionCost: 2,
     requires: { unit: 'friendly' },
     effects: [
       {
@@ -466,7 +466,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   spell_burn: {
     id: 'spell_burn',
     name: 'Burn',
-    description: 'Apply Burn to a unit (takes 1 damage at end of each turn).',
+    description: 'Apply Burn to a unit (stackable; deals 1 damage per stack at end of each turn).',
     type: 'spell',
     requires: { unit: 'any' },
     effects: [

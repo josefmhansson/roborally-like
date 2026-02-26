@@ -61,7 +61,7 @@ test('invest uses plus and action stamp without board grid primitives', () => {
   assert.equal(svg.includes('data-primitive="tile-highlight"'), false)
 })
 
-test('sweeping line uses affected tiles rather than target highlights', () => {
+test('death ray uses affected tiles rather than target highlights', () => {
   const svg = getCardArtSvg('attack_line')
   assert.ok(svg.includes('data-primitive="affected-tile"'))
   assert.equal(svg.includes('data-primitive="tile-highlight"'), false)
