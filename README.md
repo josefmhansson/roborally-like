@@ -97,6 +97,22 @@ npm run telemetry:cards -- --min-played 3
 npm run telemetry:cards -- --json
 ```
 
+### Automated bot-vs-bot telemetry generation
+
+Run headless simulated matches (no rendering/UI) with random bot decks:
+
+```bash
+npm run telemetry:simulate -- --matches 500
+```
+
+Useful options:
+
+```bash
+npm run telemetry:simulate -- --matches 1000 --think-ms 5 --max-turns 80
+npm run telemetry:simulate -- --deck-size 20 --max-copies 3 --action-budget-p1 3 --action-budget-p2 3
+npm run telemetry:simulate -- --dry-run
+```
+
 ### Optional HTTP endpoints
 
 - `GET /health`

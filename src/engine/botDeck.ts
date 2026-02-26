@@ -74,7 +74,7 @@ function chooseCategoryCounts(
 ): CategoryCounts {
   const ratioDeckSize = options?.ratioDeckSize ?? deckSize
   const reservedReinforcement = options?.reservedReinforcement ?? 0
-  const bounds = createInitialBounds(deckSize, capacities, ratioDeckSize, reservedReinforcement)
+  const bounds = createInitialBounds(capacities, ratioDeckSize, reservedReinforcement)
   rebalanceBoundsForFeasibility(bounds, deckSize, capacities)
 
   const counts: CategoryCounts = {
@@ -106,7 +106,6 @@ function chooseCategoryCounts(
 }
 
 function createInitialBounds(
-  deckSize: number,
   capacities: CategoryCounts,
   ratioDeckSize: number,
   reservedReinforcement: number

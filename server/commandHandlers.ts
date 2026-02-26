@@ -2,7 +2,12 @@ import { planOrder, resolveAllActions, startActionPhase } from '../src/engine/ga
 import type { Direction, GameState, OrderParams, PlayerId } from '../src/engine/types'
 import type { ClientGameCommand } from '../src/shared/net/protocol'
 import type { Room } from './roomManager'
-import { canRoomUpdateLoadout, requestRoomRematch, updateRoomSeatLoadout } from './roomManager'
+import {
+  canRoomUpdateLoadout,
+  recordRoomUnplayedHandCards,
+  requestRoomRematch,
+  updateRoomSeatLoadout,
+} from './roomManager'
 
 type ResolutionReplayPayload = {
   actionStartState: GameState
@@ -115,6 +120,7 @@ export function applyRoomCommand(room: Room, seat: PlayerId, command: ClientGame
       room.state.ready[seat] = true
       let resolutionReplay: ResolutionReplayPayload | undefined
       if (room.state.ready[0] && room.state.ready[1]) {
+        recordRoomUnplayedHandCards(room, room.state)
         startActionPhase(room.state)
         const actionStartState = cloneGameState(room.state)
         resolveAllActions(room.state)

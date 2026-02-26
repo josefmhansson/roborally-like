@@ -13,6 +13,7 @@
     "server:dev": "tsx watch server/index.ts",
     "server:start": "tsx server/index.ts",
     "telemetry:cards": "tsx server/scripts/telemetryCards.ts",
+    "telemetry:simulate": "tsx server/scripts/simulateBotMatches.ts",
     "test:server": "node --import tsx --test --test-concurrency=1 --experimental-test-isolation=none server/tests/*.test.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",

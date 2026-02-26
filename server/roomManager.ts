@@ -18,6 +18,7 @@ type RoomTelemetryState = {
   matchId: string
   startedAt: number
   playedCards: [CardDefId[], CardDefId[]]
+  unplayedHandCards: [CardDefId[], CardDefId[]]
   submitted: boolean
 }
 
@@ -245,6 +246,11 @@ export function recordRoomPlayedCards(room: Room, actionStartState: GameState): 
   })
 }
 
+export function recordRoomUnplayedHandCards(room: Room, planningState: GameState): void {
+  room.telemetry.unplayedHandCards[0].push(...planningState.players[0].hand.map((card) => card.defId))
+  room.telemetry.unplayedHandCards[1].push(...planningState.players[1].hand.map((card) => card.defId))
+}
+
 export function buildRoomTelemetrySubmission(room: Room, now = Date.now()): MatchTelemetrySubmission | null {
   if (room.telemetry.submitted) return null
   return {
@@ -262,13 +268,19 @@ export function buildRoomTelemetrySubmission(room: Room, now = Date.now()): Matc
         seat: 0,
         decklist: [...room.seatLoadouts[0]],
         cardsPlayed: [...room.telemetry.playedCards[0]],
-        cardsInHandNotPlayed: room.state.players[0].hand.map((card) => card.defId),
+        cardsInHandNotPlayed: [
+          ...room.telemetry.unplayedHandCards[0],
+          ...room.state.players[0].hand.map((card) => card.defId),
+        ],
       },
       {
         seat: 1,
         decklist: [...room.seatLoadouts[1]],
         cardsPlayed: [...room.telemetry.playedCards[1]],
-        cardsInHandNotPlayed: room.state.players[1].hand.map((card) => card.defId),
+        cardsInHandNotPlayed: [
+          ...room.telemetry.unplayedHandCards[1],
+          ...room.state.players[1].hand.map((card) => card.defId),
+        ],
       },
     ],
   }
@@ -296,6 +308,7 @@ function createRoomTelemetryState(now: number): RoomTelemetryState {
     matchId: createMatchId(now),
     startedAt: now,
     playedCards: [[], []],
+    unplayedHandCards: [[], []],
     submitted: false,
   }
 }

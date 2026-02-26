@@ -2,7 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
 import { STARTING_DECK } from '../../src/engine/cards'
-import { RoomManager, buildRoomTelemetrySubmission, markRoomTelemetrySubmitted, recordRoomPlayedCards } from '../roomManager'
+import {
+  RoomManager,
+  buildRoomTelemetrySubmission,
+  markRoomTelemetrySubmitted,
+  recordRoomPlayedCards,
+  recordRoomUnplayedHandCards,
+} from '../roomManager'
 import type { CardDefId, GameState } from '../../src/engine/types'
 
 function mockSocket(): WebSocket {
@@ -124,7 +130,7 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
   assert.equal(paddedCards.filter((defId) => defId === 'spell_meteor').length, 1)
 })
 
-test('room telemetry submission includes played cards and final hand', () => {
+test('room telemetry submission includes played cards and accumulated unplayed hand cards', () => {
   const manager = new RoomManager()
   const room = manager.createRoom({
     settings: {
@@ -164,8 +170,13 @@ test('room telemetry submission includes played cards and final hand', () => {
   }
   recordRoomPlayedCards(room, actionStartState)
 
-  room.state.players[0].hand = [{ id: 'h1', defId: 'spell_invest' }]
+  room.state.players[0].hand = [{ id: 'h1', defId: 'spell_invest' }, { id: 'h3', defId: 'move_forward' }]
   room.state.players[1].hand = [{ id: 'h2', defId: 'spell_invest' }]
+  recordRoomUnplayedHandCards(room, room.state)
+
+  // Simulate action start where unchosen hand cards have been discarded.
+  room.state.players[0].hand = []
+  room.state.players[1].hand = []
   room.state.winner = 0
   room.endReason = 'victory'
 
@@ -175,7 +186,8 @@ test('room telemetry submission includes played cards and final hand', () => {
   assert.equal(telemetry?.winner, 0)
   assert.equal(telemetry?.players[0].cardsPlayed[0], 'attack_arrow')
   assert.equal(telemetry?.players[1].cardsPlayed[0], 'move_any')
-  assert.deepEqual(telemetry?.players[0].cardsInHandNotPlayed, ['spell_invest'])
+  assert.deepEqual(telemetry?.players[0].cardsInHandNotPlayed, ['spell_invest', 'move_forward'])
+  assert.deepEqual(telemetry?.players[1].cardsInHandNotPlayed, ['spell_invest'])
 
   markRoomTelemetrySubmitted(room)
   const afterSubmit = buildRoomTelemetrySubmission(room, 5100)

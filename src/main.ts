@@ -616,7 +616,7 @@ type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
 type RoguelikeUiStage = 'reward_choice' | 'draft_pick' | 'remove_pick' | 'run_over'
 
 type RoguelikeDifficulty = {
-  botStrongholdBonus: number
+  botStrongholdHp: number
   botActionBudgetBonus: number
   botDrawBonus: number
   botStartingUnitCountBonus: number
@@ -4096,9 +4096,15 @@ function applySeed(seed: string): void {
 }
 
 function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
+  const normalizedWins = Math.max(0, wins)
+  const botStrongholdHp =
+    normalizedWins <= 4
+      ? 2 + Math.floor((normalizedWins * 3) / 4)
+      : 5 + Math.ceil((normalizedWins - 4) * 0.75)
+
   if (wins <= 0) {
     return {
-      botStrongholdBonus: -6,
+      botStrongholdHp,
       botActionBudgetBonus: -1,
       botDrawBonus: -1,
       botStartingUnitCountBonus: -1,
@@ -4107,7 +4113,7 @@ function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
   }
   if (wins === 1) {
     return {
-      botStrongholdBonus: -5,
+      botStrongholdHp,
       botActionBudgetBonus: -1,
       botDrawBonus: -1,
       botStartingUnitCountBonus: -1,
@@ -4116,7 +4122,7 @@ function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
   }
   if (wins === 2) {
     return {
-      botStrongholdBonus: -4,
+      botStrongholdHp,
       botActionBudgetBonus: -1,
       botDrawBonus: 0,
       botStartingUnitCountBonus: 0,
@@ -4125,7 +4131,7 @@ function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
   }
   if (wins === 3) {
     return {
-      botStrongholdBonus: -3,
+      botStrongholdHp,
       botActionBudgetBonus: 0,
       botDrawBonus: 0,
       botStartingUnitCountBonus: 0,
@@ -4134,7 +4140,7 @@ function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
   }
   if (wins === 4) {
     return {
-      botStrongholdBonus: -2,
+      botStrongholdHp,
       botActionBudgetBonus: 0,
       botDrawBonus: 0,
       botStartingUnitCountBonus: 0,
@@ -4144,7 +4150,7 @@ function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
 
   const tier = wins - 5
   return {
-    botStrongholdBonus: tier,
+    botStrongholdHp,
     botActionBudgetBonus: Math.floor((tier + 1) / 3),
     botDrawBonus: Math.floor((tier + 2) / 4),
     botStartingUnitCountBonus: Math.floor((tier + 2) / 4),
@@ -4195,7 +4201,7 @@ function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunS
     playerStronghold.strength = Math.max(1, run.strongholdHp)
   }
   if (botStronghold) {
-    botStronghold.strength = Math.max(1, ROGUELIKE_STARTING_STRONGHOLD_HP + difficulty.botStrongholdBonus)
+    botStronghold.strength = Math.max(1, difficulty.botStrongholdHp)
   }
 
   let p1Budget = sourceState.actionBudgets[0]
