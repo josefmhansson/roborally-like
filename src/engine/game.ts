@@ -317,9 +317,12 @@ export function isSpawnTile(state: GameState, player: PlayerId, hex: Hex): boole
 export function drawPhase(state: GameState): void {
   for (const player of [0, 1] as PlayerId[]) {
     const bonusDraw = consumePlayerDrawModifiers(state, player)
-    drawCards(state, player, state.settings.drawPerTurn + bonusDraw)
+    const drawCount = Math.max(0, state.settings.drawPerTurn + bonusDraw)
+    drawCards(state, player, drawCount)
     if (bonusDraw > 0) {
       state.log.push(`Player ${player + 1} draws ${bonusDraw} extra card(s).`)
+    } else if (bonusDraw < 0) {
+      state.log.push(`Player ${player + 1} draws ${Math.abs(bonusDraw)} fewer card(s).`)
     }
   }
   state.phase = 'planning'
@@ -357,7 +360,7 @@ function consumePlayerDrawModifiers(state: GameState, player: PlayerId): number 
     }
   })
   playerState.modifiers = playerState.modifiers.filter((modifier) => isActiveDuration(modifier.turnsRemaining))
-  return Math.max(0, bonusDraw)
+  return bonusDraw
 }
 
 export function planOrder(

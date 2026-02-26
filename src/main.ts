@@ -75,6 +75,7 @@ app.innerHTML = `
         <div class="menu-actions">
           <button id="menu-start" class="btn">Start Local Game</button>
           <button id="menu-start-bot" class="btn ghost">Start Vs Bot</button>
+          <button id="menu-start-roguelike" class="btn ghost">Start Roguelike</button>
           <button id="menu-loadout" class="btn ghost">Loadout</button>
           <button id="menu-settings" class="btn ghost">Settings</button>
         </div>
@@ -243,6 +244,7 @@ app.innerHTML = `
     <div class="winner-card">
       <div id="winner-text" class="winner-text"></div>
       <div id="winner-note" class="seed-status"></div>
+      <div id="winner-extra" class="winner-extra"></div>
       <div class="winner-actions">
         <button id="winner-menu" class="btn ghost">Main Menu</button>
         <button id="winner-reset" class="btn">Edit Deck</button>
@@ -261,6 +263,7 @@ const cardOverlay = document.querySelector<HTMLDivElement>('#card-overlay')!
 
 const menuStartButton = document.querySelector<HTMLButtonElement>('#menu-start')!
 const menuStartBotButton = document.querySelector<HTMLButtonElement>('#menu-start-bot')!
+const menuStartRoguelikeButton = document.querySelector<HTMLButtonElement>('#menu-start-roguelike')!
 const menuLoadoutButton = document.querySelector<HTMLButtonElement>('#menu-loadout')!
 const menuSettingsButton = document.querySelector<HTMLButtonElement>('#menu-settings')!
 const seedInput = document.querySelector<HTMLInputElement>('#seed-input')!
@@ -315,6 +318,7 @@ const networkStateEl = document.querySelector<HTMLSpanElement>('#network-state')
 const winnerModal = document.querySelector<HTMLDivElement>('#winner-modal')!
 const winnerTextEl = document.querySelector<HTMLDivElement>('#winner-text')!
 const winnerNoteEl = document.querySelector<HTMLDivElement>('#winner-note')!
+const winnerExtraEl = document.querySelector<HTMLDivElement>('#winner-extra')!
 const winnerMenuButton = document.querySelector<HTMLButtonElement>('#winner-menu')!
 const winnerResetButton = document.querySelector<HTMLButtonElement>('#winner-reset')!
 const winnerRematchButton = document.querySelector<HTMLButtonElement>('#winner-rematch')!
@@ -333,6 +337,7 @@ if (
   !gameScreen ||
   !menuStartButton ||
   !menuStartBotButton ||
+  !menuStartRoguelikeButton ||
   !menuLoadoutButton ||
   !menuSettingsButton ||
   !seedInput ||
@@ -382,6 +387,7 @@ if (
   !winnerModal ||
   !winnerTextEl ||
   !winnerNoteEl ||
+  !winnerExtraEl ||
   !winnerMenuButton ||
   !winnerResetButton ||
   !winnerRematchButton ||
@@ -584,12 +590,59 @@ const ONLINE_SESSION_VERSION = 1
 const ONLINE_RECONNECT_DELAY_MS = 2000
 const BOT_HUMAN_PLAYER: PlayerId = 0
 const BOT_PLAYER: PlayerId = 1
+const ROGUELIKE_STARTING_STRONGHOLD_HP = 20
+const ROGUELIKE_OPPONENT_DECK_SIZE = 20
+const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
+  draft: 2,
+  remove: 1,
+  extraDraw: 0.5,
+  extraAp: 0.2,
+  extraStartingUnit: 0.5,
+} as const
+const ROGUELIKE_STARTING_DECK: CardDefId[] = [
+  'reinforce_spawn',
+  'reinforce_spawn',
+  'move_forward_face',
+  'move_forward_face',
+  'reinforce_boost',
+  'move_forward',
+  'attack_fwd_lr',
+  'attack_fwd',
+  'attack_arrow',
+]
+const ALL_CARD_IDS = Object.keys(CARD_DEFS) as CardDefId[]
+
+type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
+type RoguelikeUiStage = 'reward_choice' | 'draft_pick' | 'remove_pick' | 'run_over'
+
+type RoguelikeDifficulty = {
+  botStrongholdBonus: number
+  botActionBudgetBonus: number
+  botDrawBonus: number
+  botStartingUnitCountBonus: number
+  botStartingUnitStrengthBonus: number
+}
+
+type RoguelikeRunState = {
+  wins: number
+  strongholdHp: number
+  deck: CardDefId[]
+  bonusDrawPerTurn: number
+  bonusActionBudget: number
+  bonusStartingUnits: number
+  resultHandled: boolean
+  uiStage: RoguelikeUiStage
+  draftOptions: CardDefId[]
+}
+
+let roguelikeRun: RoguelikeRunState | null = null
 
 type LocalMatchTelemetryState = {
   matchId: string
   mode: 'local' | 'bot'
   startedAt: number
   playedCards: [CardDefId[], CardDefId[]]
+  unplayedHandCards: [CardDefId[], CardDefId[]]
   enqueued: boolean
   allowSubmission: boolean
 }
@@ -635,9 +688,9 @@ type SeedPayload = {
 }
 
 type PersistedProgress = {
-  version: 1 | 2
+  version: 1 | 2 | 3
   screen: 'menu' | 'loadout' | 'settings' | 'game'
-  localMode?: 'local' | 'bot'
+  localMode?: 'local' | 'bot' | 'roguelike'
   gameSettings: GameSettings
   loadouts: { p1: CardDefId[]; p2: CardDefId[] }
   state: GameState
@@ -646,6 +699,7 @@ type PersistedProgress = {
   pendingOrder: { cardId: string; params: OrderParams } | null
   boardZoom: number
   boardPan: { x: number; y: number }
+  roguelikeRun?: RoguelikeRunState | null
 }
 
 type PersistedOnlineSession = {
@@ -664,6 +718,59 @@ function normalizeDeckInput(input: unknown): CardDefId[] {
   return input.filter((id): id is CardDefId => typeof id === 'string' && id in CARD_DEFS)
 }
 
+function isBotControlledMode(modeValue: PlayMode = mode): boolean {
+  return modeValue === 'bot' || modeValue === 'roguelike'
+}
+
+function getPersistedLocalMode(modeValue: PlayMode): Exclude<PersistedProgress['localMode'], undefined> {
+  if (modeValue === 'bot') return 'bot'
+  if (modeValue === 'roguelike') return 'roguelike'
+  return 'local'
+}
+
+function getLocalTelemetryMode(modeValue: PlayMode): 'local' | 'bot' {
+  return modeValue === 'local' ? 'local' : 'bot'
+}
+
+function createInitialRoguelikeRunState(): RoguelikeRunState {
+  return {
+    wins: 0,
+    strongholdHp: ROGUELIKE_STARTING_STRONGHOLD_HP,
+    deck: [...ROGUELIKE_STARTING_DECK],
+    bonusDrawPerTurn: 0,
+    bonusActionBudget: 0,
+    bonusStartingUnits: 0,
+    resultHandled: false,
+    uiStage: 'reward_choice',
+    draftOptions: [],
+  }
+}
+
+function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
+  if (!input || typeof input !== 'object') return null
+  const source = input as Partial<RoguelikeRunState>
+  const deck = normalizeDeckInput(source.deck)
+  const uiStage =
+    source.uiStage === 'reward_choice' ||
+    source.uiStage === 'draft_pick' ||
+    source.uiStage === 'remove_pick' ||
+    source.uiStage === 'run_over'
+      ? source.uiStage
+      : 'reward_choice'
+
+  return {
+    wins: Math.max(0, Math.floor(Number(source.wins) || 0)),
+    strongholdHp: Math.max(1, Math.floor(Number(source.strongholdHp) || ROGUELIKE_STARTING_STRONGHOLD_HP)),
+    deck: deck.length > 0 ? deck : [...ROGUELIKE_STARTING_DECK],
+    bonusDrawPerTurn: Math.max(0, Math.floor(Number(source.bonusDrawPerTurn) || 0)),
+    bonusActionBudget: Math.max(0, Math.floor(Number(source.bonusActionBudget) || 0)),
+    bonusStartingUnits: Math.max(0, Math.floor(Number(source.bonusStartingUnits) || 0)),
+    resultHandled: Boolean(source.resultHandled),
+    uiStage,
+    draftOptions: normalizeDeckInput(source.draftOptions).slice(0, 3),
+  }
+}
+
 function scheduleProgressSave(): void {
   if (mode === 'online') return
   if (progressSaveTimer !== null) {
@@ -679,9 +786,9 @@ function persistProgressNow(): void {
   if (mode === 'online') return
   try {
     const payload: PersistedProgress = {
-      version: 2,
+      version: 3,
       screen,
-      localMode: mode === 'bot' ? 'bot' : 'local',
+      localMode: getPersistedLocalMode(mode),
       gameSettings,
       loadouts: {
         p1: [...loadouts.p1],
@@ -693,6 +800,7 @@ function persistProgressNow(): void {
       pendingOrder,
       boardZoom,
       boardPan: { ...boardPan },
+      roguelikeRun: mode === 'roguelike' ? roguelikeRun : null,
     }
     localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(payload))
   } catch {
@@ -705,7 +813,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     const raw = localStorage.getItem(PROGRESS_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<PersistedProgress>
-    if (parsed.version !== 1 && parsed.version !== 2) return null
+    if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) return null
     if (!parsed.state || !Array.isArray(parsed.state.tiles) || !Array.isArray(parsed.state.players)) return null
     if (!parsed.gameSettings || !parsed.loadouts) return null
 
@@ -749,9 +857,19 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
       pendingOrder = null
     }
 
-    if (parsed.version === 2 && parsed.localMode === 'bot') {
+    roguelikeRun = null
+    if ((parsed.version === 2 || parsed.version === 3) && parsed.localMode === 'bot') {
       applyPlayMode('bot')
       planningPlayer = BOT_HUMAN_PLAYER
+    } else if (parsed.version === 3 && parsed.localMode === 'roguelike') {
+      const restoredRun = normalizeRoguelikeRunInput(parsed.roguelikeRun)
+      if (restoredRun) {
+        roguelikeRun = restoredRun
+        applyPlayMode('roguelike')
+        planningPlayer = BOT_HUMAN_PLAYER
+      } else {
+        applyPlayMode('local')
+      }
     } else {
       applyPlayMode('local')
     }
@@ -781,6 +899,7 @@ function createLocalTelemetryState(modeValue: 'local' | 'bot', now = Date.now())
     mode: modeValue,
     startedAt: now,
     playedCards: [[], []],
+    unplayedHandCards: [[], []],
     enqueued: false,
     allowSubmission: true,
   }
@@ -788,12 +907,12 @@ function createLocalTelemetryState(modeValue: 'local' | 'bot', now = Date.now())
 
 function resetLocalTelemetryForCurrentMatch(now = Date.now()): void {
   if (mode === 'online') return
-  localTelemetry = createLocalTelemetryState(mode === 'bot' ? 'bot' : 'local', now)
+  localTelemetry = createLocalTelemetryState(getLocalTelemetryMode(mode), now)
 }
 
 function markLocalTelemetryAsRestoredOutcome(): void {
   if (mode === 'online') return
-  localTelemetry = createLocalTelemetryState(mode === 'bot' ? 'bot' : 'local')
+  localTelemetry = createLocalTelemetryState(getLocalTelemetryMode(mode))
   localTelemetry.allowSubmission = false
 }
 
@@ -802,6 +921,12 @@ function recordActionQueueTelemetry(sourceState: GameState): void {
   sourceState.actionQueue.forEach((order) => {
     localTelemetry.playedCards[order.player].push(order.defId)
   })
+}
+
+function recordUnplayedHandTelemetry(sourceState: GameState): void {
+  if (mode === 'online') return
+  localTelemetry.unplayedHandCards[0].push(...sourceState.players[0].hand.map((card) => card.defId))
+  localTelemetry.unplayedHandCards[1].push(...sourceState.players[1].hand.map((card) => card.defId))
 }
 
 function trySubmitLocalTelemetryIfNeeded(): void {
@@ -831,13 +956,19 @@ function buildLocalMatchTelemetrySubmission(now = Date.now()): MatchTelemetrySub
         seat: 0,
         decklist: [...loadouts.p1],
         cardsPlayed: [...localTelemetry.playedCards[0]],
-        cardsInHandNotPlayed: state.players[0].hand.map((card) => card.defId),
+        cardsInHandNotPlayed: [
+          ...localTelemetry.unplayedHandCards[0],
+          ...state.players[0].hand.map((card) => card.defId),
+        ],
       },
       {
         seat: 1,
         decklist: [...loadouts.p2],
         cardsPlayed: [...localTelemetry.playedCards[1]],
-        cardsInHandNotPlayed: state.players[1].hand.map((card) => card.defId),
+        cardsInHandNotPlayed: [
+          ...localTelemetry.unplayedHandCards[1],
+          ...state.players[1].hand.map((card) => card.defId),
+        ],
       },
     ],
   }
@@ -1138,15 +1269,20 @@ function invalidateBotPlanning(): void {
 }
 
 function isBotPlanningLocked(): boolean {
-  return mode === 'bot' && botThinking
+  return isBotControlledMode() && botThinking
 }
 
 function applyPlayMode(next: PlayMode): void {
+  const previousMode = mode
   invalidateBotPlanning()
-  if (next === 'bot') {
+  if (isBotControlledMode(next)) {
     planningPlayer = BOT_HUMAN_PLAYER
   }
   mode = next
+  if (previousMode === 'roguelike' && next !== 'roguelike') {
+    roguelikeRun = null
+    winnerExtraEl.innerHTML = ''
+  }
   if (next !== 'online') {
     resetLocalTelemetryForCurrentMatch()
   }
@@ -1634,6 +1770,7 @@ function clearReady(player?: PlayerId): void {
 
 function tryStartActionPhase(): void {
   if (state.ready[0] && state.ready[1]) {
+    recordUnplayedHandTelemetry(state)
     startActionPhase(state)
     recordActionQueueTelemetry(state)
     selectedCardId = null
@@ -1644,7 +1781,7 @@ function tryStartActionPhase(): void {
 }
 
 function scheduleBotPlanningTurn(): void {
-  if (mode !== 'bot') return
+  if (!isBotControlledMode()) return
   if (state.phase !== 'planning') return
   if (!state.ready[BOT_HUMAN_PLAYER]) return
   const token = botPlanToken + 1
@@ -1653,7 +1790,7 @@ function scheduleBotPlanningTurn(): void {
 
   window.setTimeout(() => {
     if (token !== botPlanToken) return
-    if (mode !== 'bot' || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
+    if (!isBotControlledMode() || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
       botThinking = false
       render()
       return
@@ -1669,7 +1806,7 @@ function scheduleBotPlanningTurn(): void {
     })
 
     if (token !== botPlanToken) return
-    if (mode !== 'bot' || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
+    if (!isBotControlledMode() || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
       botThinking = false
       render()
       return
@@ -1693,13 +1830,17 @@ function resetGameState(statusMessage: string): void {
     statusEl.textContent = 'Reset is disabled in online matches.'
     return
   }
+  if (mode === 'roguelike') {
+    startNextRoguelikeMatch('Match restarted.')
+    return
+  }
   invalidateBotPlanning()
   resetCardVisualState()
   clearActionAnimationState()
   state = createGameState(gameSettings, loadouts)
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false
-  planningPlayer = mode === 'bot' ? BOT_HUMAN_PLAYER : 0
+  planningPlayer = isBotControlledMode() ? BOT_HUMAN_PLAYER : 0
   selectedCardId = null
   pendingOrder = null
   winnerModal.classList.add('hidden')
@@ -2458,7 +2599,7 @@ function togglePinnedUnitStatusFromHex(hex: Hex): void {
 }
 
 function setScreen(next: typeof screen): void {
-  if (mode === 'bot' && next !== 'game') {
+  if (isBotControlledMode() && next !== 'game') {
     invalidateBotPlanning()
   }
   screen = next
@@ -3946,12 +4087,360 @@ function applySeed(seed: string): void {
   enforceMaxCopies()
   state = createGameState(gameSettings, loadouts)
   resetLocalTelemetryForCurrentMatch()
-  if (mode === 'bot') {
+  if (isBotControlledMode()) {
     planningPlayer = BOT_HUMAN_PLAYER
   }
   if (screen === 'settings') renderSettings()
   if (screen === 'loadout') renderLoadout()
   updateSeedDisplay()
+}
+
+function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
+  if (wins <= 0) {
+    return {
+      botStrongholdBonus: -6,
+      botActionBudgetBonus: -1,
+      botDrawBonus: -1,
+      botStartingUnitCountBonus: -1,
+      botStartingUnitStrengthBonus: -1,
+    }
+  }
+  if (wins === 1) {
+    return {
+      botStrongholdBonus: -5,
+      botActionBudgetBonus: -1,
+      botDrawBonus: -1,
+      botStartingUnitCountBonus: -1,
+      botStartingUnitStrengthBonus: 0,
+    }
+  }
+  if (wins === 2) {
+    return {
+      botStrongholdBonus: -4,
+      botActionBudgetBonus: -1,
+      botDrawBonus: 0,
+      botStartingUnitCountBonus: 0,
+      botStartingUnitStrengthBonus: 0,
+    }
+  }
+  if (wins === 3) {
+    return {
+      botStrongholdBonus: -3,
+      botActionBudgetBonus: 0,
+      botDrawBonus: 0,
+      botStartingUnitCountBonus: 0,
+      botStartingUnitStrengthBonus: 0,
+    }
+  }
+  if (wins === 4) {
+    return {
+      botStrongholdBonus: -2,
+      botActionBudgetBonus: 0,
+      botDrawBonus: 0,
+      botStartingUnitCountBonus: 0,
+      botStartingUnitStrengthBonus: 0,
+    }
+  }
+
+  const tier = wins - 5
+  return {
+    botStrongholdBonus: tier,
+    botActionBudgetBonus: Math.floor((tier + 1) / 3),
+    botDrawBonus: Math.floor((tier + 2) / 4),
+    botStartingUnitCountBonus: Math.floor((tier + 2) / 4),
+    botStartingUnitStrengthBonus: Math.floor((tier + 4) / 6),
+  }
+}
+
+function getUnitAtHex(sourceState: GameState, hex: Hex): Unit | null {
+  for (const unit of Object.values(sourceState.units)) {
+    if (unit.pos.q === hex.q && unit.pos.r === hex.r) return unit
+  }
+  return null
+}
+
+function addStartingUnit(sourceState: GameState, owner: PlayerId, strength: number): boolean {
+  const stronghold = sourceState.units[`stronghold-${owner}`]
+  if (!stronghold) return false
+  const spawnTiles = getSpawnTiles(sourceState, owner)
+  for (const tile of spawnTiles) {
+    if (getUnitAtHex(sourceState, tile)) continue
+    const id = `u${owner}-${sourceState.nextUnitId}`
+    sourceState.nextUnitId += 1
+    sourceState.units[id] = {
+      id,
+      owner,
+      kind: 'unit',
+      strength: Math.max(1, strength),
+      pos: { ...tile },
+      facing: stronghold.facing,
+      modifiers: [],
+    }
+    return true
+  }
+  return false
+}
+
+function addMultipleStartingUnits(sourceState: GameState, owner: PlayerId, count: number, strength: number): void {
+  for (let i = 0; i < count; i += 1) {
+    if (!addStartingUnit(sourceState, owner, strength)) break
+  }
+}
+
+function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunState): void {
+  const difficulty = getRoguelikeDifficulty(run.wins)
+  const playerStronghold = sourceState.units[`stronghold-${BOT_HUMAN_PLAYER}`]
+  const botStronghold = sourceState.units[`stronghold-${BOT_PLAYER}`]
+  if (playerStronghold) {
+    playerStronghold.strength = Math.max(1, run.strongholdHp)
+  }
+  if (botStronghold) {
+    botStronghold.strength = Math.max(1, ROGUELIKE_STARTING_STRONGHOLD_HP + difficulty.botStrongholdBonus)
+  }
+
+  let p1Budget = sourceState.actionBudgets[0]
+  let p2Budget = sourceState.actionBudgets[1]
+  if (run.bonusActionBudget > 0) {
+    p1Budget = Math.max(1, p1Budget + run.bonusActionBudget)
+  }
+  p2Budget = Math.max(1, p2Budget + difficulty.botActionBudgetBonus)
+  sourceState.actionBudgets = [p1Budget, p2Budget]
+  sourceState.settings = {
+    ...sourceState.settings,
+    actionBudgetP1: p1Budget,
+    actionBudgetP2: p2Budget,
+  }
+
+  if (run.bonusDrawPerTurn !== 0) {
+    sourceState.players[BOT_HUMAN_PLAYER].modifiers.push({
+      type: 'extraDraw',
+      amount: run.bonusDrawPerTurn,
+      turnsRemaining: 'indefinite',
+    })
+  }
+  if (difficulty.botDrawBonus !== 0) {
+    sourceState.players[BOT_PLAYER].modifiers.push({
+      type: 'extraDraw',
+      amount: difficulty.botDrawBonus,
+      turnsRemaining: 'indefinite',
+    })
+  }
+
+  if (run.bonusStartingUnits > 0) {
+    addMultipleStartingUnits(sourceState, BOT_HUMAN_PLAYER, run.bonusStartingUnits, 2)
+  }
+
+  const botUnits = Object.values(sourceState.units)
+    .filter((unit) => unit.owner === BOT_PLAYER && unit.kind === 'unit')
+    .sort((a, b) => a.id.localeCompare(b.id))
+
+  if (difficulty.botStartingUnitCountBonus < 0) {
+    const removeCount = Math.min(botUnits.length, Math.abs(difficulty.botStartingUnitCountBonus))
+    botUnits.slice(-removeCount).forEach((unit) => {
+      delete sourceState.units[unit.id]
+    })
+  } else if (difficulty.botStartingUnitCountBonus > 0) {
+    addMultipleStartingUnits(sourceState, BOT_PLAYER, difficulty.botStartingUnitCountBonus, 2)
+  }
+
+  if (difficulty.botStartingUnitStrengthBonus !== 0) {
+    Object.values(sourceState.units).forEach((unit) => {
+      if (unit.owner !== BOT_PLAYER || unit.kind !== 'unit') return
+      unit.strength = Math.max(1, unit.strength + difficulty.botStartingUnitStrengthBonus)
+    })
+  }
+}
+
+function startNextRoguelikeMatch(statusMessage: string): void {
+  if (!roguelikeRun) return
+  invalidateBotPlanning()
+  resetCardVisualState()
+  clearActionAnimationState()
+  clearUnitStatusPopoverState()
+  winnerExtraEl.innerHTML = ''
+
+  const settings: GameSettings = {
+    ...gameSettings,
+    strongholdStrength: ROGUELIKE_STARTING_STRONGHOLD_HP,
+  }
+  loadouts.p1 = [...roguelikeRun.deck]
+  loadouts.p2 = generateClusteredBotDeck({
+    deckSize: ROGUELIKE_OPPONENT_DECK_SIZE,
+    maxCopies: settings.maxCopies,
+  })
+
+  state = createGameState(settings, loadouts)
+  applyRoguelikeMatchModifiers(state, roguelikeRun)
+  resetLocalTelemetryForCurrentMatch()
+  suppressWinnerModalForRestoredOutcome = false
+  roguelikeRun.resultHandled = false
+  roguelikeRun.uiStage = 'reward_choice'
+  roguelikeRun.draftOptions = []
+  planningPlayer = BOT_HUMAN_PLAYER
+  selectedCardId = null
+  pendingOrder = null
+  winnerModal.classList.add('hidden')
+  updateReadyButtons()
+  statusEl.textContent = statusMessage
+  render()
+}
+
+function startRoguelikeRun(): void {
+  applyPlayMode('roguelike')
+  roguelikeRun = createInitialRoguelikeRunState()
+  startNextRoguelikeMatch('Roguelike run started. Match 1 begins.')
+  setScreen('game')
+}
+
+function pickWeightedRoguelikeReward(): RoguelikeRandomReward {
+  const entries = Object.entries(ROGUELIKE_RANDOM_REWARD_WEIGHTS) as Array<[RoguelikeRandomReward, number]>
+  const totalWeight = entries.reduce((sum, [, weight]) => sum + weight, 0)
+  let roll = Math.random() * totalWeight
+  for (const [reward, weight] of entries) {
+    roll -= weight
+    if (roll <= 0) return reward
+  }
+  return entries[entries.length - 1][0]
+}
+
+function pickRandomCardOptions(count: number): CardDefId[] {
+  const pool = [...ALL_CARD_IDS]
+  for (let i = pool.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  }
+  return pool.slice(0, count)
+}
+
+function startRoguelikeMatchAfterReward(statusMessage: string): void {
+  if (!roguelikeRun) return
+  const matchNumber = roguelikeRun.wins + 1
+  startNextRoguelikeMatch(`${statusMessage} Match ${matchNumber} begins.`)
+}
+
+function chooseRoguelikeRandomReward(): void {
+  if (!roguelikeRun || state.winner !== BOT_HUMAN_PLAYER) return
+
+  let reward = pickWeightedRoguelikeReward()
+  if (reward === 'remove' && roguelikeRun.deck.length <= 1) {
+    reward = 'draft'
+  }
+
+  if (reward === 'draft') {
+    roguelikeRun.draftOptions = pickRandomCardOptions(3)
+    roguelikeRun.uiStage = 'draft_pick'
+    render()
+    return
+  }
+
+  if (reward === 'remove') {
+    roguelikeRun.uiStage = 'remove_pick'
+    render()
+    return
+  }
+
+  if (reward === 'extraDraw') {
+    roguelikeRun.bonusDrawPerTurn += 1
+    startRoguelikeMatchAfterReward('Reward gained: +1 extra card each hand.')
+    return
+  }
+
+  if (reward === 'extraAp') {
+    roguelikeRun.bonusActionBudget += 1
+    startRoguelikeMatchAfterReward('Reward gained: +1 action budget.')
+    return
+  }
+
+  roguelikeRun.bonusStartingUnits += 1
+  startRoguelikeMatchAfterReward('Reward gained: +1 starting unit.')
+}
+
+function handleRoguelikeMatchResultIfNeeded(): void {
+  if (mode !== 'roguelike' || !roguelikeRun) return
+  if (state.winner === null) return
+  if (roguelikeRun.resultHandled) return
+
+  roguelikeRun.resultHandled = true
+  roguelikeRun.draftOptions = []
+
+  if (state.winner === BOT_HUMAN_PLAYER) {
+    const stronghold = state.units[`stronghold-${BOT_HUMAN_PLAYER}`]
+    roguelikeRun.strongholdHp = Math.max(1, stronghold?.strength ?? roguelikeRun.strongholdHp)
+    roguelikeRun.wins += 1
+    roguelikeRun.uiStage = 'reward_choice'
+    return
+  }
+
+  roguelikeRun.uiStage = 'run_over'
+}
+
+function renderRoguelikeWinnerModal(): void {
+  if (mode !== 'roguelike' || !roguelikeRun || state.winner === null) return
+
+  winnerExtraEl.innerHTML = ''
+  winnerMenuButton.classList.remove('hidden')
+  winnerResetButton.classList.remove('hidden')
+  winnerRematchButton.classList.add('hidden')
+  winnerResetButton.disabled = false
+  winnerRematchButton.disabled = false
+
+  if (state.winner === BOT_HUMAN_PLAYER) {
+    const nextMatch = roguelikeRun.wins + 1
+    if (roguelikeRun.uiStage === 'draft_pick' && roguelikeRun.draftOptions.length < 3) {
+      roguelikeRun.draftOptions = pickRandomCardOptions(3)
+    }
+    if (roguelikeRun.uiStage === 'remove_pick' && roguelikeRun.deck.length <= 1) {
+      roguelikeRun.uiStage = 'reward_choice'
+    }
+    if (roguelikeRun.uiStage === 'draft_pick') {
+      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Draft 1 card.`
+      winnerNoteEl.textContent = `Stronghold HP: ${roguelikeRun.strongholdHp}. Pick one card to add before match ${nextMatch}.`
+      winnerMenuButton.textContent = 'End Run'
+      winnerResetButton.classList.add('hidden')
+      winnerRematchButton.classList.add('hidden')
+      winnerExtraEl.innerHTML = roguelikeRun.draftOptions
+        .map((cardId) => {
+          const def = CARD_DEFS[cardId]
+          return `<button class="btn ghost winner-option" data-roguelike-action="draft" data-card-id="${cardId}" type="button">${def.name}</button>`
+        })
+        .join('')
+    } else if (roguelikeRun.uiStage === 'remove_pick') {
+      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Remove 1 card.`
+      winnerNoteEl.textContent = `Choose one card to remove before match ${nextMatch}.`
+      winnerMenuButton.textContent = 'End Run'
+      winnerResetButton.classList.add('hidden')
+      winnerRematchButton.classList.add('hidden')
+      const counts = roguelikeRun.deck.reduce((acc, cardId) => {
+        acc[cardId] = (acc[cardId] ?? 0) + 1
+        return acc
+      }, {} as Partial<Record<CardDefId, number>>)
+      winnerExtraEl.innerHTML = Object.entries(counts)
+        .sort((a, b) => CARD_DEFS[a[0] as CardDefId].name.localeCompare(CARD_DEFS[b[0] as CardDefId].name))
+        .map(([cardId, count]) => {
+          const def = CARD_DEFS[cardId as CardDefId]
+          return `<button class="btn ghost winner-option" data-roguelike-action="remove" data-card-id="${cardId}" type="button">Remove ${def.name} (x${count ?? 0})</button>`
+        })
+        .join('')
+    } else {
+      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
+      winnerNoteEl.textContent = `Stronghold HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
+      winnerMenuButton.textContent = 'End Run'
+      winnerResetButton.textContent = '+10 Stronghold HP'
+      winnerRematchButton.classList.remove('hidden')
+      winnerRematchButton.textContent = 'Random Reward'
+      winnerResetButton.disabled = false
+      winnerRematchButton.disabled = false
+    }
+  } else {
+    winnerTextEl.textContent = 'Roguelike run ended.'
+    winnerNoteEl.textContent = `Matches won before loss: ${roguelikeRun.wins}.`
+    winnerMenuButton.textContent = 'Main Menu'
+    winnerResetButton.textContent = 'New Run'
+    winnerResetButton.classList.remove('hidden')
+    winnerRematchButton.classList.add('hidden')
+  }
+
+  winnerModal.classList.remove('hidden')
 }
 
 function renderMeta(): void {
@@ -3960,7 +4449,9 @@ function renderMeta(): void {
   const compactLabels = window.matchMedia('(max-width: 720px)').matches
   if (mode === 'online') {
     plannerNameEl.textContent = compactLabels ? `P${planningPlayer + 1} Online` : `Player ${planningPlayer + 1} Online`
-  } else if (mode === 'bot') {
+  } else if (mode === 'roguelike') {
+    plannerNameEl.textContent = compactLabels ? `P1 Run ${roguelikeRun?.wins ?? 0}` : `Roguelike Run ${roguelikeRun?.wins ?? 0}`
+  } else if (isBotControlledMode()) {
     plannerNameEl.textContent = compactLabels ? 'P1' : 'Player 1'
   } else {
     plannerNameEl.textContent = compactLabels ? `P${planningPlayer + 1}` : `Player ${planningPlayer + 1}`
@@ -4005,7 +4496,17 @@ function renderMeta(): void {
   gameMenuButton.textContent =
     mode === 'online' ? (compactLabels ? 'Leave' : 'Leave Match') : compactLabels ? 'Menu' : 'Main Menu'
   resetGameButton.textContent =
-    mode === 'online' ? (compactLabels ? 'Reset Off' : 'Reset (Local Only)') : compactLabels ? 'Reset' : 'Reset Game'
+    mode === 'online'
+      ? compactLabels
+        ? 'Reset Off'
+        : 'Reset (Local Only)'
+      : mode === 'roguelike'
+        ? compactLabels
+          ? 'Restart'
+          : 'Restart Match'
+        : compactLabels
+          ? 'Reset'
+          : 'Reset Game'
   winnerMenuButton.textContent = mode === 'online' ? 'Leave Match' : 'Main Menu'
   winnerResetButton.textContent = mode === 'online' ? 'Edit Deck' : 'Reset Game'
   winnerRematchButton.classList.toggle('hidden', mode !== 'online')
@@ -4039,20 +4540,30 @@ function render(): void {
 
   if (state.winner !== null) {
     trySubmitLocalTelemetryIfNeeded()
-    statusEl.textContent = `Player ${state.winner + 1} wins!`
-    winnerTextEl.textContent = `Player ${state.winner + 1} wins the game.`
-    winnerNoteEl.textContent =
-      mode === 'online' && onlineRematchRequested ? 'Rematch requested, waiting for opponent.' : ''
-    winnerModal.classList.toggle('hidden', suppressWinnerModalForRestoredOutcome)
+    if (mode === 'roguelike' && roguelikeRun) {
+      handleRoguelikeMatchResultIfNeeded()
+      statusEl.textContent =
+        state.winner === BOT_HUMAN_PLAYER
+          ? `Match ${roguelikeRun.wins} won. Choose your reward.`
+          : `Run over. Matches won: ${roguelikeRun.wins}.`
+      renderRoguelikeWinnerModal()
+    } else {
+      statusEl.textContent = `Player ${state.winner + 1} wins!`
+      winnerTextEl.textContent = `Player ${state.winner + 1} wins the game.`
+      winnerNoteEl.textContent =
+        mode === 'online' && onlineRematchRequested ? 'Rematch requested, waiting for opponent.' : ''
+      winnerModal.classList.toggle('hidden', suppressWinnerModalForRestoredOutcome)
+    }
   } else {
     suppressWinnerModalForRestoredOutcome = false
     winnerNoteEl.textContent = ''
+    winnerExtraEl.innerHTML = ''
     winnerModal.classList.add('hidden')
   }
 
   const inPlanning = state.phase === 'planning'
   const inOnlineMode = mode === 'online'
-  const inBotMode = mode === 'bot'
+  const inBotMode = isBotControlledMode()
   const inOnlineReplayAction = inOnlineMode && isOnlineResolutionReplayActive()
   const roomPaused = inOnlineMode ? onlineSession?.presence.paused ?? false : false
   const disconnected = inOnlineMode ? !(onlineSession?.connected ?? false) : false
@@ -4948,6 +5459,14 @@ menuStartBotButton.addEventListener('click', () => {
   setScreen('game')
 })
 
+menuStartRoguelikeButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+    setOnlineStatus('')
+  }
+  startRoguelikeRun()
+})
+
 menuLoadoutButton.addEventListener('click', () => {
   setScreen('loadout')
 })
@@ -5015,6 +5534,8 @@ gameMenuButton.addEventListener('click', () => {
     teardownOnlineSession(true)
     applyPlayMode('local')
     setOnlineStatus('')
+  } else if (mode === 'roguelike') {
+    applyPlayMode('local')
   }
   selectedCardId = null
   pendingOrder = null
@@ -5153,7 +5674,7 @@ readyButton.addEventListener('click', () => {
     return
   }
   if (isBotPlanningLocked()) return
-  if (mode === 'bot') {
+  if (isBotControlledMode()) {
     if (state.phase !== 'planning') return
     if (state.ready[BOT_HUMAN_PLAYER]) return
     planningPlayer = BOT_HUMAN_PLAYER
@@ -5204,11 +5725,24 @@ winnerMenuButton.addEventListener('click', () => {
   if (mode === 'online') {
     teardownOnlineSession(true)
     applyPlayMode('local')
+  } else if (mode === 'roguelike') {
+    applyPlayMode('local')
   }
   setScreen('menu')
 })
 
 winnerResetButton.addEventListener('click', () => {
+  if (mode === 'roguelike') {
+    if (!roguelikeRun) return
+    if (state.winner === BOT_HUMAN_PLAYER) {
+      if (roguelikeRun.uiStage !== 'reward_choice') return
+      roguelikeRun.strongholdHp += 10
+      startRoguelikeMatchAfterReward('Reward gained: +10 stronghold HP.')
+      return
+    }
+    startRoguelikeRun()
+    return
+  }
   if (mode === 'online') {
     setScreen('loadout')
     statusEl.textContent = 'Adjust your deck. Return to the match and press Rematch when ready.'
@@ -5218,9 +5752,37 @@ winnerResetButton.addEventListener('click', () => {
 })
 
 winnerRematchButton.addEventListener('click', () => {
+  if (mode === 'roguelike') {
+    if (!roguelikeRun || state.winner !== BOT_HUMAN_PLAYER || roguelikeRun.uiStage !== 'reward_choice') return
+    chooseRoguelikeRandomReward()
+    return
+  }
   if (mode !== 'online') return
   if (onlineRematchRequested) return
   requestOnlineRematch()
+})
+
+winnerExtraEl.addEventListener('click', (event) => {
+  if (mode !== 'roguelike' || !roguelikeRun || state.winner !== BOT_HUMAN_PLAYER) return
+  const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-roguelike-action][data-card-id]')
+  if (!target) return
+  const action = target.dataset.roguelikeAction
+  const cardId = target.dataset.cardId as CardDefId
+  if (!(cardId in CARD_DEFS)) return
+
+  if (action === 'draft' && roguelikeRun.uiStage === 'draft_pick') {
+    if (!roguelikeRun.draftOptions.includes(cardId)) return
+    roguelikeRun.deck.push(cardId)
+    startRoguelikeMatchAfterReward(`Reward gained: added ${CARD_DEFS[cardId].name}.`)
+    return
+  }
+
+  if (action === 'remove' && roguelikeRun.uiStage === 'remove_pick') {
+    const index = roguelikeRun.deck.findIndex((id) => id === cardId)
+    if (index === -1) return
+    roguelikeRun.deck.splice(index, 1)
+    startRoguelikeMatchAfterReward(`Reward gained: removed ${CARD_DEFS[cardId].name}.`)
+  }
 })
 
 canvas.addEventListener(
