@@ -263,6 +263,171 @@ test('burn stacks when applied multiple times and deals damage per stack', () =>
   assert.equal(afterSecondTurn.strength, 2)
 })
 
+test('disarm reduces damage dealt by the target unit for two turns', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 12, drawPerTurn: 12 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_disarm'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_fwd_lr'),
+  })
+
+  clearNonStrongholdUnits(state)
+  const actorPos = { q: 2, r: 2 }
+  const enemyPos = neighbor(actorPos, 0)
+  state.units['p1-actor'] = {
+    id: 'p1-actor',
+    owner: 0,
+    kind: 'unit',
+    strength: 8,
+    pos: actorPos,
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['p2-attacker'] = {
+    id: 'p2-attacker',
+    owner: 1,
+    kind: 'unit',
+    strength: 8,
+    pos: enemyPos,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const disarmCardId = findCardId(state, 0, 'attack_disarm')
+  const strikeCardIdTurnOne = findCardId(state, 1, 'attack_fwd_lr')
+  assert.ok(planOrder(state, 0, disarmCardId, { unitId: 'p1-actor', direction: 0 }))
+  assert.ok(planOrder(state, 1, strikeCardIdTurnOne, { unitId: 'p2-attacker' }))
+  readyAndResolve(state)
+
+  const actorAfterTurnOne = state.units['p1-actor']
+  const attackerAfterTurnOne = state.units['p2-attacker']
+  assert.ok(actorAfterTurnOne)
+  assert.ok(attackerAfterTurnOne)
+  assert.equal(actorAfterTurnOne.strength, 7)
+  const disarmedAfterTurnOne = attackerAfterTurnOne.modifiers.find((modifier) => modifier.type === 'disarmed')
+  assert.ok(disarmedAfterTurnOne)
+  assert.equal(disarmedAfterTurnOne.turnsRemaining, 1)
+
+  const strikeCardIdTurnTwo = findCardId(state, 1, 'attack_fwd_lr')
+  assert.ok(planOrder(state, 1, strikeCardIdTurnTwo, { unitId: 'p2-attacker' }))
+  readyAndResolve(state)
+
+  const actorAfterTurnTwo = state.units['p1-actor']
+  const attackerAfterTurnTwo = state.units['p2-attacker']
+  assert.ok(actorAfterTurnTwo)
+  assert.ok(attackerAfterTurnTwo)
+  assert.equal(actorAfterTurnTwo.strength, 6)
+  assert.equal(attackerAfterTurnTwo.modifiers.filter((modifier) => modifier.type === 'disarmed').length, 0)
+
+  const strikeCardIdTurnThree = findCardId(state, 1, 'attack_fwd_lr')
+  assert.ok(planOrder(state, 1, strikeCardIdTurnThree, { unitId: 'p2-attacker' }))
+  readyAndResolve(state)
+
+  const actorAfterTurnThree = state.units['p1-actor']
+  assert.ok(actorAfterTurnThree)
+  assert.equal(actorAfterTurnThree.strength, 4)
+})
+
+test('bleed applies stackable vulnerable that increases damage taken', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 12, drawPerTurn: 12 }
+  const state = createGameState(settings, {
+    p1: ['attack_bleed', 'attack_bleed', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonStrongholdUnits(state)
+  const actorPos = { q: 2, r: 2 }
+  const targetPos = neighbor(actorPos, 0)
+  state.units['p1-bleeder'] = {
+    id: 'p1-bleeder',
+    owner: 0,
+    kind: 'unit',
+    strength: 8,
+    pos: actorPos,
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['p2-target'] = {
+    id: 'p2-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 8,
+    pos: targetPos,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const bleedA = findCardId(state, 0, 'attack_bleed')
+  const jab = findCardId(state, 0, 'attack_jab')
+  assert.ok(planOrder(state, 0, bleedA, { unitId: 'p1-bleeder', direction: 0 }))
+  const bleedB = findCardId(state, 0, 'attack_bleed')
+  assert.ok(planOrder(state, 0, bleedB, { unitId: 'p1-bleeder', direction: 0 }))
+  assert.ok(planOrder(state, 0, jab, { unitId: 'p1-bleeder', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfter = state.units['p2-target']
+  assert.ok(targetAfter)
+  assert.equal(targetAfter.strength, 1)
+  const vulnerableStacks = targetAfter.modifiers.filter((modifier) => modifier.type === 'vulnerable')
+  assert.equal(vulnerableStacks.length, 2)
+  vulnerableStacks.forEach((modifier) => {
+    assert.equal(modifier.turnsRemaining, 1)
+  })
+})
+
+test('rage and bolster share strong logic with stacking and turn duration', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 12, drawPerTurn: 12 }
+  const state = createGameState(settings, {
+    p1: ['reinforce_rage', 'reinforce_bolster', 'attack_jab', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonStrongholdUnits(state)
+  const actorPos = { q: 2, r: 2 }
+  const targetPos = neighbor(actorPos, 0)
+  state.units['p1-rager'] = {
+    id: 'p1-rager',
+    owner: 0,
+    kind: 'unit',
+    strength: 8,
+    pos: actorPos,
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['p2-target'] = {
+    id: 'p2-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 10,
+    pos: targetPos,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const rage = findCardId(state, 0, 'reinforce_rage')
+  const bolster = findCardId(state, 0, 'reinforce_bolster')
+  const jabTurnOne = findCardId(state, 0, 'attack_jab')
+  assert.ok(planOrder(state, 0, rage, { unitId: 'p1-rager' }))
+  assert.ok(planOrder(state, 0, bolster, { unitId: 'p1-rager' }))
+  assert.ok(planOrder(state, 0, jabTurnOne, { unitId: 'p1-rager', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfterTurnOne = state.units['p2-target']
+  const actorAfterTurnOne = state.units['p1-rager']
+  assert.ok(targetAfterTurnOne)
+  assert.ok(actorAfterTurnOne)
+  assert.equal(targetAfterTurnOne.strength, 6)
+  assert.equal(actorAfterTurnOne.modifiers.filter((modifier) => modifier.type === 'strong').length, 1)
+  assert.equal(actorAfterTurnOne.modifiers.filter((modifier) => modifier.type === 'vulnerable').length, 1)
+
+  const jabTurnTwo = findCardId(state, 0, 'attack_jab')
+  assert.ok(planOrder(state, 0, jabTurnTwo, { unitId: 'p1-rager', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfterTurnTwo = state.units['p2-target']
+  assert.ok(targetAfterTurnTwo)
+  assert.equal(targetAfterTurnTwo.strength, 3)
+})
+
 test('dispel can target barricades and removes their modifiers', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {

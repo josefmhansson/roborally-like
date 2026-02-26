@@ -259,6 +259,10 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
     return getFriendlyUnitRefs(state, projected, player, true).map((ref) => ({ unitId: ref.refId }))
   }
 
+  if (defId === 'reinforce_rage' || defId === 'reinforce_bolster') {
+    return getFriendlyUnitRefs(state, projected, player).map((ref) => ({ unitId: ref.refId }))
+  }
+
   if (defId === 'reinforce_barricade') {
     const candidates = getBarricadeSpawnTiles(projected, player)
     const params: OrderParams[] = []
@@ -342,7 +346,14 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   const refs = getFriendlyUnitRefs(state, projected, player)
   if (refs.length === 0) return []
   const params: OrderParams[] = []
-  if (defId === 'attack_fwd' || defId === 'attack_charge' || defId === 'attack_jab' || defId === 'attack_shove') {
+  if (
+    defId === 'attack_fwd' ||
+    defId === 'attack_charge' ||
+    defId === 'attack_jab' ||
+    defId === 'attack_shove' ||
+    defId === 'attack_disarm' ||
+    defId === 'attack_bleed'
+  ) {
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
         params.push({ unitId: ref.refId, direction })

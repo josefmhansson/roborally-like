@@ -2496,6 +2496,15 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'burn') {
     return { label: 'Burn', kind: 'debuff' }
   }
+  if (modifier.type === 'disarmed') {
+    return { label: 'Disarmed', kind: 'debuff' }
+  }
+  if (modifier.type === 'vulnerable') {
+    return { label: 'Vulnerable', kind: 'debuff' }
+  }
+  if (modifier.type === 'strong') {
+    return { label: 'Strong', kind: 'buff' }
+  }
   return { label: modifier.type, kind: 'debuff' }
 }
 
@@ -3141,7 +3150,7 @@ function drawStrongholdProjectedDestroyIndicators(): void {
   const destroyedStrongholds = getProjectedDestroyedStrongholds()
   destroyedStrongholds.forEach((stronghold) => {
     const center = projectHex(stronghold.pos)
-    const arm = layout.size * 0.82
+    const arm = layout.size * 0.57
     ctx.save()
     ctx.globalAlpha = 0.94
     ctx.translate(center.x, center.y)

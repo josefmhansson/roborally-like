@@ -11,7 +11,7 @@ export type UnitId = string
 
 export type UnitKind = 'unit' | 'stronghold' | 'barricade'
 
-export type UnitModifierType = 'cannotMove' | 'burn'
+export type UnitModifierType = 'cannotMove' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
 
 export type ModifierDuration = number | 'indefinite'
 
@@ -54,6 +54,8 @@ export type CardDefId =
   | 'move_forward_face'
   | 'move_quickstep'
   | 'attack_line'
+  | 'attack_disarm'
+  | 'attack_bleed'
   | 'attack_fwd_lr'
   | 'attack_fwd'
   | 'attack_arrow'
@@ -61,6 +63,8 @@ export type CardDefId =
   | 'attack_jab'
   | 'attack_shove'
   | 'attack_whirlwind'
+  | 'reinforce_rage'
+  | 'reinforce_bolster'
   | 'spell_lightning'
   | 'spell_meteor'
   | 'spell_invest'
@@ -147,6 +151,14 @@ export type CardEffect =
       mode: 'nearest' | 'line' | 'ray'
       directions: DirectionSource
       damage: number | { type: 'unitStrength' }
+    }
+  | {
+      type: 'attackModifier'
+      unitParam: 'unitId'
+      mode: 'nearest' | 'line' | 'ray'
+      directions: DirectionSource
+      modifier: UnitModifierType
+      turns: ModifierDuration
     }
   | {
       type: 'shove'

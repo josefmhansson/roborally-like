@@ -70,14 +70,30 @@ function hasUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['ty
   return unit.modifiers.some((modifier) => modifier.type === modifierType && isActiveDuration(modifier.turnsRemaining))
 }
 
+function countUnitModifierStacks(unit: Unit, modifierType: Unit['modifiers'][number]['type']): number {
+  return unit.modifiers.filter(
+    (modifier) => modifier.type === modifierType && isActiveDuration(modifier.turnsRemaining)
+  ).length
+}
+
+function getDamageDealtDelta(unit: Unit | null): number {
+  if (!unit) return 0
+  return countUnitModifierStacks(unit, 'strong') - countUnitModifierStacks(unit, 'disarmed')
+}
+
+function getDamageTakenDelta(unit: Unit): number {
+  return countUnitModifierStacks(unit, 'vulnerable')
+}
+
 function isActingUnitRequirement(defId: CardDefId): boolean {
   const def = CARD_DEFS[defId]
   if (def.requires.unit !== 'friendly') return false
   return def.effects.some(
-    (effect) =>
+      (effect) =>
       (effect.type === 'move' ||
         effect.type === 'face' ||
         effect.type === 'attack' ||
+        effect.type === 'attackModifier' ||
         effect.type === 'shove' ||
         effect.type === 'whirlwind') &&
       effect.unitParam === 'unitId'
@@ -868,11 +884,11 @@ function boostUnit(state: GameState, unit: Unit, amount: number): void {
 function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers'][number]['type'], turns: ModifierDuration): void {
   const normalizedTurns = normalizeDuration(turns)
   if (!normalizedTurns) return
-  if (modifier === 'burn') {
+  if (modifier === 'burn' || modifier === 'vulnerable' || modifier === 'strong') {
     unit.modifiers.push({ type: modifier, turnsRemaining: normalizedTurns })
     const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
     const stacks = unit.modifiers.filter(
-      (entry) => entry.type === 'burn' && isActiveDuration(entry.turnsRemaining)
+      (entry) => entry.type === modifier && isActiveDuration(entry.turnsRemaining)
     ).length
     state.log.push(`Unit ${unit.id} is affected: ${modifier} ${durationLabel} (stacks: ${stacks}).`)
     return
@@ -922,9 +938,12 @@ function addPlayerModifier(
   )
 }
 
-function applyDamage(state: GameState, unit: Unit, amount: number): void {
-  unit.strength -= amount
-  state.log.push(`Unit ${unit.id} takes ${amount} damage.`)
+function applyDamage(state: GameState, unit: Unit, amount: number, sourceUnit?: Unit | null): void {
+  const dealtDelta = getDamageDealtDelta(sourceUnit ?? null)
+  const takenDelta = getDamageTakenDelta(unit)
+  const resolvedDamage = Math.max(0, amount + dealtDelta + takenDelta)
+  unit.strength -= resolvedDamage
+  state.log.push(`Unit ${unit.id} takes ${resolvedDamage} damage.`)
   if (unit.strength <= 0) {
     delete state.units[unit.id]
     state.log.push(`Unit ${unit.id} is destroyed.`)
@@ -972,38 +991,35 @@ function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, di
   return current
 }
 
-function attackNearestTile(state: GameState, origin: Unit, direction: Direction, damage: number): void {
-  const targetTile = neighbor(origin.pos, direction)
-  if (!inBounds(state.boardRows, state.boardCols, targetTile)) return
-  const target = getUnitAt(state, targetTile)
-  if (target) {
-    applyDamage(state, target, damage)
+function getAttackTargets(state: GameState, origin: Unit, mode: 'nearest' | 'line' | 'ray', direction: Direction): Unit[] {
+  if (mode === 'nearest') {
+    const targetTile = neighbor(origin.pos, direction)
+    if (!inBounds(state.boardRows, state.boardCols, targetTile)) return []
+    const target = getUnitAt(state, targetTile)
+    return target ? [target] : []
   }
-}
 
-function attackRay(state: GameState, origin: Unit, direction: Direction, damage: number): void {
+  if (mode === 'line') {
+    let cursor = { ...origin.pos }
+    for (;;) {
+      cursor = neighbor(cursor, direction)
+      if (!inBounds(state.boardRows, state.boardCols, cursor)) return []
+      const target = getUnitAt(state, cursor)
+      if (target) return [target]
+    }
+  }
+
+  const targets: Unit[] = []
   let cursor = { ...origin.pos }
   for (;;) {
     cursor = neighbor(cursor, direction)
     if (!inBounds(state.boardRows, state.boardCols, cursor)) break
     const target = getUnitAt(state, cursor)
     if (target) {
-      applyDamage(state, target, damage)
-      break
+      targets.push(target)
     }
   }
-}
-
-function attackLine(state: GameState, origin: Unit, direction: Direction, damage: number): void {
-  let cursor = { ...origin.pos }
-  for (;;) {
-    cursor = neighbor(cursor, direction)
-    if (!inBounds(state.boardRows, state.boardCols, cursor)) break
-    const target = getUnitAt(state, cursor)
-    if (target) {
-      applyDamage(state, target, damage)
-    }
-  }
+  return targets
 }
 
 function pushUnit(state: GameState, unit: Unit, direction: Direction, distance: number): boolean {
@@ -1144,6 +1160,17 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
     }
 
     if (effect.type === 'attack') {
+      if (!params.unitId) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || unit.kind !== 'unit') return false
+      const directions = resolveDirections(unit.facing, params, effect.directions)
+      if (directions.length === 0) return false
+      continue
+    }
+
+    if (effect.type === 'attackModifier') {
       if (!params.unitId) return false
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
@@ -1315,13 +1342,23 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       const damage = typeof effect.damage === 'number' ? effect.damage : unit.strength
       const directions = resolveDirections(unit.facing, params, effect.directions)
       directions.forEach((dir) => {
-        if (effect.mode === 'line') {
-          attackRay(state, unit, dir, damage)
-        } else if (effect.mode === 'ray') {
-          attackLine(state, unit, dir, damage)
-        } else {
-          attackNearestTile(state, unit, dir, damage)
-        }
+        const targets = getAttackTargets(state, unit, effect.mode, dir)
+        targets.forEach((target) => applyDamage(state, target, damage, unit))
+      })
+      return
+    }
+    case 'attackModifier': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const unit = state.units[resolvedUnitId]
+      if (!unit || unit.kind !== 'unit') return
+      const directions = resolveDirections(unit.facing, params, effect.directions)
+      directions.forEach((dir) => {
+        const targets = getAttackTargets(state, unit, effect.mode, dir)
+        targets.forEach((target) => {
+          if (!canCardTargetUnit(order.defId, target)) return
+          addUnitModifier(state, target, effect.modifier, effect.turns)
+        })
       })
       return
     }
@@ -1357,10 +1394,10 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
 
       if (blocker) {
         state.log.push(`Unit ${target.id} collides with ${blocker.id}.`)
-        applyDamage(state, target, effect.collisionDamage)
+        applyDamage(state, target, effect.collisionDamage, actingUnit)
         const remainingBlocker = state.units[blocker.id]
         if (remainingBlocker) {
-          applyDamage(state, remainingBlocker, effect.collisionDamage)
+          applyDamage(state, remainingBlocker, effect.collisionDamage, actingUnit)
         }
         return
       }
@@ -1383,7 +1420,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
         const target = getUnitAt(state, targetTile)
         if (!target) continue
         if (target.kind !== 'stronghold' && !canCardTargetUnit(order.defId, target)) continue
-        applyDamage(state, target, effect.damage)
+        applyDamage(state, target, effect.damage, actingUnit)
 
         const surviving = state.units[target.id]
         if (!surviving || surviving.kind === 'stronghold') continue
