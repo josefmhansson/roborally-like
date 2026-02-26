@@ -13,6 +13,7 @@ const MAIN_MAX_RATIO = 0.4
 const SPELL_MAX_RATIO = 0.25
 const MAIN_TARGET_RATIO = 0.3
 const SPELL_TARGET_RATIO = 0.1
+const RECRUIT_CARD_ID: CardDefId = 'reinforce_spawn'
 
 const CARD_IDS = Object.keys(CARD_DEFS) as CardDefId[]
 const CARDS_BY_CATEGORY: Record<BotDeckCategory, CardDefId[]> = {
@@ -23,6 +24,7 @@ const CARDS_BY_CATEGORY: Record<BotDeckCategory, CardDefId[]> = {
 }
 
 CARD_IDS.forEach((cardId) => {
+  if (cardId === RECRUIT_CARD_ID) return
   const category = CARD_DEFS[cardId].type as BotDeckCategory
   if (CARDS_BY_CATEGORY[category]) {
     CARDS_BY_CATEGORY[category].push(cardId)
@@ -35,17 +37,24 @@ export function generateClusteredBotDeck(settings: Pick<GameSettings, 'deckSize'
   if (deckSize <= 0) return []
 
   const capacities = getCategoryCapacities(maxCopies)
-  const totalCapacity = sumCategoryCounts(capacities)
+  const totalCapacity = sumCategoryCounts(capacities) + maxCopies
   if (totalCapacity <= 0) return []
 
   const targetSize = Math.min(deckSize, totalCapacity)
-  const categoryCounts = chooseCategoryCounts(targetSize, capacities)
+  const requiredRecruitCount = Math.min(targetSize, Math.ceil(targetSize / 10), maxCopies)
+  const categoryCounts = chooseCategoryCounts(targetSize - requiredRecruitCount, capacities, {
+    ratioDeckSize: targetSize,
+    reservedReinforcement: requiredRecruitCount,
+  })
 
   const deck: CardDefId[] = []
   ALL_CATEGORIES.forEach((category) => {
     const categoryCards = buildClusteredCategoryCards(category, categoryCounts[category], maxCopies)
     deck.push(...categoryCards)
   })
+  for (let index = 0; index < requiredRecruitCount; index += 1) {
+    deck.push(RECRUIT_CARD_ID)
+  }
   return shuffle(deck)
 }
 
@@ -58,8 +67,14 @@ function getCategoryCapacities(maxCopies: number): CategoryCounts {
   }
 }
 
-function chooseCategoryCounts(deckSize: number, capacities: CategoryCounts): CategoryCounts {
-  const bounds = createInitialBounds(deckSize, capacities)
+function chooseCategoryCounts(
+  deckSize: number,
+  capacities: CategoryCounts,
+  options?: { ratioDeckSize?: number; reservedReinforcement?: number }
+): CategoryCounts {
+  const ratioDeckSize = options?.ratioDeckSize ?? deckSize
+  const reservedReinforcement = options?.reservedReinforcement ?? 0
+  const bounds = createInitialBounds(deckSize, capacities, ratioDeckSize, reservedReinforcement)
   rebalanceBoundsForFeasibility(bounds, deckSize, capacities)
 
   const counts: CategoryCounts = {
@@ -90,15 +105,23 @@ function chooseCategoryCounts(deckSize: number, capacities: CategoryCounts): Cat
   return counts
 }
 
-function createInitialBounds(deckSize: number, capacities: CategoryCounts): CategoryBounds {
-  const mainMin = Math.ceil(deckSize * MAIN_MIN_RATIO)
-  const computedMainMax = Math.floor(deckSize * MAIN_MAX_RATIO)
+function createInitialBounds(
+  deckSize: number,
+  capacities: CategoryCounts,
+  ratioDeckSize: number,
+  reservedReinforcement: number
+): CategoryBounds {
+  const mainMin = Math.ceil(ratioDeckSize * MAIN_MIN_RATIO)
+  const computedMainMax = Math.floor(ratioDeckSize * MAIN_MAX_RATIO)
   const mainMax = Math.max(mainMin, computedMainMax)
-  const spellMax = Math.floor(deckSize * SPELL_MAX_RATIO)
+  const spellMax = Math.floor(ratioDeckSize * SPELL_MAX_RATIO)
+
+  const reinforcementMin = Math.max(0, mainMin - reservedReinforcement)
+  const reinforcementMax = Math.max(reinforcementMin, mainMax - reservedReinforcement)
 
   const bounds: CategoryBounds = {
     attack: { min: mainMin, max: mainMax },
-    reinforcement: { min: mainMin, max: mainMax },
+    reinforcement: { min: reinforcementMin, max: reinforcementMax },
     movement: { min: mainMin, max: mainMax },
     spell: { min: 0, max: spellMax },
   }
@@ -253,7 +276,5 @@ function sumCategoryCounts(counts: CategoryCounts): number {
 }
 
 function sumCategoryBounds(bounds: CategoryBounds, key: 'min' | 'max'): number {
-  return (
-    bounds.attack[key] + bounds.reinforcement[key] + bounds.movement[key] + bounds.spell[key]
-  )
+  return bounds.attack[key] + bounds.reinforcement[key] + bounds.movement[key] + bounds.spell[key]
 }

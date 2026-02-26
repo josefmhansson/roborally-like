@@ -32,6 +32,16 @@ test('bot deck generator respects deck size, max copies, and known card ids', ()
   })
 })
 
+test('bot deck generator includes minimum recruit cards for deck size', () => {
+  const deckSize = 20
+  const deck = generateClusteredBotDeck({ deckSize, maxCopies: 3 })
+  const perCard = countByCard(deck)
+  const recruitCount = perCard.get('reinforce_spawn') ?? 0
+  const requiredRecruits = Math.ceil(deckSize / 10)
+
+  assert.ok(recruitCount >= requiredRecruits)
+})
+
 test('bot deck generator stays within category ratio targets when feasible', () => {
   const deckSize = 14
   const deck = generateClusteredBotDeck({ deckSize, maxCopies: 3 })
