@@ -9,13 +9,15 @@ import type {
   Order,
   OrderParams,
   PlayerId,
+  Trap,
+  TrapKind,
   Tile,
   TileKind,
   Unit,
   UnitId,
 } from './types'
-import { CARD_DEFS, STARTING_DECK } from './cards'
-import { DIRECTIONS, neighbor, rotateDirection } from './hex'
+import { CARD_DEFS, STARTING_DECK, cardCountsAsType } from './cards'
+import { DIRECTIONS, neighbor, offsetToAxial, rotateDirection } from './hex'
 
 const DEFAULT_BOARD_SIZE = 6
 const TILE_KINDS: TileKind[] = ['grass', 'forest', 'mountain', 'pond', 'rocky', 'rough', 'shrub']
@@ -57,6 +59,46 @@ function isCommanderUnit(unit: Unit): boolean {
 
 function canActAsUnit(unit: Unit): boolean {
   return unit.kind === 'unit' || unit.kind === 'commander'
+}
+
+function canTriggerTraps(unit: Unit): boolean {
+  return canActAsUnit(unit)
+}
+
+function getTrapIndexAt(state: GameState, hex: Hex, owner?: PlayerId): number {
+  return state.traps.findIndex((trap) => {
+    if (!sameHex(trap.pos, hex)) return false
+    if (owner === undefined) return true
+    return trap.owner === owner
+  })
+}
+
+function getTrapAt(state: GameState, hex: Hex, owner?: PlayerId): Trap | null {
+  const index = getTrapIndexAt(state, hex, owner)
+  if (index === -1) return null
+  return state.traps[index]
+}
+
+function isAdjacentHex(a: Hex, b: Hex): boolean {
+  for (let dir = 0 as Direction; dir < 6; dir += 1) {
+    if (sameHex(neighbor(a, dir), b)) return true
+  }
+  return false
+}
+
+function projectAlongDirection(hex: Hex, direction: Direction): number {
+  const axial = offsetToAxial(hex)
+  const delta = DIRECTIONS[direction]
+  return axial.q * delta.q + axial.r * delta.r
+}
+
+function hexDistance(a: Hex, b: Hex): number {
+  const aAxial = offsetToAxial(a)
+  const bAxial = offsetToAxial(b)
+  const dq = aAxial.q - bAxial.q
+  const dr = aAxial.r - bAxial.r
+  const ds = -aAxial.q - aAxial.r - (-bAxial.q - bAxial.r)
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2
 }
 
 function getAllowedMoveDistance(unit: Unit, requestedDistance: number): number {
@@ -114,9 +156,14 @@ function isActingUnitRequirement(defId: CardDefId): boolean {
   return def.effects.some(
       (effect) =>
       (effect.type === 'move' ||
+        effect.type === 'teleport' ||
         effect.type === 'face' ||
         effect.type === 'attack' ||
         effect.type === 'attackModifier' ||
+        effect.type === 'chainLightning' ||
+        effect.type === 'harpoon' ||
+        effect.type === 'executeForward' ||
+        effect.type === 'damageAdjacent' ||
         effect.type === 'shove' ||
         effect.type === 'whirlwind') &&
       effect.unitParam === 'unitId'
@@ -292,6 +339,7 @@ export function createGameState(
     boardCols: cols,
     tiles,
     units,
+    traps: [],
     players,
     ready: [false, false],
     actionBudgets: [settings.actionBudgetP1, settings.actionBudgetP2],
@@ -344,6 +392,7 @@ export function getBarricadeSpawnTiles(state: GameState, player: PlayerId): Hex[
         const adjacent = neighbor(unit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, adjacent)) continue
         if (getUnitAt(state, adjacent)) continue
+        if (getTrapAt(state, adjacent)) continue
         candidates.set(`${adjacent.q},${adjacent.r}`, adjacent)
       }
     })
@@ -606,9 +655,15 @@ export function simulatePlannedState(state: GameState, player: PlayerId): GameSt
     },
   ]
 
+  const traps = state.traps.map((trap) => ({
+    ...trap,
+    pos: { ...trap.pos },
+  }))
+
   const sim: GameState = {
     ...state,
     units,
+    traps,
     players,
     actionQueue: [],
     actionIndex: 0,
@@ -651,9 +706,15 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
     },
   ]
 
+  const traps = state.traps.map((trap) => ({
+    ...trap,
+    pos: { ...trap.pos },
+  }))
+
   const sim: GameState = {
     ...state,
     units,
+    traps,
     players,
     actionQueue: [],
     actionIndex: 0,
@@ -666,6 +727,7 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
 
   for (const order of state.players[player].orders) {
     const def = CARD_DEFS[order.defId]
+    const context: OrderResolutionContext = { movedUnitOrigins: {} }
     for (const effect of def.effects) {
       if (effect.type === 'move') {
         const params = order.params
@@ -674,6 +736,9 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
         if (!resolvedUnitId) continue
         const unit = sim.units[resolvedUnitId]
         if (!unit) continue
+        if (!context.movedUnitOrigins[resolvedUnitId]) {
+          context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
+        }
         const direction = resolveDirection(unit.facing, params, effect.direction)
         if (direction === null) continue
         const distance =
@@ -690,8 +755,8 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
         }
         continue
       }
-      else if (effect.type !== 'budget') {
-        applyEffect(sim, order, effect)
+      else if (effect.type !== 'budget' && effect.type !== 'chainLightning') {
+        applyEffect(sim, order, effect, context)
       }
     }
   }
@@ -726,9 +791,15 @@ export function getPlannedOrderValidity(state: GameState, player: PlayerId): boo
     },
   ]
 
+  const simTraps = state.traps.map((trap) => ({
+    ...trap,
+    pos: { ...trap.pos },
+  }))
+
   const sim: GameState = {
     ...state,
     units: simUnits,
+    traps: simTraps,
     players: simPlayers,
     actionQueue: [],
     actionIndex: 0,
@@ -884,6 +955,7 @@ function spawnUnit(
 ): UnitId | null {
   if (!inBounds(state.boardRows, state.boardCols, tile)) return null
   if (getUnitAt(state, tile)) return null
+  if (getTrapAt(state, tile)) return null
   const id = `u${player}-${state.nextUnitId++}`
   state.units[id] = {
     id,
@@ -900,6 +972,35 @@ function spawnUnit(
     state.log.push(`Player ${player + 1} spawns a unit at ${tile.q},${tile.r}.`)
   }
   return id
+}
+
+function getDefaultSpawnFacing(state: GameState, player: PlayerId): Direction {
+  const commander = state.units[`stronghold-${player}`]
+  if (commander && commander.kind === 'commander') {
+    return commander.facing
+  }
+  return (player === 0 ? 2 : 5) as Direction
+}
+
+function placeTrap(
+  state: GameState,
+  player: PlayerId,
+  tile: Hex,
+  trapKind: TrapKind,
+  sourceCardName: string
+): boolean {
+  if (!inBounds(state.boardRows, state.boardCols, tile)) return false
+  if (getUnitAt(state, tile)) return false
+  if (getTrapAt(state, tile)) return false
+  const trapId = `t-${player}-${state.turn}-${state.actionIndex}-${tile.q},${tile.r}-${trapKind}`
+  state.traps.push({
+    id: trapId,
+    owner: player,
+    kind: trapKind,
+    pos: { ...tile },
+  })
+  state.log.push(`Player ${player + 1} sets a hidden trap with ${sourceCardName}.`)
+  return true
 }
 
 function boostUnit(state: GameState, unit: Unit, amount: number): void {
@@ -987,7 +1088,7 @@ function applyDamage(
   const dealtDelta = getDamageDealtDelta(sourceUnit ?? null)
   const takenDelta = getDamageTakenDelta(unit)
   let resolvedDamage = Math.max(0, amount + dealtDelta + takenDelta)
-  const isSpellDamage = sourceDefId ? CARD_DEFS[sourceDefId].type === 'spell' : false
+  const isSpellDamage = sourceDefId ? cardCountsAsType(sourceDefId, 'spell') : false
   if (isSpellDamage && isCommanderUnit(unit) && hasUnitModifier(unit, 'spellResistance')) {
     resolvedDamage = Math.floor(resolvedDamage / 2)
   }
@@ -1003,6 +1104,27 @@ function applyDamage(
   }
 }
 
+function triggerTrapAtCurrentTile(state: GameState, unit: Unit): { stopMovement: boolean } {
+  if (!canTriggerTraps(unit)) return { stopMovement: false }
+  const trapIndex = state.traps.findIndex((trap) => sameHex(trap.pos, unit.pos) && trap.owner !== unit.owner)
+  if (trapIndex === -1) return { stopMovement: false }
+
+  const [trap] = state.traps.splice(trapIndex, 1)
+  state.log.push(`Unit ${unit.id} triggers a ${trap.kind} trap.`)
+  if (trap.kind === 'pitfall') {
+    applyDamage(state, unit, 2)
+    const surviving = state.units[unit.id]
+    if (surviving) {
+      addUnitModifier(state, surviving, 'cannotMove', 2)
+      return { stopMovement: true }
+    }
+    return { stopMovement: true }
+  }
+
+  applyDamage(state, unit, 3)
+  return { stopMovement: false }
+}
+
 function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: number): void {
   if (!canActAsUnit(unit)) return
   if (hasUnitModifier(unit, 'cannotMove')) {
@@ -1012,17 +1134,32 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
   const maxDistance = getAllowedMoveDistance(unit, distance)
   let movedDistance = 0
   let current = { ...unit.pos }
+  let movedUnit: Unit = unit
+  let stoppedByTrap = false
   for (let step = 0; step < maxDistance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state.boardRows, state.boardCols, next)) break
     if (getUnitAt(state, next)) break
     current = next
+    setUnitPosition(movedUnit, current)
     movedDistance += 1
+    const trapResolution = triggerTrapAtCurrentTile(state, movedUnit)
+    const surviving = state.units[movedUnit.id]
+    if (!surviving) {
+      return
+    }
+    movedUnit = surviving
+    if (trapResolution.stopMovement) {
+      stoppedByTrap = true
+      break
+    }
   }
-  if (current.q !== unit.pos.q || current.r !== unit.pos.r) {
-    setUnitPosition(unit, current)
-    recordSlowMovement(unit, movedDistance)
+  if (movedDistance > 0) {
+    recordSlowMovement(movedUnit, movedDistance)
     state.log.push(`Unit ${unit.id} moves to ${current.q},${current.r}.`)
+    if (stoppedByTrap) {
+      state.log.push(`Unit ${unit.id} is stopped by a trap.`)
+    }
   } else {
     state.log.push(`Unit ${unit.id} cannot move.`)
   }
@@ -1036,16 +1173,72 @@ function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, di
   const maxDistance = getAllowedMoveDistance(unit, distance)
   let movedDistance = 0
   let current = { ...unit.pos }
+  let movedUnit: Unit = unit
   for (let step = 0; step < maxDistance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state.boardRows, state.boardCols, next)) break
     if (getUnitAt(state, next)) break
     current = next
+    setUnitPosition(movedUnit, current)
     movedDistance += 1
+    const trapResolution = triggerTrapAtCurrentTile(state, movedUnit)
+    const surviving = state.units[movedUnit.id]
+    if (!surviving) return null
+    movedUnit = surviving
+    if (trapResolution.stopMovement) break
   }
-  setUnitPosition(unit, current)
-  recordSlowMovement(unit, movedDistance)
+  recordSlowMovement(movedUnit, movedDistance)
   return current
+}
+
+function teleportUnit(state: GameState, unit: Unit, target: Hex, maxDistance: number): boolean {
+  if (!canActAsUnit(unit)) return false
+  if (hasUnitModifier(unit, 'cannotMove')) {
+    state.log.push(`Unit ${unit.id} cannot move this turn.`)
+    return false
+  }
+  if (!inBounds(state.boardRows, state.boardCols, target)) return false
+
+  const distance = hexDistance(unit.pos, target)
+  if (distance <= 0) {
+    state.log.push(`Unit ${unit.id} cannot teleport.`)
+    return false
+  }
+  const allowed = getAllowedMoveDistance(unit, maxDistance)
+  if (distance > allowed) {
+    state.log.push(`Unit ${unit.id} cannot teleport that far.`)
+    return false
+  }
+  const occupied = getUnitAt(state, target)
+  if (occupied && occupied.id !== unit.id) {
+    state.log.push(`Unit ${unit.id} cannot teleport to an occupied tile.`)
+    return false
+  }
+
+  setUnitPosition(unit, { ...target })
+  recordSlowMovement(unit, distance)
+  state.log.push(`Unit ${unit.id} teleports to ${target.q},${target.r}.`)
+  triggerTrapAtCurrentTile(state, unit)
+  return true
+}
+
+function getAdjacentChainLightningTargets(
+  state: GameState,
+  origin: Hex,
+  visitedIds: Set<string>,
+  sourceCardId: CardDefId
+): Unit[] {
+  const targets: Unit[] = []
+  for (let dir = 0 as Direction; dir < 6; dir += 1) {
+    const candidateHex = neighbor(origin, dir)
+    if (!inBounds(state.boardRows, state.boardCols, candidateHex)) continue
+    const candidate = getUnitAt(state, candidateHex)
+    if (!candidate) continue
+    if (visitedIds.has(candidate.id)) continue
+    if (!canCardTargetUnit(sourceCardId, candidate)) continue
+    targets.push(candidate)
+  }
+  return targets
 }
 
 function getAttackTargets(state: GameState, origin: Unit, mode: 'nearest' | 'line' | 'ray', direction: Direction): Unit[] {
@@ -1081,33 +1274,47 @@ function getAttackTargets(state: GameState, origin: Unit, mode: 'nearest' | 'lin
 
 function pushUnit(state: GameState, unit: Unit, direction: Direction, distance: number): boolean {
   if (distance <= 0) return false
+  let moved = false
   let current = { ...unit.pos }
+  let pushedUnit: Unit = unit
   for (let step = 0; step < distance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state.boardRows, state.boardCols, next)) return false
     if (getUnitAt(state, next)) return false
     current = next
+    setUnitPosition(pushedUnit, current)
+    moved = true
+    const trapResolution = triggerTrapAtCurrentTile(state, pushedUnit)
+    const surviving = state.units[pushedUnit.id]
+    if (!surviving) return moved
+    pushedUnit = surviving
+    if (trapResolution.stopMovement) break
   }
-  if (sameHex(current, unit.pos)) return false
-  setUnitPosition(unit, current)
+  if (!moved) return false
   state.log.push(`Unit ${unit.id} is pushed to ${current.q},${current.r}.`)
-  return true
+  return moved
+}
+
+type OrderResolutionContext = {
+  movedUnitOrigins: Record<string, Hex>
 }
 
 function applyOrder(state: GameState, order: Order): void {
   const def = CARD_DEFS[order.defId]
   if (state.winner !== null) return
+  const context: OrderResolutionContext = { movedUnitOrigins: {} }
   for (const effect of def.effects) {
-    applyEffect(state, order, effect)
+    applyEffect(state, order, effect, context)
     if (state.winner !== null) return
   }
 }
 
 function applyOrderForPlanning(state: GameState, order: Order): void {
   const def = CARD_DEFS[order.defId]
+  const context: OrderResolutionContext = { movedUnitOrigins: {} }
   for (const effect of def.effects) {
-    if (effect.type === 'budget') continue
-    applyEffect(state, order, effect)
+    if (effect.type === 'budget' || effect.type === 'chainLightning') continue
+    applyEffect(state, order, effect, context)
   }
 }
 
@@ -1120,6 +1327,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       if (!tile) return false
       if (!inBounds(state.boardRows, state.boardCols, tile)) return false
       if (getUnitAt(state, tile)) return false
+      if (getTrapAt(state, tile)) return false
       if (effect.kind === 'barricade' && !isValidBarricadeSpawnTile(state, order.player, tile)) return false
       const facing = effect.facingParam ? params.direction : effect.facing
       if (facing === undefined) return false
@@ -1158,6 +1366,21 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
             ? params.distance
             : null
       if (!distance) return false
+      continue
+    }
+
+    if (effect.type === 'teleport') {
+      if (!params.unitId || !params.tile) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || !canActAsUnit(unit)) return false
+      if (!inBounds(state.boardRows, state.boardCols, params.tile)) return false
+      const destination = getUnitAt(state, params.tile)
+      if (destination && destination.id !== unit.id) return false
+      const allowedRange = getAllowedMoveDistance(unit, effect.maxDistance)
+      const distance = hexDistance(unit.pos, params.tile)
+      if (distance <= 0 || distance > allowedRange) return false
       continue
     }
 
@@ -1203,11 +1426,35 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       continue
     }
 
+    if (effect.type === 'placeTrap') {
+      const tile = params.tile
+      if (!tile) return false
+      if (!inBounds(state.boardRows, state.boardCols, tile)) return false
+      if (!isValidBarricadeSpawnTile(state, order.player, tile)) return false
+      if (getTrapAt(state, tile)) return false
+      if (getUnitAt(state, tile)) return false
+      continue
+    }
+
+    if (effect.type === 'spawnAdjacentFriendly') {
+      const tile = params.tile
+      if (!tile) return false
+      if (!inBounds(state.boardRows, state.boardCols, tile)) return false
+      if (!isValidBarricadeSpawnTile(state, order.player, tile)) return false
+      if (getTrapAt(state, tile)) return false
+      if (getUnitAt(state, tile)) return false
+      continue
+    }
+
     if (effect.type === 'budget') {
       continue
     }
 
     if (effect.type === 'applyPlayerModifier') {
+      continue
+    }
+
+    if (effect.type === 'boostAllFriendly' || effect.type === 'teamAttackForward') {
       continue
     }
 
@@ -1233,6 +1480,25 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       continue
     }
 
+    if (
+      effect.type === 'harpoon' ||
+      effect.type === 'executeForward' ||
+      effect.type === 'damageAdjacent' ||
+      effect.type === 'chainLightning'
+    ) {
+      if (!params.unitId) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || !canActAsUnit(unit)) return false
+      if (effect.type === 'chainLightning') {
+        const visited = new Set<string>([unit.id])
+        const candidates = getAdjacentChainLightningTargets(state, unit.pos, visited, order.defId)
+        if (candidates.length === 0) return false
+      }
+      continue
+    }
+
     if (effect.type === 'shove') {
       if (!params.unitId) return false
       const resolved = resolveUnitId(state, order.player, params.unitId)
@@ -1252,6 +1518,24 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       if (!unit || !canActAsUnit(unit)) return false
       continue
     }
+
+    if (effect.type === 'moveAdjacentFriendlyGroup') {
+      if (!params.unitId) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || !canActAsUnit(unit)) return false
+      const direction = resolveDirection(unit.facing, params, effect.direction)
+      if (direction === null) return false
+      const distance =
+        typeof effect.distance === 'number'
+          ? effect.distance
+          : params.distance !== undefined
+            ? params.distance
+            : null
+      if (!distance) return false
+      continue
+    }
   }
   return true
 }
@@ -1269,7 +1553,7 @@ function resolveUnitId(state: GameState, player: PlayerId, unitId: string): Unit
   return null
 }
 
-function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
+function applyEffect(state: GameState, order: Order, effect: CardEffect, context: OrderResolutionContext): void {
   const params = order.params
   switch (effect.type) {
     case 'spawn': {
@@ -1306,6 +1590,9 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
       if (!unit) return
+      if (!context.movedUnitOrigins[resolvedUnitId]) {
+        context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
+      }
       const direction = resolveDirection(unit.facing, params, effect.direction)
       if (direction === null) return
       const distance =
@@ -1316,6 +1603,18 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
             : null
       if (!distance) return
       moveUnit(state, unit, direction, distance)
+      return
+    }
+    case 'teleport': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      const destination = effect.tileParam === 'tile' ? params.tile : params.tile2
+      if (!resolvedUnitId || !destination) return
+      const unit = state.units[resolvedUnitId]
+      if (!unit || !canActAsUnit(unit)) return
+      if (!context.movedUnitOrigins[resolvedUnitId]) {
+        context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
+      }
+      teleportUnit(state, unit, destination, effect.maxDistance)
       return
     }
     case 'damage': {
@@ -1350,6 +1649,30 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       }
       return
     }
+    case 'placeTrap': {
+      const tile = params.tile
+      if (!tile) return
+      if (!isValidBarricadeSpawnTile(state, order.player, tile)) return
+      const placed = placeTrap(state, order.player, tile, effect.trapKind, CARD_DEFS[order.defId].name)
+      if (!placed) {
+        state.log.push(`${CARD_DEFS[order.defId].name} fails (invalid trap tile).`)
+      }
+      return
+    }
+    case 'spawnAdjacentFriendly': {
+      const tile = params.tile
+      if (!tile) return
+      if (!isValidBarricadeSpawnTile(state, order.player, tile)) {
+        state.log.push(`${CARD_DEFS[order.defId].name} fails (invalid recruitment tile).`)
+        return
+      }
+      const facing = getDefaultSpawnFacing(state, order.player)
+      const spawnedId = spawnUnit(state, order.player, tile, facing, 'unit', effect.strength)
+      if (!spawnedId) {
+        state.log.push(`${CARD_DEFS[order.defId].name} fails (tile occupied or blocked).`)
+      }
+      return
+    }
     case 'applyUnitModifier': {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId) return
@@ -1374,6 +1697,26 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
     }
     case 'applyPlayerModifier': {
       addPlayerModifier(state, order.player, effect.modifier, effect.amount, effect.turns)
+      return
+    }
+    case 'boostAllFriendly': {
+      const friendlyUnits = Object.values(state.units).filter((unit) => unit.owner === order.player && canActAsUnit(unit))
+      friendlyUnits.forEach((unit) => boostUnit(state, unit, effect.amount))
+      return
+    }
+    case 'teamAttackForward': {
+      const attackerIds = Object.values(state.units)
+        .filter((unit) => unit.owner === order.player && canActAsUnit(unit))
+        .map((unit) => unit.id)
+      attackerIds.forEach((attackerId) => {
+        const attacker = state.units[attackerId]
+        if (!attacker || !canActAsUnit(attacker)) return
+        const targetHex = neighbor(attacker.pos, attacker.facing)
+        if (!inBounds(state.boardRows, state.boardCols, targetHex)) return
+        const target = getUnitAt(state, targetHex)
+        if (!target || !canCardTargetUnit(order.defId, target)) return
+        applyDamage(state, target, effect.damage, attacker)
+      })
       return
     }
     case 'face': {
@@ -1412,6 +1755,103 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
           addUnitModifier(state, target, effect.modifier, effect.turns)
         })
       })
+      return
+    }
+    case 'harpoon': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
+
+      const targets = getAttackTargets(state, actingUnit, 'line', actingUnit.facing)
+      const target = targets[0]
+      if (!target) return
+      if (!canCardTargetUnit(order.defId, target)) return
+
+      applyDamage(state, target, effect.damage, actingUnit, order.defId)
+      let pulledUnit = state.units[target.id]
+      if (!pulledUnit) return
+
+      const pullDirection = rotateDirection(actingUnit.facing, 3)
+      let moved = false
+      while (pulledUnit && !isAdjacentHex(pulledUnit.pos, actingUnit.pos)) {
+        const next = neighbor(pulledUnit.pos, pullDirection)
+        if (!inBounds(state.boardRows, state.boardCols, next)) break
+        if (getUnitAt(state, next)) break
+        setUnitPosition(pulledUnit, next)
+        moved = true
+        const trapResolution = triggerTrapAtCurrentTile(state, pulledUnit)
+        const surviving = state.units[pulledUnit.id]
+        if (!surviving) break
+        pulledUnit = surviving
+        if (trapResolution.stopMovement) break
+      }
+      if (moved && pulledUnit) {
+        state.log.push(`Unit ${pulledUnit.id} is pulled to ${pulledUnit.pos.q},${pulledUnit.pos.r}.`)
+      }
+      return
+    }
+    case 'executeForward': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
+
+      const targetTile = neighbor(actingUnit.pos, actingUnit.facing)
+      if (!inBounds(state.boardRows, state.boardCols, targetTile)) return
+      const target = getUnitAt(state, targetTile)
+      if (!target || !canCardTargetUnit(order.defId, target)) return
+
+      if (target.kind === 'commander') {
+        applyDamage(state, target, effect.leaderDamage, actingUnit, order.defId)
+        return
+      }
+
+      delete state.units[target.id]
+      state.log.push(`Unit ${target.id} is executed.`)
+      return
+    }
+    case 'damageAdjacent': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
+
+      for (let dir = 0 as Direction; dir < 6; dir += 1) {
+        const targetTile = neighbor(actingUnit.pos, dir)
+        if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
+        const target = getUnitAt(state, targetTile)
+        if (!target || !canCardTargetUnit(order.defId, target)) continue
+        applyDamage(state, target, effect.amount, actingUnit, order.defId)
+      }
+      return
+    }
+    case 'chainLightning': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
+
+      const visited = new Set<string>([actingUnit.id])
+      const path: string[] = []
+      let currentOrigin = { ...actingUnit.pos }
+      while (state.winner === null) {
+        const candidates = getAdjacentChainLightningTargets(state, currentOrigin, visited, order.defId)
+        if (candidates.length === 0) break
+        const choiceIndex = Math.floor(Math.random() * candidates.length)
+        const target = candidates[Math.max(0, Math.min(choiceIndex, candidates.length - 1))]
+        visited.add(target.id)
+        path.push(target.id)
+        const nextOrigin = { ...target.pos }
+        applyDamage(state, target, effect.damage, actingUnit, order.defId)
+        currentOrigin = nextOrigin
+      }
+
+      if (path.length === 0) {
+        state.log.push('Chain lightning finds no adjacent targets.')
+      } else {
+        state.log.push(`Chain lightning path: ${path.join(' -> ')}.`)
+      }
       return
     }
     case 'shove': {
@@ -1455,8 +1895,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       }
 
       if (!sameHex(destination, target.pos)) {
-        setUnitPosition(target, destination)
-        state.log.push(`Unit ${target.id} is shoved to ${destination.q},${destination.r}.`)
+        pushUnit(state, target, direction, effect.distance)
       }
       return
     }
@@ -1480,6 +1919,41 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       }
       return
     }
+    case 'moveAdjacentFriendlyGroup': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      if (!resolvedUnitId) return
+      const actingUnit = state.units[resolvedUnitId]
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
+
+      const direction = resolveDirection(actingUnit.facing, params, effect.direction)
+      if (direction === null) return
+      const distance =
+        typeof effect.distance === 'number'
+          ? effect.distance
+          : params.distance !== undefined
+            ? params.distance
+            : null
+      if (!distance) return
+
+      const anchor = context.movedUnitOrigins[resolvedUnitId] ?? actingUnit.pos
+      const adjacentIds = Object.values(state.units)
+        .filter(
+          (unit) =>
+            unit.id !== resolvedUnitId &&
+            unit.owner === order.player &&
+            canActAsUnit(unit) &&
+            isAdjacentHex(anchor, unit.pos)
+        )
+        .sort((a, b) => projectAlongDirection(b.pos, direction) - projectAlongDirection(a.pos, direction))
+        .map((unit) => unit.id)
+
+      adjacentIds.forEach((unitId) => {
+        const unit = state.units[unitId]
+        if (!unit || !canActAsUnit(unit)) return
+        moveUnit(state, unit, direction, distance)
+      })
+      return
+    }
     default:
       return
   }
@@ -1488,7 +1962,12 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
 function resolveDirection(facing: Direction, params: OrderParams, source: DirectionSource): Direction | null {
   if (source === 'facing') return facing
   if (typeof source === 'object' && source.type === 'param') {
-    const value = source.key === 'moveDirection' ? params.moveDirection : params.direction
+    const value =
+      source.key === 'moveDirection'
+        ? params.moveDirection
+        : source.key === 'faceDirection'
+          ? params.faceDirection
+          : params.direction
     if (value === undefined) return null
     return value
   }
@@ -1498,7 +1977,12 @@ function resolveDirection(facing: Direction, params: OrderParams, source: Direct
 function resolveDirections(facing: Direction, params: OrderParams, source: DirectionSource): Direction[] {
   if (source === 'facing') return [facing]
   if (typeof source === 'object' && source.type === 'param') {
-    const value = source.key === 'moveDirection' ? params.moveDirection : params.direction
+    const value =
+      source.key === 'moveDirection'
+        ? params.moveDirection
+        : source.key === 'faceDirection'
+          ? params.faceDirection
+          : params.direction
     if (value === undefined) return []
     return [value]
   }

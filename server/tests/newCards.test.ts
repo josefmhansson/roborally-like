@@ -115,6 +115,338 @@ test('barricade card spawns two barricade units on valid tiles', () => {
   assert.equal(barricades.length, 2)
 })
 
+test('pitfall trap triggers on movement, deals 2 damage, snares, and stops movement', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_pitfall_trap'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['trap-anchor'] = {
+    id: 'trap-anchor',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['trap-target'] = {
+    id: 'trap-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const trapTile = { q: 3, r: 2 }
+  const trapCardId = findCardId(state, 0, 'spell_pitfall_trap')
+  const moveCardId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, trapCardId, { tile: trapTile }))
+  assert.ok(planOrder(state, 1, moveCardId, { unitId: 'trap-target', direction: 0, distance: 3 }))
+
+  readyAndResolve(state)
+
+  const moved = state.units['trap-target']
+  assert.ok(moved)
+  assert.deepEqual(moved.pos, trapTile)
+  assert.equal(moved.strength, 2)
+  const snared = moved.modifiers.find((modifier) => modifier.type === 'cannotMove')
+  assert.ok(snared)
+  assert.equal(snared.turnsRemaining, 1)
+  assert.equal(state.traps.length, 0)
+})
+
+test('explosive trap triggers on movement and does not stop movement', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_explosive_trap'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['explosive-anchor'] = {
+    id: 'explosive-anchor',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['explosive-target'] = {
+    id: 'explosive-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const trapCardId = findCardId(state, 0, 'spell_explosive_trap')
+  const moveCardId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, trapCardId, { tile: { q: 3, r: 2 } }))
+  assert.ok(planOrder(state, 1, moveCardId, { unitId: 'explosive-target', direction: 0, distance: 3 }))
+
+  readyAndResolve(state)
+
+  const moved = state.units['explosive-target']
+  assert.ok(moved)
+  assert.deepEqual(moved.pos, { q: 4, r: 2 })
+  assert.equal(moved.strength, 1)
+  assert.equal(moved.modifiers.some((modifier) => modifier.type === 'cannotMove'), false)
+  assert.equal(state.traps.length, 0)
+})
+
+test('teleport moves within range without triggering traps on intermediate tiles', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_teleport'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['tp-user'] = {
+    id: 'tp-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.traps.push({
+    id: 'tp-mid',
+    owner: 1,
+    kind: 'pitfall',
+    pos: { q: 2, r: 2 },
+  })
+
+  const cardId = findCardId(state, 0, 'move_teleport')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'tp-user', tile: { q: 3, r: 2 } }))
+  readyAndResolve(state)
+
+  const actorAfter = state.units['tp-user']
+  assert.ok(actorAfter)
+  assert.deepEqual(actorAfter.pos, { q: 3, r: 2 })
+  assert.equal(actorAfter.strength, 4)
+  assert.equal(state.traps.some((trap) => trap.id === 'tp-mid'), true)
+})
+
+test('chain lightning jumps across adjacent unique units and never hits the origin unit', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_chain_lightning'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['cl-user'] = {
+    id: 'cl-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['cl-a'] = {
+    id: 'cl-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['cl-b'] = {
+    id: 'cl-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['cl-c'] = {
+    id: 'cl-c',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_chain_lightning')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'cl-user' }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['cl-user']?.strength, 4)
+  assert.equal(state.units['cl-a']?.strength, 2)
+  assert.equal(state.units['cl-b']?.strength, 2)
+  assert.equal(state.units['cl-c']?.strength, 2)
+})
+
+test('battlefield recruitment spawns a 1-strength unit adjacent to a friendly unit', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_battlefield_recruitment'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const cardId = findCardId(state, 0, 'reinforce_battlefield_recruitment')
+  const candidates = getBarricadeSpawnTiles(state, 0)
+  assert.ok(candidates.length > 0)
+  const tile = candidates[0]
+  const beforeIds = new Set(Object.keys(state.units))
+
+  assert.ok(planOrder(state, 0, cardId, { tile }))
+  readyAndResolve(state)
+
+  const recruited = Object.values(state.units).find(
+    (unit) =>
+      !beforeIds.has(unit.id) &&
+      unit.owner === 0 &&
+      unit.kind === 'unit' &&
+      unit.pos.q === tile.q &&
+      unit.pos.r === tile.r
+  )
+  assert.ok(recruited)
+  assert.equal(recruited.strength, 1)
+})
+
+test('mass boost grants +2 strength to all friendly units', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_mass_boost'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['mb-a'] = {
+    id: 'mb-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['mb-b'] = {
+    id: 'mb-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  const commanderBefore = state.units['stronghold-0']?.strength ?? 0
+
+  const cardId = findCardId(state, 0, 'reinforce_mass_boost')
+  assert.ok(planOrder(state, 0, cardId, {}))
+  readyAndResolve(state)
+
+  assert.equal(state.units['mb-a']?.strength, 4)
+  assert.equal(state.units['mb-b']?.strength, 5)
+  assert.equal(state.units['stronghold-0']?.strength, commanderBefore + 2)
+})
+
+test('coordinated attack applies 2 damage from each friendly unit to the tile in front', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_coordinated'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['co-a'] = {
+    id: 'co-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['co-b'] = {
+    id: 'co-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['co-target-a'] = {
+    id: 'co-target-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['co-target-b'] = {
+    id: 'co-target-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 3 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_coordinated')
+  assert.ok(planOrder(state, 0, cardId, {}))
+  readyAndResolve(state)
+
+  assert.equal(state.units['co-target-a']?.strength, 1)
+  assert.equal(state.units['co-target-b']?.strength, 1)
+})
+
+test('tandem movement moves the selected unit and adjacent friendlies in one direction', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_tandem'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['tm-main'] = {
+    id: 'tm-main',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['tm-adjacent'] = {
+    id: 'tm-adjacent',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 1,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_tandem')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'tm-main', direction: 0, distance: 2 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['tm-main']?.pos, { q: 4, r: 2 })
+  assert.deepEqual(state.units['tm-adjacent']?.pos, { q: 3, r: 2 })
+  assert.equal(state.units['tm-main']?.facing, 0)
+  assert.equal(state.units['tm-adjacent']?.facing, 1)
+})
+
 test('trip prevents movement for two turns', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -626,6 +958,173 @@ test('shove deals collision damage when push destination is occupied', () => {
   assert.equal(state.units['u-blocker']?.strength, 1)
   assert.deepEqual(state.units['u-target']?.pos, targetPos)
   assert.deepEqual(state.units['u-blocker']?.pos, blockerPos)
+})
+
+test('harpoon damages and pulls the first unit in line toward the attacker', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_harpoon'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['harpoon-user'] = {
+    id: 'harpoon-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['harpoon-target'] = {
+    id: 'harpoon-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_harpoon')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'harpoon-user' }))
+  readyAndResolve(state)
+
+  const targetAfter = state.units['harpoon-target']
+  assert.ok(targetAfter)
+  assert.equal(targetAfter.strength, 3)
+  assert.deepEqual(targetAfter.pos, { q: 2, r: 2 })
+})
+
+test('execute destroys non-commander units directly in front', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['exec-user'] = {
+    id: 'exec-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['exec-target'] = {
+    id: 'exec-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 10,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_execute')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'exec-user' }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['exec-target'], undefined)
+})
+
+test('execute deals 3 damage to commanders in front', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['exec-user'] = {
+    id: 'exec-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  const commander = state.units['stronghold-1']
+  assert.ok(commander && commander.kind === 'commander')
+  commander.pos = { q: 3, r: 2 }
+  const startStrength = commander.strength
+
+  const cardId = findCardId(state, 0, 'attack_execute')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'exec-user' }))
+  readyAndResolve(state)
+
+  const commanderAfter = state.units['stronghold-1']
+  assert.ok(commanderAfter)
+  assert.equal(commanderAfter.strength, startStrength - 3)
+})
+
+test('blade dance chains three moves and damages adjacent units after each step', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 3 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_blade_dance'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['bd-user'] = {
+    id: 'bd-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['bd-step-1'] = {
+    id: 'bd-step-1',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 3 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['bd-step-2-3'] = {
+    id: 'bd-step-2-3',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 0 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['bd-step-3'] = {
+    id: 'bd-step-3',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['bd-all-steps'] = {
+    id: 'bd-all-steps',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_blade_dance')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'bd-user', direction: 0, moveDirection: 1, faceDirection: 0 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['bd-user']?.pos, { q: 4, r: 1 })
+  assert.equal(state.units['bd-step-1']?.strength, 2)
+  assert.equal(state.units['bd-step-2-3']?.strength, 1)
+  assert.equal(state.units['bd-step-3']?.strength, 2)
+  assert.equal(state.units['bd-all-steps']?.strength, 1)
 })
 
 test('whirlwind damages adjacent units and pushes when space is open', () => {

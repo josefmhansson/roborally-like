@@ -68,8 +68,9 @@ test('bot deck generator stays within category ratio targets when feasible', () 
 })
 
 test('bot deck generator gracefully handles impossible settings by capping to total capacity', () => {
-  const deck = generateClusteredBotDeck({ deckSize: 40, maxCopies: 1 })
-  assert.equal(deck.length, Object.keys(CARD_DEFS).length)
+  const deckSize = 40
+  const deck = generateClusteredBotDeck({ deckSize, maxCopies: 1 })
+  assert.equal(deck.length, Math.min(deckSize, Object.keys(CARD_DEFS).length))
 
   const perCard = countByCard(deck)
   perCard.forEach((copies) => {

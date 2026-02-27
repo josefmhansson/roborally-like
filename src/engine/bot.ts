@@ -277,6 +277,10 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
     return params
   }
 
+  if (defId === 'reinforce_battlefield_recruitment') {
+    return getBarricadeSpawnTiles(projected, player).map((tile) => ({ tile: { ...tile } }))
+  }
+
   return [{}]
 }
 
@@ -339,13 +343,73 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
     return refs.map((ref) => ({ unitId: ref.refId }))
   }
 
+  if (defId === 'move_tandem') {
+    const distances = CARD_DEFS[defId].requires.distanceOptions ?? [1, 2, 3]
+    const params: OrderParams[] = []
+    refs.forEach((ref) => {
+      DIRECTIONS.forEach((direction) => {
+        distances.forEach((distance) => {
+          params.push({
+            unitId: ref.refId,
+            direction,
+            distance,
+          })
+        })
+      })
+    })
+    return params
+  }
+
+  if (defId === 'move_teleport') {
+    const params: OrderParams[] = []
+    refs.forEach((ref) => {
+      projected.tiles.forEach((tile) => {
+        if (tile.q === ref.snapshot.pos.q && tile.r === ref.snapshot.pos.r) return
+        if (hexDistance(ref.snapshot.pos, tile) > 3) return
+        if (getUnitAt(projected, tile)) return
+        params.push({
+          unitId: ref.refId,
+          tile: { q: tile.q, r: tile.r },
+        })
+      })
+    })
+    return params
+  }
+
   return []
 }
 
 function generateAttackParams(state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
+  if (defId === 'attack_coordinated') {
+    return [{}]
+  }
   const refs = getFriendlyUnitRefs(state, projected, player)
   if (refs.length === 0) return []
   const params: OrderParams[] = []
+  if (defId === 'attack_blade_dance') {
+    refs.forEach((ref) => {
+      DIRECTIONS.forEach((direction) => {
+        const firstStep = neighbor(ref.snapshot.pos, direction)
+        if (!inBounds(projected, firstStep)) return
+        DIRECTIONS.forEach((moveDirection) => {
+          const secondStep = neighbor(firstStep, moveDirection)
+          if (!inBounds(projected, secondStep)) return
+          DIRECTIONS.forEach((faceDirection) => {
+            const thirdStep = neighbor(secondStep, faceDirection)
+            if (!inBounds(projected, thirdStep)) return
+            params.push({
+              unitId: ref.refId,
+              direction,
+              moveDirection,
+              faceDirection,
+            })
+          })
+        })
+      })
+    })
+    return params
+  }
+
   if (
     defId === 'attack_fwd' ||
     defId === 'attack_charge' ||
@@ -370,6 +434,10 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
 
 function generateSpellParams(_state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
   if (defId === 'spell_invest' || defId === 'spell_divination') return [{}]
+
+  if (defId === 'spell_pitfall_trap' || defId === 'spell_explosive_trap') {
+    return getBarricadeSpawnTiles(projected, player).map((tile) => ({ tile: { ...tile } }))
+  }
 
   if (
     defId === 'spell_lightning' ||
@@ -795,6 +863,7 @@ function cloneGameState(source: GameState): GameState {
     boardCols: source.boardCols,
     tiles: source.tiles.map((tile) => ({ ...tile })),
     units,
+    traps: source.traps.map((trap) => ({ ...trap, pos: { ...trap.pos } })),
     players,
     ready: [source.ready[0], source.ready[1]],
     actionBudgets: [source.actionBudgets[0], source.actionBudgets[1]],

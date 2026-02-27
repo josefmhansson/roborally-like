@@ -1,5 +1,5 @@
 import './style.css'
-import { CARD_DEFS, STARTING_DECK } from './engine/cards'
+import { CARD_DEFS, STARTING_DECK, cardCountsAsType, getCardTypes } from './engine/cards'
 import {
   DEFAULT_PLAYER_CLASSES,
   getCardClassId,
@@ -11,7 +11,7 @@ import {
   PLAYER_CLASS_DEFS,
   type PlayerClasses,
 } from './engine/classes'
-import { DIRECTIONS, hexToPixel, neighbor, rotateDirection } from './engine/hex'
+import { DIRECTIONS, hexToPixel, neighbor, offsetToAxial, rotateDirection } from './engine/hex'
 import {
   canCardSelectUnit,
   createGameState,
@@ -46,6 +46,7 @@ import type {
   OrderParams,
   PlayerId,
   PlayerClassId,
+  Trap,
   TileKind,
   Unit,
 } from './engine/types'
@@ -450,6 +451,7 @@ let pinchZoomState: PinchZoomState | null = null
 let touchPanState: TouchPanState | null = null
 
 type UnitSnapshot = {
+  id: string
   pos: Hex
   facing: Direction
   strength: number
@@ -465,6 +467,28 @@ type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
 type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
+type TeleportAnimation = {
+  type: 'teleport'
+  unitId: string
+  from: Hex
+  to: Hex
+  fromSnapshot: UnitSnapshot
+  toSnapshot: UnitSnapshot
+  duration: number
+}
+type ChainLightningAnimation = { type: 'chainLightning'; from: Hex; to: Hex; duration: number }
+type HarpoonAnimation = {
+  type: 'harpoon'
+  from: Hex
+  to: Hex
+  duration: number
+  pulledUnit?: {
+    id: string
+    from: Hex
+    to: Hex
+    snapshot: UnitSnapshot
+  }
+}
 type DeathRayAnimation = { type: 'deathRay'; from: Hex; targets: Hex[]; duration: number }
 type BoardAnimation =
   | MoveAnimation
@@ -475,6 +499,9 @@ type BoardAnimation =
   | LightningAnimation
   | MeteorAnimation
   | ArrowAnimation
+  | TeleportAnimation
+  | ChainLightningAnimation
+  | HarpoonAnimation
   | DeathRayAnimation
 
 const MOVE_DURATION_MS = 300
@@ -483,8 +510,11 @@ const SPAWN_DURATION_MS = 260
 const BOOST_DURATION_MS = 320
 const DEATH_DURATION_MS = 260
 const LIGHTNING_DURATION_MS = 240
+const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
 const METEOR_DURATION_MS = 1600
 const ARROW_DURATION_MS = 300
+const TELEPORT_DURATION_MS = 320
+const HARPOON_DURATION_MS = 500
 const DEATH_RAY_DURATION_MS = 340
 const CARD_TRANSFER_DURATION_MS = 800
 
@@ -1643,6 +1673,7 @@ function mapViewToState(view: GameStateView): GameState {
     boardCols: view.boardCols,
     tiles: view.tiles.map((tile) => ({ ...tile })),
     units,
+    traps: (view.traps ?? []).map((trap) => ({ ...trap, pos: { ...trap.pos } })),
     players,
     ready: [view.ready[0], view.ready[1]],
     actionBudgets: [view.actionBudgets[0], view.actionBudgets[1]],
@@ -1663,6 +1694,28 @@ function mapViewToState(view: GameStateView): GameState {
 }
 
 function normalizeCommanderUnitsInState(sourceState: GameState): void {
+  const normalizedTraps = Array.isArray((sourceState as { traps?: unknown }).traps)
+    ? (sourceState as { traps: unknown[] }).traps
+        .filter((entry): entry is { id?: unknown; owner?: unknown; kind?: unknown; pos?: { q?: unknown; r?: unknown } } => {
+          if (!entry || typeof entry !== 'object') return false
+          const trap = entry as { owner?: unknown; kind?: unknown; pos?: { q?: unknown; r?: unknown } }
+          if (trap.owner !== 0 && trap.owner !== 1) return false
+          if (trap.kind !== 'pitfall' && trap.kind !== 'explosive') return false
+          if (!trap.pos || typeof trap.pos.q !== 'number' || typeof trap.pos.r !== 'number') return false
+          return Number.isFinite(trap.pos.q) && Number.isFinite(trap.pos.r)
+        })
+        .map((trap, index) => ({
+          id: typeof trap.id === 'string' ? trap.id : `trap-restored-${index}`,
+          owner: trap.owner as PlayerId,
+          kind: trap.kind as 'pitfall' | 'explosive',
+          pos: {
+            q: Math.floor((trap.pos as { q: number }).q),
+            r: Math.floor((trap.pos as { r: number }).r),
+          },
+        }))
+    : []
+  sourceState.traps = normalizedTraps
+
   Object.values(sourceState.units).forEach((unit) => {
     const rawKind = (unit as { kind: string }).kind
     if (rawKind === 'stronghold') {
@@ -2876,6 +2929,87 @@ function drawLightningStrike(center: { x: number; y: number }, progress: number)
   ctx.restore()
 }
 
+function drawLightningArc(from: { x: number; y: number }, to: { x: number; y: number }, progress: number): void {
+  const t = easeInOutCubic(progress)
+  const end = {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t,
+  }
+  const segments = 6
+  const points: { x: number; y: number }[] = [from]
+  for (let index = 1; index <= segments; index += 1) {
+    const segmentT = index / segments
+    const jitter = Math.sin((segmentT * 7 + progress * 9) * Math.PI) * layout.size * 0.18
+    points.push({
+      x: from.x + (end.x - from.x) * segmentT + jitter,
+      y: from.y + (end.y - from.y) * segmentT,
+    })
+  }
+
+  const alpha = 0.85 - progress * 0.35
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = Math.max(0.2, alpha)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y)
+    else ctx.lineTo(point.x, point.y)
+  })
+  ctx.strokeStyle = 'rgba(225, 245, 255, 0.95)'
+  ctx.lineWidth = 3
+  ctx.stroke()
+  ctx.strokeStyle = 'rgba(126, 193, 255, 0.95)'
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+
+  const impactRadius = layout.size * (0.09 + 0.24 * t)
+  const impactGradient = ctx.createRadialGradient(end.x, end.y, impactRadius * 0.15, end.x, end.y, impactRadius)
+  impactGradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)')
+  impactGradient.addColorStop(0.55, 'rgba(147, 212, 255, 0.85)')
+  impactGradient.addColorStop(1, 'rgba(86, 144, 215, 0)')
+  ctx.fillStyle = impactGradient
+  ctx.beginPath()
+  ctx.arc(end.x, end.y, impactRadius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawTeleportAnimation(animation: TeleportAnimation, progress: number): void {
+  const t = easeInOutCubic(progress)
+  const fromCenter = projectHex(animation.from)
+  const toCenter = projectHex(animation.to)
+  const fromAlpha = Math.max(0, 1 - t)
+  const toAlpha = Math.max(0, t)
+
+  const flashRadius = layout.size * (0.35 + 0.55 * t)
+  const drawFlash = (center: { x: number; y: number }, intensity: number): void => {
+    if (intensity <= 0) return
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.globalAlpha = intensity
+    const gradient = ctx.createRadialGradient(center.x, center.y, flashRadius * 0.12, center.x, center.y, flashRadius)
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)')
+    gradient.addColorStop(0.5, 'rgba(135, 210, 255, 0.75)')
+    gradient.addColorStop(1, 'rgba(85, 135, 255, 0)')
+    ctx.fillStyle = gradient
+    ctx.beginPath()
+    ctx.arc(center.x, center.y, flashRadius, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+  }
+
+  drawFlash(fromCenter, fromAlpha * 0.9)
+  drawFlash(toCenter, toAlpha * 0.9)
+  drawUnit(animation.fromSnapshot as Unit, fromCenter, fromAlpha)
+  drawUnit(animation.toSnapshot as Unit, toCenter, toAlpha)
+}
+
+function drawChainLightningAnimation(animation: ChainLightningAnimation, progress: number): void {
+  drawLightningArc(projectHex(animation.from), projectHex(animation.to), progress)
+}
+
 function drawMeteorImpact(target: Hex, progress: number): void {
   const center = projectHex(target)
   const start = {
@@ -2950,6 +3084,81 @@ function drawArrowTrail(from: Hex, to: Hex, progress: number): void {
   ctx.fillStyle = 'rgba(25, 20, 18, 0.9)'
   ctx.fill()
   ctx.restore()
+}
+
+function drawHarpoonAnimation(animation: HarpoonAnimation, progress: number): void {
+  const start = projectHex(animation.from)
+  const end = projectHex(animation.to)
+  const phase = progress < 0.5 ? 'extend' : 'retract'
+  const phaseProgress = easeInOutCubic(phase === 'extend' ? progress * 2 : (progress - 0.5) * 2)
+
+  const tip =
+    phase === 'extend'
+      ? {
+          x: start.x + (end.x - start.x) * phaseProgress,
+          y: start.y + (end.y - start.y) * phaseProgress,
+        }
+      : {
+          x: end.x + (start.x - end.x) * phaseProgress,
+          y: end.y + (start.y - end.y) * phaseProgress,
+        }
+
+  const dirX = phase === 'extend' ? end.x - start.x : start.x - end.x
+  const dirY = phase === 'extend' ? (end.y - start.y) / BOARD_TILT : (start.y - end.y) / BOARD_TILT
+  const len = Math.hypot(dirX, dirY) || 1
+  const nx = dirX / len
+  const ny = dirY / len
+  const perpX = -ny
+  const perpY = nx
+  const headLength = layout.size * 0.24
+  const baseWidth = layout.size * 0.1
+  const tailLength = layout.size * 0.24
+
+  const tailX = tip.x - nx * tailLength
+  const tailY = tip.y - ny * tailLength
+
+  ctx.save()
+  ctx.strokeStyle = 'rgba(89, 71, 53, 0.9)'
+  ctx.lineWidth = 2.4
+  ctx.beginPath()
+  ctx.moveTo(start.x, start.y)
+  ctx.lineTo(tip.x, tip.y)
+  ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(tailX, tailY)
+  ctx.lineTo(tip.x, tip.y)
+  ctx.strokeStyle = 'rgba(25, 20, 18, 0.85)'
+  ctx.lineWidth = 1.6
+  ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(tip.x, tip.y)
+  ctx.lineTo(tip.x - nx * headLength + perpX * baseWidth, tip.y - ny * headLength + perpY * baseWidth)
+  ctx.lineTo(tip.x - nx * headLength - perpX * baseWidth, tip.y - ny * headLength - perpY * baseWidth)
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(25, 20, 18, 0.95)'
+  ctx.fill()
+  ctx.restore()
+
+  if (phase === 'retract' && animation.pulledUnit) {
+    const fromCenter = projectHex(animation.pulledUnit.from)
+    const toCenter = projectHex(animation.pulledUnit.to)
+    const center = {
+      x: fromCenter.x + (toCenter.x - fromCenter.x) * phaseProgress,
+      y: fromCenter.y + (toCenter.y - fromCenter.y) * phaseProgress,
+    }
+    const pulled = {
+      id: animation.pulledUnit.id,
+      owner: animation.pulledUnit.snapshot.owner,
+      kind: animation.pulledUnit.snapshot.kind,
+      strength: animation.pulledUnit.snapshot.strength,
+      pos: { ...animation.pulledUnit.snapshot.pos },
+      facing: animation.pulledUnit.snapshot.facing,
+      modifiers: animation.pulledUnit.snapshot.modifiers.map((modifier) => ({ ...modifier })),
+    } as Unit
+    drawUnit(pulled, center, 0.9)
+  }
 }
 
 function drawDeathRay(from: Hex, targets: Hex[], progress: number): void {
@@ -3094,6 +3303,47 @@ function computeLayout(): void {
   )
 }
 
+function getVisibleTraps(sourceState: GameState): Trap[] {
+  const traps = sourceState.traps ?? []
+  if (mode === 'online') return traps
+  return traps.filter((trap) => trap.owner === planningPlayer)
+}
+
+function drawTrapMarker(trap: Trap): void {
+  const center = projectHex(trap.pos)
+  const size = layout.size * 0.3
+  const half = size / 2
+  const baseFill = trap.kind === 'pitfall' ? 'rgba(122, 82, 38, 0.9)' : 'rgba(164, 88, 34, 0.9)'
+  const innerFill = trap.kind === 'pitfall' ? 'rgba(81, 53, 22, 0.92)' : 'rgba(231, 136, 58, 0.94)'
+  const stroke = trap.kind === 'pitfall' ? 'rgba(48, 28, 12, 0.95)' : 'rgba(78, 36, 14, 0.95)'
+
+  ctx.save()
+  ctx.fillStyle = baseFill
+  ctx.strokeStyle = stroke
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  ctx.rect(center.x - half, center.y - half, size, size)
+  ctx.fill()
+  ctx.stroke()
+
+  ctx.fillStyle = innerFill
+  ctx.beginPath()
+  ctx.rect(center.x - half * 0.55, center.y - half * 0.55, size * 0.55, size * 0.55)
+  ctx.fill()
+
+  if (trap.kind === 'explosive') {
+    ctx.strokeStyle = 'rgba(255, 228, 190, 0.95)'
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    ctx.moveTo(center.x - half * 0.2, center.y)
+    ctx.lineTo(center.x + half * 0.2, center.y)
+    ctx.moveTo(center.x, center.y - half * 0.2)
+    ctx.lineTo(center.x, center.y + half * 0.2)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
 function drawBoard(): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -3164,6 +3414,14 @@ function drawBoard(): void {
       )
     })
 
+  const trapSource = previewState && state.phase === 'planning' ? previewState : state
+  getVisibleTraps(trapSource)
+    .filter((trap) => isTile(trap.pos))
+    .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q)
+    .forEach((trap) => {
+      drawTrapMarker(trap)
+    })
+
   drawSelectableHighlights()
 
   if (previewState && state.phase === 'planning') {
@@ -3171,6 +3429,12 @@ function drawBoard(): void {
   }
 
   for (const unit of Object.values(state.units)) {
+    if (currentAnimation?.type === 'harpoon' && currentAnimation.pulledUnit?.id === unit.id) {
+      continue
+    }
+    if (currentAnimation?.type === 'teleport' && currentAnimation.unitId === unit.id) {
+      continue
+    }
     const alphaOverride = unitAlphaOverrides.get(unit.id) ?? 1
     if (alphaOverride <= 0) continue
     drawUnit(unit, getAnimatedCenter(unit), alphaOverride)
@@ -3186,6 +3450,18 @@ function drawBoard(): void {
 
   if (currentAnimation?.type === 'arrow') {
     drawArrowTrail(currentAnimation.from, currentAnimation.to, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'chainLightning') {
+    drawChainLightningAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'teleport') {
+    drawTeleportAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'harpoon') {
+    drawHarpoonAnimation(currentAnimation, animationProgress)
   }
 
   if (currentAnimation?.type === 'deathRay') {
@@ -3270,7 +3546,10 @@ function drawSelectableHighlights(): void {
 
   const isUnitStep = nextStep === 'unit' || nextStep === 'unit2'
   const isDirectionStep = nextStep === 'direction' || nextStep === 'moveDirection' || nextStep === 'faceDirection'
-  const useDirectionArrows = isDirectionStep && !(defId === 'move_forward_face' && nextStep === 'moveDirection')
+  const useDirectionArrows =
+    isDirectionStep &&
+    !(defId === 'move_forward_face' && nextStep === 'moveDirection') &&
+    defId !== 'attack_blade_dance'
   const stroke = isUnitStep ? '#ffe66a' : '#7bd8ff'
   const lineWidth = 2.2
 
@@ -3625,18 +3904,18 @@ function renderHand(): void {
   handEl.innerHTML = playerHand
     .map((card) => {
       const def = CARD_DEFS[card.defId]
+      const cardTypeClassNames = getCardTypeClassNames(def)
       const cardClassName = getCardClassName(def.id)
       const isSelected = selectedCardId === card.id
       const isHidden = hiddenCardIds.has(card.id)
       const isPendingTransfer = pendingCardTransfer?.cardId === card.id && pendingCardTransfer?.target === 'hand'
       if (isPendingTransfer) {
         return `
-          <button class="card type-${def.type} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-layer="hand"></button>
+          <button class="card ${cardTypeClassNames} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-layer="hand" ${getCardStyleAttr(def)}></button>
         `
       }
-      const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
-        <button class="card type-${def.type} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-layer="hand" ${hiddenStyle}>
+        <button class="card ${cardTypeClassNames} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-layer="hand" ${getCardStyleAttr(def, isHidden)}>
           ${renderCardFace(def)}
         </button>
       `
@@ -3711,6 +3990,7 @@ function renderOrders(): void {
   ordersEl.innerHTML = ordersToShow
     .map((order, index) => {
       const def = CARD_DEFS[order.defId]
+      const cardTypeClassNames = getCardTypeClassNames(def)
       const cardClassName = getCardClassName(def.id)
       const isValid = inPlanning ? validity[index] ?? true : true
       const teamClass = `order-team-${order.player}`
@@ -3719,12 +3999,11 @@ function renderOrders(): void {
       const isPendingTransfer = pendingCardTransfer?.cardId === order.cardId && pendingCardTransfer?.target === 'orders'
       if (isPendingTransfer) {
         return `
-          <div class="card order-card type-${def.type} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} card-placeholder" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue"></div>
+          <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} card-placeholder" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" ${getCardStyleAttr(def)}></div>
         `
       }
-      const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
-        <div class="card order-card type-${def.type} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${hiddenStyle}>
+        <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${getCardStyleAttr(def, isHidden)}>
           ${renderCardFace(def, { orderIndex: index + 1 })}
         </div>
       `
@@ -4000,6 +4279,56 @@ function renderCardArt(defId: CardDefId): string {
   return `<div class="card-art" aria-hidden="true">${getCardArtSvg(defId)}</div>`
 }
 
+const CARD_TYPE_LABELS: Record<CardType, string> = {
+  reinforcement: 'Reinforcement',
+  movement: 'Movement',
+  attack: 'Attack',
+  spell: 'Spell',
+}
+
+const CARD_TYPE_TINTS: Record<CardType, string> = {
+  reinforcement: 'var(--frame-reinforcement)',
+  movement: 'var(--frame-movement)',
+  attack: 'var(--frame-attack)',
+  spell: 'var(--frame-spell)',
+}
+
+function getCardTypeClassNames(def: { type: CardType; countsAs?: CardType[] }): string {
+  return getCardTypes(def)
+    .map((type) => `type-${type}`)
+    .join(' ')
+}
+
+function getCardTintValue(def: { type: CardType; countsAs?: CardType[] }): string {
+  const types = getCardTypes(def)
+  if (types.length >= 3) {
+    return 'var(--frame-multitype-gold)'
+  }
+  if (types.length === 2) {
+    return `linear-gradient(90deg, ${CARD_TYPE_TINTS[types[0]]} 0%, ${CARD_TYPE_TINTS[types[1]]} 100%)`
+  }
+  return CARD_TYPE_TINTS[types[0]]
+}
+
+function getCardStyleAttr(def: { type: CardType; countsAs?: CardType[] }, hidden = false): string {
+  const styles = [`--card-tint:${getCardTintValue(def)}`]
+  if (hidden) {
+    styles.push('visibility:hidden', 'opacity:0')
+  }
+  return `style="${styles.join(';')}"`
+}
+
+function formatCardTypeLabel(def: { type: CardType; countsAs?: CardType[] }): string {
+  return getCardTypes(def)
+    .map((type) => CARD_TYPE_LABELS[type])
+    .join('/')
+}
+
+function getCardTypeSortRank(def: { type: CardType; countsAs?: CardType[] }): number {
+  const order: CardType[] = ['reinforcement', 'movement', 'attack', 'spell']
+  return Math.min(...getCardTypes(def).map((type) => order.indexOf(type)))
+}
+
 function getCardClassName(defId: CardDefId): string {
   const classId = getCardClassId(defId)
   return classId ? `card-class-${classId}` : 'card-class-generic'
@@ -4012,7 +4341,15 @@ function renderCardClassMark(defId: CardDefId): string {
 }
 
 function renderCardFace(
-  def: { id: CardDefId; name: string; description: string; actionCost?: number; keywords?: string[] },
+  def: {
+    id: CardDefId
+    name: string
+    description: string
+    type: CardType
+    countsAs?: CardType[]
+    actionCost?: number
+    keywords?: string[]
+  },
   options: { metaText?: string; orderIndex?: number } = {}
 ): string {
   const apCost = def.actionCost ?? 1
@@ -4120,8 +4457,12 @@ function animateCardMove(
   if (sourceEl) {
     clone.innerHTML = sourceEl.innerHTML
   }
+  const cardTint = getComputedStyle(baseEl).getPropertyValue('--card-tint').trim()
   clone.dataset.cardLayer = 'moving'
   clone.style.cssText = ''
+  if (cardTint) {
+    clone.style.setProperty('--card-tint', cardTint)
+  }
   clone.style.position = 'fixed'
   clone.style.left = `${fromRect.left}px`
   clone.style.top = `${fromRect.top}px`
@@ -4250,11 +4591,10 @@ function renderLoadout(): void {
   const classPool = mode === 'online' ? null : new Set(getCardPoolForClass(loadoutClass))
   const allCards = Object.values(CARD_DEFS)
     .filter((def) => (classPool ? classPool.has(def.id) : true))
-    .filter((def) => loadoutFilter === 'all' || def.type === loadoutFilter)
+    .filter((def) => loadoutFilter === 'all' || cardCountsAsType(def, loadoutFilter))
     .sort((a, b) => {
       if (loadoutSortMode === 'name') return a.name.localeCompare(b.name)
-      const order: CardType[] = ['reinforcement', 'movement', 'attack', 'spell']
-      const typeDiff = order.indexOf(a.type) - order.indexOf(b.type)
+      const typeDiff = getCardTypeSortRank(a) - getCardTypeSortRank(b)
       return typeDiff !== 0 ? typeDiff : a.name.localeCompare(b.name)
     })
 
@@ -4262,12 +4602,13 @@ function renderLoadout(): void {
     .map((def) => {
       const count = counts[def.id] ?? 0
       const disabled = deck.length >= gameSettings.deckSize || count >= gameSettings.maxCopies
+      const cardTypeClassNames = getCardTypeClassNames(def)
       const cardClassName = getCardClassName(def.id)
       return `
-        <button class="card loadout-card type-${def.type} ${cardClassName} ${disabled ? 'disabled' : ''}" data-add-id="${def.id}" ${
+        <button class="card loadout-card ${cardTypeClassNames} ${cardClassName} ${disabled ? 'disabled' : ''}" data-add-id="${def.id}" ${
           disabled ? 'disabled' : ''
-        }>
-          ${renderCardFace(def, { metaText: `${def.type} | ${count}/${gameSettings.maxCopies}` })}
+        } ${getCardStyleAttr(def)}>
+          ${renderCardFace(def, { metaText: `${formatCardTypeLabel(def)} | ${count}/${gameSettings.maxCopies}` })}
         </button>
       `
     })
@@ -4968,6 +5309,7 @@ function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
   const snap: Record<string, UnitSnapshot> = {}
   Object.values(source.units).forEach((unit) => {
     snap[unit.id] = {
+      id: unit.id,
       pos: { ...unit.pos },
       facing: unit.facing,
       strength: unit.strength,
@@ -5019,7 +5361,23 @@ function findAllUnitsInLine(before: Record<string, UnitSnapshot>, origin: Hex, d
   return targets
 }
 
-function buildAnimations(order: GameState['actionQueue'][number], before: Record<string, UnitSnapshot>): BoardAnimation[] {
+function parseChainLightningPath(logEntries: string[]): string[] {
+  const entry = logEntries.find((line) => line.startsWith('Chain lightning path: '))
+  if (!entry) return []
+  const [, pathText] = entry.split('Chain lightning path: ')
+  if (!pathText) return []
+  return pathText
+    .replace(/\.$/, '')
+    .split(' -> ')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+}
+
+function buildAnimations(
+  order: GameState['actionQueue'][number],
+  before: Record<string, UnitSnapshot>,
+  logEntries: string[] = []
+): BoardAnimation[] {
   const def = CARD_DEFS[order.defId]
   const animations: BoardAnimation[] = []
 
@@ -5051,14 +5409,50 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
       const afterUnit = state.units[resolvedId]
       if (!beforeUnit || !afterUnit) continue
       if (beforeUnit.pos.q !== afterUnit.pos.q || beforeUnit.pos.r !== afterUnit.pos.r) {
-        animations.push({
-          type: 'move',
-          unitId: resolvedId,
-          from: beforeUnit.pos,
-          to: afterUnit.pos,
-          duration: MOVE_DURATION_MS,
-        })
+        const duplicate = animations.some(
+          (animation) =>
+            animation.type === 'move' &&
+            animation.unitId === resolvedId &&
+            animation.from.q === beforeUnit.pos.q &&
+            animation.from.r === beforeUnit.pos.r &&
+            animation.to.q === afterUnit.pos.q &&
+            animation.to.r === afterUnit.pos.r
+        )
+        if (!duplicate) {
+          animations.push({
+            type: 'move',
+            unitId: resolvedId,
+            from: beforeUnit.pos,
+            to: afterUnit.pos,
+            duration: MOVE_DURATION_MS,
+          })
+        }
       }
+    }
+
+    if (effect.type === 'teleport') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const beforeUnit = before[resolvedId]
+      const afterUnit = state.units[resolvedId]
+      if (!beforeUnit || !afterUnit) continue
+      if (beforeUnit.pos.q === afterUnit.pos.q && beforeUnit.pos.r === afterUnit.pos.r) continue
+      animations.push({
+        type: 'teleport',
+        unitId: resolvedId,
+        from: { ...beforeUnit.pos },
+        to: { ...afterUnit.pos },
+        fromSnapshot: {
+          ...beforeUnit,
+          pos: { ...beforeUnit.pos },
+        },
+        toSnapshot: {
+          ...afterUnit,
+          pos: { ...afterUnit.pos },
+          modifiers: afterUnit.modifiers.map((modifier) => ({ ...modifier })),
+        },
+        duration: TELEPORT_DURATION_MS,
+      })
     }
 
     if (effect.type === 'attack') {
@@ -5072,7 +5466,12 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
       if (effect.directions === 'facing') {
         dirs = [facing]
       } else if (effect.directions.type === 'param') {
-        const paramValue = effect.directions.key === 'moveDirection' ? order.params.moveDirection : order.params.direction
+        const paramValue =
+          effect.directions.key === 'moveDirection'
+            ? order.params.moveDirection
+            : effect.directions.key === 'faceDirection'
+              ? order.params.faceDirection
+              : order.params.direction
         if (paramValue !== undefined) dirs = [paramValue]
       } else {
         dirs = effect.directions.offsets.map((offset) => rotateDirection(facing, offset))
@@ -5106,6 +5505,66 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
             })
           }
         }
+      })
+    }
+
+    if (effect.type === 'chainLightning') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const actingUnit = before[resolvedId] ?? state.units[resolvedId]
+      if (!actingUnit) continue
+      const path = parseChainLightningPath(logEntries)
+      let currentFrom = { ...actingUnit.pos }
+      path.forEach((targetId) => {
+        const targetSnapshot = before[targetId] ?? state.units[targetId]
+        if (!targetSnapshot) return
+        const targetPos = { ...targetSnapshot.pos }
+        animations.push({
+          type: 'chainLightning',
+          from: currentFrom,
+          to: targetPos,
+          duration: CHAIN_LIGHTNING_HOP_DURATION_MS,
+        })
+        currentFrom = targetPos
+      })
+    }
+
+    if (effect.type === 'harpoon') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const beforeUnit = before[resolvedId]
+      const afterUnit = state.units[resolvedId]
+      if (!beforeUnit || !afterUnit) continue
+
+      const target = findFirstUnitInLine(before, beforeUnit.pos, beforeUnit.facing)
+      if (!target) continue
+
+      const afterTarget = state.units[target.id]
+      const hasPull = Boolean(
+        afterTarget &&
+          (afterTarget.pos.q !== target.pos.q || afterTarget.pos.r !== target.pos.r)
+      )
+
+      animations.push({
+        type: 'harpoon',
+        from: { ...beforeUnit.pos },
+        to: { ...target.pos },
+        duration: HARPOON_DURATION_MS,
+        pulledUnit:
+          hasPull && afterTarget
+            ? {
+                id: target.id,
+                from: { ...target.pos },
+                to: { ...afterTarget.pos },
+                snapshot: {
+                  ...target,
+                  pos: { ...target.pos },
+                  facing: afterTarget.facing,
+                  strength: afterTarget.strength,
+                  modifiers: afterTarget.modifiers.map((modifier) => ({ ...modifier })),
+                },
+              }
+            : undefined,
       })
     }
 
@@ -5149,6 +5608,12 @@ function buildAnimations(order: GameState['actionQueue'][number], before: Record
   animations.forEach((animation) => {
     if (animation.type === 'move') {
       animatedMoveIds.add(animation.unitId)
+    }
+    if (animation.type === 'teleport') {
+      animatedMoveIds.add(animation.unitId)
+    }
+    if (animation.type === 'harpoon' && animation.pulledUnit) {
+      animatedMoveIds.add(animation.pulledUnit.id)
     }
   })
   Object.entries(before).forEach(([unitId, previous]) => {
@@ -5234,6 +5699,7 @@ function runNextAnimation(): void {
 function resolveNextActionAnimated(): void {
   if (state.phase !== 'action') return
   const before = snapshotUnits(state)
+  const logStart = state.log.length
   const currentOrder = state.actionQueue[state.actionIndex]
   resolveNextAction(state)
   if (!currentOrder) {
@@ -5241,7 +5707,7 @@ function resolveNextActionAnimated(): void {
     render()
     return
   }
-  const animations = buildAnimations(currentOrder, before)
+  const animations = buildAnimations(currentOrder, before, state.log.slice(logStart))
   if (animations.length === 0) {
     finalizeOnlineResolutionReplay()
     render()
@@ -5332,7 +5798,7 @@ type SelectionStep =
   | 'distance'
 
 type MoveSemantics = {
-  directionSource: 'facing' | { type: 'param'; key: 'direction' | 'moveDirection' }
+  directionSource: 'facing' | { type: 'param'; key: 'direction' | 'moveDirection' | 'faceDirection' }
   distanceSource: { type: 'fixed'; value: number } | { type: 'param'; key: 'distance' }
 }
 
@@ -5379,7 +5845,11 @@ function getDistanceSelectionTargets(
     directionCandidates.push(unitSnapshot.facing)
   } else {
     const selectedDirection =
-      semantics.directionSource.key === 'direction' ? params.direction : params.moveDirection
+      semantics.directionSource.key === 'direction'
+        ? params.direction
+        : semantics.directionSource.key === 'moveDirection'
+          ? params.moveDirection
+          : params.faceDirection
     if (selectedDirection === undefined) {
       DIRECTIONS.forEach((_, index) => directionCandidates.push(index as Direction))
     } else {
@@ -5415,7 +5885,9 @@ function resolveDistanceClick(
   params: OrderParams,
   player: PlayerId,
   clickedHex: Hex
-): { matched: false } | { matched: true; directionKey?: 'direction' | 'moveDirection'; direction?: Direction; distance?: number } {
+):
+  | { matched: false }
+  | { matched: true; directionKey?: 'direction' | 'moveDirection' | 'faceDirection'; direction?: Direction; distance?: number } {
   const semantics = deriveMoveSemantics(defId)
   if (!semantics) return { matched: false }
 
@@ -5455,7 +5927,9 @@ function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionSte
     const directionResolved =
       moveSemantics.directionSource.key === 'direction'
         ? params.direction !== undefined
-        : params.moveDirection !== undefined
+        : moveSemantics.directionSource.key === 'moveDirection'
+          ? params.moveDirection !== undefined
+          : params.faceDirection !== undefined
     if (!directionResolved || params.distance === undefined) return 'distance'
   }
   if (def.requires.moveDirection && params.moveDirection === undefined) return 'moveDirection'
@@ -5486,6 +5960,41 @@ function dedupeHexes(hexes: Hex[]): Hex[] {
     unique.push(hex)
   })
   return unique
+}
+
+function hexDistance(a: Hex, b: Hex): number {
+  const aAxial = offsetToAxial(a)
+  const bAxial = offsetToAxial(b)
+  const dq = aAxial.q - bAxial.q
+  const dr = aAxial.r - bAxial.r
+  const ds = -aAxial.q - aAxial.r - (-bAxial.q - bAxial.r)
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2
+}
+
+function getTeleportSelectionTargets(
+  snapshot: GameState,
+  params: OrderParams,
+  player: PlayerId,
+  maxDistance = 3
+): Hex[] {
+  const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
+  if (!unitSnapshot) return []
+  const rawUnit = params.unitId ? snapshot.units[params.unitId] : null
+  const hasSlow = rawUnit
+    ? rawUnit.modifiers.some(
+        (modifier) => modifier.type === 'slow' && (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
+      )
+    : false
+  const effectiveMaxDistance = hasSlow ? Math.min(1, maxDistance) : maxDistance
+  return snapshot.tiles
+    .map((tile) => ({ q: tile.q, r: tile.r }))
+    .filter((tile) => {
+      if (tile.q === unitSnapshot.pos.q && tile.r === unitSnapshot.pos.r) return false
+      if (hexDistance(unitSnapshot.pos, tile) > effectiveMaxDistance) return false
+      const occupied = Object.values(snapshot.units).some((unit) => unit.pos.q === tile.q && unit.pos.r === tile.r)
+      if (occupied) return false
+      return true
+    })
 }
 
 function getSelectableHexes(
@@ -5524,6 +6033,9 @@ function getSelectableHexes(
 
   if (step === 'tile') {
     if (CARD_DEFS[defId].requires.tile === 'any') {
+      if (defId === 'move_teleport') {
+        return getTeleportSelectionTargets(snapshot, params, player, 3)
+      }
       return snapshot.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
     }
     if (CARD_DEFS[defId].requires.tile === 'barricade') {
@@ -5567,10 +6079,32 @@ function getDirectionBase(
   const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
   if (!unitSnapshot) return null
   if (defId === 'move_forward_face' && step === 'faceDirection') {
-    if (params.moveDirection === undefined) return null
-    return stepInDirection(unitSnapshot.pos, params.moveDirection, 1)
+    return projectChainedDirectionBase(unitSnapshot.pos, params, ['moveDirection'])
+  }
+  if (defId === 'attack_blade_dance') {
+    if (step === 'moveDirection') {
+      return projectChainedDirectionBase(unitSnapshot.pos, params, ['direction'])
+    }
+    if (step === 'faceDirection') {
+      return projectChainedDirectionBase(unitSnapshot.pos, params, ['direction', 'moveDirection'])
+    }
   }
   return unitSnapshot.pos
+}
+
+function projectChainedDirectionBase(
+  base: Hex,
+  params: OrderParams,
+  keys: ('direction' | 'moveDirection' | 'faceDirection')[]
+): Hex | null {
+  let current = { ...base }
+  for (const key of keys) {
+    const direction = params[key]
+    if (direction === undefined) return null
+    current = stepInDirection(current, direction, 1)
+    if (!isTile(current)) return null
+  }
+  return current
 }
 
 function stepInDirection(base: Hex, direction: Direction, distance: number): Hex {
@@ -5752,11 +6286,15 @@ function handleBoardClick(hex: Hex): void {
   if (nextStep === 'tile') {
     const tileRequirement = CARD_DEFS[defId].requires.tile
     if (tileRequirement === 'any') {
-      if (isTile(hex)) {
+      const validTiles =
+        defId === 'move_teleport'
+          ? getTeleportSelectionTargets(selectionState, activeOrder.params, planningPlayer, 3)
+          : selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile = hex
-        statusEl.textContent = 'Tile selected.'
+        statusEl.textContent = defId === 'move_teleport' ? 'Teleport destination selected.' : 'Tile selected.'
       } else {
-        statusEl.textContent = 'Select a tile.'
+        statusEl.textContent = defId === 'move_teleport' ? 'Select a valid teleport destination.' : 'Select a tile.'
       }
     } else {
       const validTiles =
@@ -5825,6 +6363,9 @@ function handleBoardClick(hex: Hex): void {
         }
         if (resolution.directionKey === 'moveDirection' && resolution.direction !== undefined) {
           activeOrder.params.moveDirection = resolution.direction
+        }
+        if (resolution.directionKey === 'faceDirection' && resolution.direction !== undefined) {
+          activeOrder.params.faceDirection = resolution.direction
         }
         if (resolution.distance !== undefined) {
           activeOrder.params.distance = resolution.distance

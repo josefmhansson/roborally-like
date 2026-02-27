@@ -13,6 +13,17 @@ export type UnitId = string
 
 export type UnitKind = 'unit' | 'commander' | 'barricade'
 
+export type TrapKind = 'pitfall' | 'explosive'
+
+export type TrapId = string
+
+export type Trap = {
+  id: TrapId
+  owner: PlayerId
+  kind: TrapKind
+  pos: Hex
+}
+
 export type UnitModifierType = 'cannotMove' | 'slow' | 'spellResistance' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
 
 export type ModifierDuration = number | 'indefinite'
@@ -51,16 +62,25 @@ export type CardDefId =
   | 'reinforce_boost_spawn'
   | 'reinforce_barricade'
   | 'reinforce_quick_boost'
+  | 'reinforce_battlefield_recruitment'
+  | 'reinforce_mass_boost'
   | 'move_forward'
   | 'move_any'
   | 'move_forward_face'
   | 'move_quickstep'
+  | 'move_tandem'
+  | 'move_teleport'
   | 'attack_line'
+  | 'attack_chain_lightning'
   | 'attack_disarm'
   | 'attack_bleed'
   | 'attack_fwd_lr'
   | 'attack_fwd'
   | 'attack_arrow'
+  | 'attack_harpoon'
+  | 'attack_execute'
+  | 'attack_blade_dance'
+  | 'attack_coordinated'
   | 'attack_charge'
   | 'attack_jab'
   | 'attack_shove'
@@ -73,6 +93,8 @@ export type CardDefId =
   | 'spell_trip'
   | 'spell_snare'
   | 'spell_dispel'
+  | 'spell_pitfall_trap'
+  | 'spell_explosive_trap'
   | 'spell_divination'
   | 'spell_burn'
   | 'move_pivot'
@@ -81,7 +103,7 @@ export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2'
 
 export type DirectionSource =
   | 'facing'
-  | { type: 'param'; key: 'direction' | 'moveDirection' }
+  | { type: 'param'; key: 'direction' | 'moveDirection' | 'faceDirection' }
   | { type: 'relative'; offsets: number[] }
 
 export type CardEffect =
@@ -121,6 +143,44 @@ export type CardEffect =
       amount: number
     }
   | {
+      type: 'placeTrap'
+      trapKind: TrapKind
+      tileParam: 'tile'
+    }
+  | {
+      type: 'spawnAdjacentFriendly'
+      tileParam: 'tile'
+      strength: number
+    }
+  | {
+      type: 'boostAllFriendly'
+      amount: number
+    }
+  | {
+      type: 'teamAttackForward'
+      damage: number
+    }
+  | {
+      type: 'harpoon'
+      unitParam: 'unitId'
+      damage: number
+    }
+  | {
+      type: 'executeForward'
+      unitParam: 'unitId'
+      leaderDamage: number
+    }
+  | {
+      type: 'damageAdjacent'
+      unitParam: 'unitId'
+      amount: number
+    }
+  | {
+      type: 'chainLightning'
+      unitParam: 'unitId'
+      damage: number
+    }
+  | {
       type: 'applyUnitModifier'
       unitParam: 'unitId'
       modifier: UnitModifierType
@@ -141,6 +201,12 @@ export type CardEffect =
       unitParam: 'unitId'
       direction: DirectionSource
       distance: number | { type: 'param'; key: 'distance' }
+    }
+  | {
+      type: 'teleport'
+      unitParam: 'unitId'
+      tileParam: 'tile'
+      maxDistance: number
     }
   | {
       type: 'face'
@@ -174,6 +240,12 @@ export type CardEffect =
       unitParam: 'unitId'
       damage: number
       pushDistance: number
+    }
+  | {
+      type: 'moveAdjacentFriendlyGroup'
+      unitParam: 'unitId'
+      direction: DirectionSource
+      distance: number | { type: 'param'; key: 'distance' }
     }
 
 export type CardInstance = {
@@ -221,6 +293,7 @@ export type GameState = {
   boardCols: number
   tiles: Tile[]
   units: Record<UnitId, Unit>
+  traps: Trap[]
   players: [PlayerState, PlayerState]
   ready: [boolean, boolean]
   actionBudgets: [number, number]

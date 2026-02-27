@@ -16,6 +16,7 @@ export type CardDef = {
   name: string
   description: string
   type: CardType
+  countsAs?: CardType[]
   classId?: PlayerClassId
   requires: CardTargetRequirement
   keywords?: CardKeyword[]
@@ -27,6 +28,7 @@ export type CardDef = {
 export type CardKeyword = 'Priority'
 
 export type { CardEffect }
+type CardTypeSource = CardDefId | Pick<CardDef, 'type' | 'countsAs'>
 
 export const CARD_DEFS: Record<CardDefId, CardDef> = {
   reinforce_spawn: {
@@ -159,6 +161,36 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  reinforce_battlefield_recruitment: {
+    id: 'reinforce_battlefield_recruitment',
+    name: 'Battlefield Recruitment',
+    description: 'Spawn a 1-strength unit on any tile adjacent to a friendly unit.',
+    type: 'reinforcement',
+    classId: 'commander',
+    requires: { tile: 'barricade' },
+    effects: [
+      {
+        type: 'spawnAdjacentFriendly',
+        tileParam: 'tile',
+        strength: 1,
+      },
+    ],
+  },
+  reinforce_mass_boost: {
+    id: 'reinforce_mass_boost',
+    name: 'Mass Boost',
+    description: 'All friendly units gain +2 strength.',
+    type: 'reinforcement',
+    classId: 'commander',
+    actionCost: 2,
+    requires: {},
+    effects: [
+      {
+        type: 'boostAllFriendly',
+        amount: 2,
+      },
+    ],
+  },
   move_forward: {
     id: 'move_forward',
     name: 'Advance',
@@ -230,6 +262,46 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  move_tandem: {
+    id: 'move_tandem',
+    name: 'Tandem Movement',
+    description: 'A unit and all adjacent friendly units move up to 3 tiles in one direction.',
+    type: 'movement',
+    classId: 'commander',
+    requires: { unit: 'friendly', direction: true, distanceOptions: [1, 2, 3] },
+    effects: [
+      {
+        type: 'move',
+        unitParam: 'unitId',
+        direction: { type: 'param', key: 'direction' },
+        distance: { type: 'param', key: 'distance' },
+      },
+      {
+        type: 'moveAdjacentFriendlyGroup',
+        unitParam: 'unitId',
+        direction: { type: 'param', key: 'direction' },
+        distance: { type: 'param', key: 'distance' },
+      },
+    ],
+  },
+  move_teleport: {
+    id: 'move_teleport',
+    name: 'Teleport',
+    description: 'Teleport to any unoccupied tile within 3 tiles. Does not move through intermediate tiles.',
+    type: 'movement',
+    classId: 'archmage',
+    actionCost: 2,
+    keywords: ['Priority'],
+    requires: { unit: 'friendly', tile: 'any' },
+    effects: [
+      {
+        type: 'teleport',
+        unitParam: 'unitId',
+        tileParam: 'tile',
+        maxDistance: 3,
+      },
+    ],
+  },
   attack_line: {
     id: 'attack_line',
     name: 'Death Ray',
@@ -243,6 +315,23 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         unitParam: 'unitId',
         mode: 'ray',
         directions: 'facing',
+        damage: 1,
+      },
+    ],
+  },
+  attack_chain_lightning: {
+    id: 'attack_chain_lightning',
+    name: 'Chain Lightning',
+    description:
+      'Deal 1 damage to a random adjacent unit, then jump to random adjacent units until no new targets remain.',
+    type: 'attack',
+    classId: 'archmage',
+    actionCost: 1,
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'chainLightning',
+        unitParam: 'unitId',
         damage: 1,
       },
     ],
@@ -359,11 +448,88 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  attack_harpoon: {
+    id: 'attack_harpoon',
+    name: 'Harpoon',
+    description: 'Deal 1 damage to the first unit forward, then pull it toward you.',
+    type: 'attack',
+    classId: 'warleader',
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'harpoon',
+        unitParam: 'unitId',
+        damage: 1,
+      },
+    ],
+  },
+  attack_execute: {
+    id: 'attack_execute',
+    name: 'Execute',
+    description: 'Destroy a non-commander unit in front. Commanders take 3 damage instead.',
+    type: 'attack',
+    classId: 'warleader',
+    actionCost: 2,
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'executeForward',
+        unitParam: 'unitId',
+        leaderDamage: 3,
+      },
+    ],
+  },
+  attack_blade_dance: {
+    id: 'attack_blade_dance',
+    name: 'Blade Dance',
+    description: 'Chain 3 moves: each move 1 tile, then deal 1 to all adjacent units.',
+    type: 'attack',
+    countsAs: ['movement'],
+    classId: 'warleader',
+    actionCost: 3,
+    requires: { unit: 'friendly', direction: true, moveDirection: true, faceDirection: true },
+    effects: [
+      {
+        type: 'move',
+        unitParam: 'unitId',
+        direction: { type: 'param', key: 'direction' },
+        distance: 1,
+      },
+      {
+        type: 'damageAdjacent',
+        unitParam: 'unitId',
+        amount: 1,
+      },
+      {
+        type: 'move',
+        unitParam: 'unitId',
+        direction: { type: 'param', key: 'moveDirection' },
+        distance: 1,
+      },
+      {
+        type: 'damageAdjacent',
+        unitParam: 'unitId',
+        amount: 1,
+      },
+      {
+        type: 'move',
+        unitParam: 'unitId',
+        direction: { type: 'param', key: 'faceDirection' },
+        distance: 1,
+      },
+      {
+        type: 'damageAdjacent',
+        unitParam: 'unitId',
+        amount: 1,
+      },
+    ],
+  },
   attack_charge: {
     id: 'attack_charge',
     name: 'Charge',
     description: 'Face a direction, move up to 4 tiles, then deal 2 damage to the tile in front.',
     type: 'attack',
+    countsAs: ['movement'],
     classId: 'warleader',
     actionCost: 2,
     requires: { unit: 'friendly', direction: true },
@@ -445,6 +611,53 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         unitParam: 'unitId',
         damage: 3,
         pushDistance: 1,
+      },
+    ],
+  },
+  attack_coordinated: {
+    id: 'attack_coordinated',
+    name: 'Coordinated Attack',
+    description: 'All friendly units deal 2 damage to the tile in front of them.',
+    type: 'attack',
+    classId: 'commander',
+    actionCost: 2,
+    requires: {},
+    effects: [
+      {
+        type: 'teamAttackForward',
+        damage: 2,
+      },
+    ],
+  },
+  spell_pitfall_trap: {
+    id: 'spell_pitfall_trap',
+    name: 'Pitfall Trap',
+    description:
+      'Place a hidden pitfall trap adjacent to a friendly unit. Trigger: 2 damage and Snare for 2 turns; movement stops.',
+    type: 'spell',
+    classId: 'commander',
+    requires: { tile: 'barricade' },
+    effects: [
+      {
+        type: 'placeTrap',
+        trapKind: 'pitfall',
+        tileParam: 'tile',
+      },
+    ],
+  },
+  spell_explosive_trap: {
+    id: 'spell_explosive_trap',
+    name: 'Explosive Trap',
+    description:
+      'Place a hidden explosive trap adjacent to a friendly unit. Trigger: 3 damage; does not stop movement.',
+    type: 'spell',
+    classId: 'commander',
+    requires: { tile: 'barricade' },
+    effects: [
+      {
+        type: 'placeTrap',
+        trapKind: 'explosive',
+        tileParam: 'tile',
       },
     ],
   },
@@ -585,6 +798,16 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+}
+
+export function getCardTypes(defOrId: CardTypeSource): CardType[] {
+  const def = typeof defOrId === 'string' ? CARD_DEFS[defOrId] : defOrId
+  const combined = [def.type, ...(def.countsAs ?? [])]
+  return combined.filter((type, index) => combined.indexOf(type) === index)
+}
+
+export function cardCountsAsType(defOrId: CardTypeSource, type: CardType): boolean {
+  return getCardTypes(defOrId).includes(type)
 }
 
 export const STARTING_DECK: CardDefId[] = [

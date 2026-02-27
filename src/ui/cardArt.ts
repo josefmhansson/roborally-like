@@ -344,7 +344,7 @@ function buildSpawnScene(panel: CardArtPanel, requiresDirection: boolean, hasSec
 }
 
 type MovementArtSemantics = {
-  directionSource: 'facing' | { type: 'param'; key: 'direction' | 'moveDirection' }
+  directionSource: 'facing' | { type: 'param'; key: 'direction' | 'moveDirection' | 'faceDirection' }
   distanceSource: { type: 'fixed'; value: number } | { type: 'param'; key: 'distance' }
   finalFacingSource: { type: 'preserve' } | { type: 'param'; key: 'direction' | 'faceDirection' }
 }

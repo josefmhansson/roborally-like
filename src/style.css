@@ -19,6 +19,7 @@
   --frame-movement: #f6f2ea;
   --frame-attack: #ff5b5b;
   --frame-spell: #4aa6ff;
+  --frame-multitype-gold: linear-gradient(90deg, #b8872a 0%, #f4dc8a 50%, #b8872a 100%);
   --class-commander-color: #8f2e24;
   --class-warleader-color: #2f6f2f;
   --class-archmage-color: #2457a8;
