@@ -164,15 +164,16 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   reinforce_battlefield_recruitment: {
     id: 'reinforce_battlefield_recruitment',
     name: 'Battlefield Recruitment',
-    description: 'Spawn a 1-strength unit on any tile adjacent to a friendly unit.',
+    description: 'Spawn a 1-strength unit adjacent to a friendly unit, facing a chosen direction.',
     type: 'reinforcement',
     classId: 'commander',
-    requires: { tile: 'barricade' },
+    requires: { tile: 'barricade', direction: true },
     effects: [
       {
         type: 'spawnAdjacentFriendly',
         tileParam: 'tile',
         strength: 1,
+        facingParam: 'direction',
       },
     ],
   },

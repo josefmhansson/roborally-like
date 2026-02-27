@@ -461,10 +461,16 @@ type UnitSnapshot = {
 }
 type MoveAnimation = { type: 'move'; unitId: string; from: Hex; to: Hex; duration: number }
 type LungeAnimation = { type: 'lunge'; unitId: string; from: Hex; dir: Direction; duration: number }
+type TeamLungeAnimation = {
+  type: 'teamLunge'
+  lunges: { unitId: string; from: Hex; dir: Direction }[]
+  duration: number
+}
 type SpawnAnimation = { type: 'spawn'; unitId: string; duration: number }
 type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
+type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
 type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
 type TeleportAnimation = {
@@ -493,10 +499,12 @@ type DeathRayAnimation = { type: 'deathRay'; from: Hex; targets: Hex[]; duration
 type BoardAnimation =
   | MoveAnimation
   | LungeAnimation
+  | TeamLungeAnimation
   | SpawnAnimation
   | BoostAnimation
   | DeathAnimation
   | LightningAnimation
+  | BurnAnimation
   | MeteorAnimation
   | ArrowAnimation
   | TeleportAnimation
@@ -510,6 +518,7 @@ const SPAWN_DURATION_MS = 260
 const BOOST_DURATION_MS = 320
 const DEATH_DURATION_MS = 260
 const LIGHTNING_DURATION_MS = 240
+const BURN_DURATION_MS = 420
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
 const METEOR_DURATION_MS = 1600
 const ARROW_DURATION_MS = 300
@@ -640,7 +649,10 @@ let selectedCardId: string | null = null
 let pendingOrder: { cardId: string; params: OrderParams } | null = null
 let previewState: GameState | null = null
 let overlayClone: HTMLElement | null = null
+let overlaySourceKey: string | null = null
 let overlaySourceId: string | null = null
+let overlaySourceDefId: string | null = null
+let overlaySourceOrderId: string | null = null
 let overlaySourceEl: HTMLElement | null = null
 let overlayLocked = false
 let overlayHideTimer: number | null = null
@@ -652,7 +664,7 @@ let overlayPrewarmFrame: number | null = null
 const lastPointer = { x: 0, y: 0 }
 let overlayHideSeq = 0
 let overlayShowSeq = 0
-let hoverCardId: string | null = null
+let hoverCardKey: string | null = null
 let hasPointer = false
 let hoveredStatusUnitId: string | null = null
 let pinnedStatusUnitId: string | null = null
@@ -2084,6 +2096,49 @@ function clearOverlayTimers(): void {
   }
 }
 
+function getCardVisualKey(cardEl: HTMLElement): string | null {
+  const cardId = cardEl.dataset.cardId?.trim()
+  if (!cardId) return null
+  const orderId = cardEl.dataset.orderId?.trim()
+  if (orderId) return `order:${orderId}`
+  const layer = cardEl.dataset.cardLayer?.trim() ?? 'card'
+  const cardDefId = cardEl.dataset.cardDefId?.trim()
+  return cardDefId ? `${layer}:${cardId}::${cardDefId}` : `${layer}:${cardId}`
+}
+
+function getOverlaySourceKey(): string | null {
+  return overlaySourceKey
+}
+
+function syncOverlayCloneCardStyle(clone: HTMLElement, sourceEl: HTMLElement): void {
+  const sourceStyles = getComputedStyle(sourceEl)
+  const cardTint =
+    sourceEl.style.getPropertyValue('--card-tint').trim() ||
+    sourceStyles.getPropertyValue('--card-tint').trim()
+  if (cardTint) {
+    clone.style.setProperty('--card-tint', cardTint)
+  } else {
+    clone.style.removeProperty('--card-tint')
+  }
+}
+
+function findCardElementByIdentity(cardId: string, cardDefId: string | null, orderId: string | null): HTMLElement | null {
+  if (orderId && orderId.length > 0) {
+    const orderSelector = `[data-order-id="${orderId}"]`
+    const exactOrder = handEl.querySelector<HTMLElement>(orderSelector) ?? ordersEl.querySelector<HTMLElement>(orderSelector)
+    if (exactOrder) return exactOrder
+  }
+  const selector =
+    cardDefId && cardDefId.length > 0
+      ? `[data-card-id="${cardId}"][data-card-def-id="${cardDefId}"]`
+      : `[data-card-id="${cardId}"]`
+  const exact = handEl.querySelector<HTMLElement>(selector) ?? ordersEl.querySelector<HTMLElement>(selector)
+  if (exact) return exact
+  if (!cardDefId) return null
+  const fallback = `[data-card-id="${cardId}"]`
+  return handEl.querySelector<HTMLElement>(fallback) ?? ordersEl.querySelector<HTMLElement>(fallback)
+}
+
 function clearOverlayClone(): void {
   clearOverlayTimers()
   if (!overlayClone) return
@@ -2092,7 +2147,10 @@ function clearOverlayClone(): void {
   overlayShowSeq += 1
   overlayHideSeq += 1
   const hideSeq = overlayHideSeq
+  overlaySourceKey = null
   overlaySourceId = null
+  overlaySourceDefId = null
+  overlaySourceOrderId = null
   overlaySourceEl = null
   overlayLocked = false
   if (source && source.isConnected) {
@@ -2128,7 +2186,10 @@ function hardResetOverlayClone(): void {
   overlayHideSeq += 1
   const clone = overlayClone
   const source = overlaySourceEl
+  overlaySourceKey = null
   overlaySourceId = null
+  overlaySourceDefId = null
+  overlaySourceOrderId = null
   overlaySourceEl = null
   overlayLocked = false
   if (source && source.isConnected) {
@@ -2165,12 +2226,12 @@ function prewarmOverlayClones(): void {
     ...handEl.querySelectorAll<HTMLElement>('[data-card-id]'),
     ...ordersEl.querySelectorAll<HTMLElement>('[data-card-id]'),
   ]
-  const liveIds = new Set<string>()
+  const liveKeys = new Set<string>()
   elements.forEach((el) => {
-    const id = el.dataset.cardId
-    if (!id) return
-    liveIds.add(id)
-    let clone = overlayClones.get(id)
+    const key = getCardVisualKey(el)
+    if (!key) return
+    liveKeys.add(key)
+    let clone = overlayClones.get(key)
     if (!clone) {
       clone = el.cloneNode(true) as HTMLElement
       clone.classList.add('card-overlay-clone')
@@ -2182,12 +2243,13 @@ function prewarmOverlayClones(): void {
       clone.style.display = 'none'
       clone.style.visibility = 'hidden'
       cardOverlay.appendChild(clone)
-      overlayClones.set(id, clone)
+      overlayClones.set(key, clone)
     } else {
       clone.className = `${el.className} card-overlay-clone`
       clone.innerHTML = el.innerHTML
       clone.dataset.cardLayer = 'overlay'
     }
+    syncOverlayCloneCardStyle(clone, el)
     const rect = el.getBoundingClientRect()
     clone.style.left = `${rect.left}px`
     clone.style.top = `${rect.top}px`
@@ -2195,10 +2257,10 @@ function prewarmOverlayClones(): void {
     clone.style.height = `${rect.height}px`
   })
 
-  overlayClones.forEach((clone, id) => {
-    if (!liveIds.has(id)) {
+  overlayClones.forEach((clone, key) => {
+    if (!liveKeys.has(key)) {
       if (clone.isConnected) clone.remove()
-      overlayClones.delete(id)
+      overlayClones.delete(key)
     }
   })
 }
@@ -2217,23 +2279,28 @@ function scheduleOverlayPrewarm(): void {
 }
 
 function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = false): void {
-  const cardId = sourceEl.dataset.cardId ?? null
-  if (!cardId) return
+  const cardId = sourceEl.dataset.cardId?.trim() ?? null
+  const cardDefId = sourceEl.dataset.cardDefId?.trim() ?? null
+  const cardOrderId = sourceEl.dataset.orderId?.trim() ?? null
+  const cardKey = getCardVisualKey(sourceEl)
+  if (!cardId || !cardKey) return
   if (performance.now() < suppressOverlayUntil) return
   if (hiddenCardIds.has(cardId)) return
-  if (overlayLocked && overlaySourceId === cardId) {
+  const sourceKey = getOverlaySourceKey()
+  if (overlayLocked && sourceKey === cardKey) {
     return
   }
   overlayHideSeq += 1
   overlayShowSeq += 1
   const showSeq = overlayShowSeq
 
-  if (overlayClone && overlaySourceId === cardId) {
+  if (overlayClone && sourceKey === cardKey) {
     if (!overlaySourceEl || !overlaySourceEl.isConnected) {
       clearOverlayClone()
     } else {
       overlayLocked = lock
       const rect = sourceEl.getBoundingClientRect()
+      syncOverlayCloneCardStyle(overlayClone, sourceEl)
       overlayClone.style.left = `${rect.left}px`
       overlayClone.style.top = `${rect.top}px`
       overlayClone.style.width = `${rect.width}px`
@@ -2251,13 +2318,14 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
     overlaySourceEl.style.opacity = '1'
   }
   if (!overlayLocked) {
-    if (overlayClone && overlaySourceId && overlaySourceId !== cardId) {
+    const currentSourceKey = getOverlaySourceKey()
+    if (overlayClone && currentSourceKey && currentSourceKey !== cardKey) {
       animateOverlayCloneOut(overlayClone)
     } else {
       hardResetOverlayClone()
     }
   }
-  let clone = overlayClones.get(cardId)
+  let clone = overlayClones.get(cardKey)
   if (!clone) {
     clone = sourceEl.cloneNode(true) as HTMLElement
     clone.classList.add('card-overlay-clone')
@@ -2269,7 +2337,7 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
     clone.style.display = 'none'
     clone.style.visibility = 'hidden'
     cardOverlay.appendChild(clone)
-    overlayClones.set(cardId, clone)
+    overlayClones.set(cardKey, clone)
   } else {
     clone.className = `${sourceEl.className} card-overlay-clone`
     clone.innerHTML = sourceEl.innerHTML
@@ -2279,6 +2347,7 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
     clone.style.transition = 'none'
     clone.style.visibility = 'hidden'
   }
+  syncOverlayCloneCardStyle(clone, sourceEl)
   clone.style.display = 'none'
   overlayClone = clone
 
@@ -2288,18 +2357,22 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
     activeClone.style.visibility = 'visible'
   }
 
+  overlaySourceKey = cardKey
   overlaySourceId = cardId
+  overlaySourceDefId = cardDefId
+  overlaySourceOrderId = cardOrderId
   overlaySourceEl = sourceEl
   overlayLocked = lock
   overlaySourceVisibility = sourceEl.style.opacity
   overlaySourceTransition = sourceEl.style.transition
 
   const start = (activeClone: HTMLElement) => {
+    const isCurrentSource = () => getOverlaySourceKey() === cardKey
     const settle = (attempt = 0) => {
-      if (showSeq !== overlayShowSeq || overlaySourceId !== cardId) return
+      if (showSeq !== overlayShowSeq || !isCurrentSource()) return
       const rectA = sourceEl.getBoundingClientRect()
       window.requestAnimationFrame(() => {
-        if (showSeq !== overlayShowSeq || overlaySourceId !== cardId) return
+        if (showSeq !== overlayShowSeq || !isCurrentSource()) return
         const rectB = sourceEl.getBoundingClientRect()
         const dx = Math.abs(rectA.left - rectB.left)
         const dy = Math.abs(rectA.top - rectB.top)
@@ -2317,10 +2390,10 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
         activeClone.style.display = 'block'
         applyPhase(activeClone)
         window.requestAnimationFrame(() => {
-          if (showSeq !== overlayShowSeq || overlaySourceId !== cardId) return
+          if (showSeq !== overlayShowSeq || !isCurrentSource()) return
           activeClone.style.transform = 'scale(1.5)'
           window.requestAnimationFrame(() => {
-            if (showSeq !== overlayShowSeq || overlaySourceId !== cardId) return
+            if (showSeq !== overlayShowSeq || !isCurrentSource()) return
             if (sourceEl.isConnected) {
               sourceEl.style.transition = 'opacity 80ms ease'
               sourceEl.style.opacity = '0'
@@ -2358,24 +2431,24 @@ function updateHoverFromPointer(): void {
   const el = document.elementFromPoint(lastPointer.x, lastPointer.y) as HTMLElement | null
   const hoveredEl = el?.closest<HTMLElement>('.card[data-card-id]')
   const cardEl = hoveredEl?.classList.contains('hidden-card') ? null : hoveredEl
-  let cardId = cardEl?.dataset.cardId ?? null
+  let cardKey = cardEl ? getCardVisualKey(cardEl) : null
 
   // While a card is zoomed, keep hover active inside the zoomed footprint too.
-  if (!cardId && overlaySourceId && isPointInsideOverlayClone()) {
-    cardId = overlaySourceId
+  if (!cardKey && getOverlaySourceKey() && isPointInsideOverlayClone()) {
+    cardKey = getOverlaySourceKey()
   }
 
-  if (cardId) {
-    if (cardId !== hoverCardId || (overlayClone && overlayClone.style.display === 'none')) {
-      hoverCardId = cardId
+  if (cardKey) {
+    if (cardKey !== hoverCardKey || (overlayClone && overlayClone.style.display === 'none')) {
+      hoverCardKey = cardKey
       if (cardEl) {
         showOverlayClone(cardEl, false, true)
       }
     }
     return
   }
-  if (hoverCardId) {
-    hoverCardId = null
+  if (hoverCardKey) {
+    hoverCardKey = null
     clearOverlayClone()
   }
 }
@@ -2383,9 +2456,7 @@ function updateHoverFromPointer(): void {
 function syncOverlayPositionWithSource(): void {
   if (!overlayClone || !overlaySourceId) return
   if (overlayClone.style.display === 'none' || overlayClone.style.visibility === 'hidden') return
-  const source =
-    handEl.querySelector<HTMLElement>(`[data-card-id="${overlaySourceId}"]`) ??
-    ordersEl.querySelector<HTMLElement>(`[data-card-id="${overlaySourceId}"]`)
+  const source = findCardElementByIdentity(overlaySourceId, overlaySourceDefId, overlaySourceOrderId)
   if (!source) {
     if (overlayLocked) {
       clearOverlayClone()
@@ -2406,7 +2477,8 @@ function syncOverlayFromSelection(): void {
   if (selectedCardId) {
     const el = handEl.querySelector<HTMLElement>(`[data-card-id="${selectedCardId}"]`)
     if (el) {
-      if (overlayLocked && overlaySourceId === selectedCardId) {
+      const selectedKey = getCardVisualKey(el)
+      if (overlayLocked && selectedKey && getOverlaySourceKey() === selectedKey) {
         syncOverlayPositionWithSource()
         return
       }
@@ -2640,12 +2712,12 @@ function drawStructureSprite(
 }
 
 function getAnimatedCenter(unit: Unit): { x: number; y: number } {
-  if (!currentAnimation || !('unitId' in currentAnimation) || currentAnimation.unitId !== unit.id) {
+  if (!currentAnimation) {
     return projectHex(unit.pos)
   }
 
   const t = easeInOutCubic(animationProgress)
-  if (currentAnimation.type === 'move') {
+  if (currentAnimation.type === 'move' && currentAnimation.unitId === unit.id) {
     const from = projectHex(currentAnimation.from)
     const to = projectHex(currentAnimation.to)
     return {
@@ -2654,9 +2726,22 @@ function getAnimatedCenter(unit: Unit): { x: number; y: number } {
     }
   }
 
-  if (currentAnimation.type === 'lunge') {
+  if (currentAnimation.type === 'lunge' && currentAnimation.unitId === unit.id) {
     const base = projectHex(currentAnimation.from)
     const neighborHex = neighbor(currentAnimation.from, currentAnimation.dir)
+    const neighborCenter = projectHex(neighborHex)
+    const lunge = Math.sin(t * Math.PI) * 0.35
+    return {
+      x: base.x + (neighborCenter.x - base.x) * lunge,
+      y: base.y + (neighborCenter.y - base.y) * lunge,
+    }
+  }
+
+  if (currentAnimation.type === 'teamLunge') {
+    const lungeAnimation = currentAnimation.lunges.find((entry) => entry.unitId === unit.id)
+    if (!lungeAnimation) return projectHex(unit.pos)
+    const base = projectHex(lungeAnimation.from)
+    const neighborHex = neighbor(lungeAnimation.from, lungeAnimation.dir)
     const neighborCenter = projectHex(neighborHex)
     const lunge = Math.sin(t * Math.PI) * 0.35
     return {
@@ -2752,6 +2837,44 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   return { label: modifier.type, kind: 'debuff' }
 }
 
+function summarizeUnitModifiers(
+  modifiers: Unit['modifiers']
+): { label: string; kind: 'buff' | 'debuff'; turnsRemaining: number | 'indefinite'; count: number }[] {
+  const grouped = new Map<
+    Unit['modifiers'][number]['type'],
+    { modifier: Unit['modifiers'][number]; count: number; maxTurns: number }
+  >()
+
+  modifiers.forEach((modifier) => {
+    const existing = grouped.get(modifier.type)
+    if (!existing) {
+      grouped.set(modifier.type, {
+        modifier,
+        count: 1,
+        maxTurns: modifier.turnsRemaining === 'indefinite' ? 0 : modifier.turnsRemaining,
+      })
+      return
+    }
+    existing.count += 1
+    if (modifier.turnsRemaining !== 'indefinite') {
+      existing.maxTurns = Math.max(existing.maxTurns, modifier.turnsRemaining)
+    }
+    if (existing.modifier.turnsRemaining !== 'indefinite' && modifier.turnsRemaining === 'indefinite') {
+      existing.modifier = modifier
+    }
+  })
+
+  return Array.from(grouped.values()).map(({ modifier, count, maxTurns }) => {
+    const details = describeUnitModifier(modifier)
+    return {
+      label: details.label,
+      kind: details.kind,
+      turnsRemaining: modifier.turnsRemaining === 'indefinite' ? 'indefinite' : maxTurns,
+      count,
+    }
+  })
+}
+
 function getUnitPopoverLabel(unit: Unit): string {
   if (unit.kind === 'commander') return getCommanderDisplayName(unit.owner)
   if (unit.kind === 'barricade') return 'Barricade'
@@ -2799,14 +2922,14 @@ function renderUnitStatusPopover(): void {
 
   const rows =
     unit.modifiers.length > 0
-      ? unit.modifiers
-          .map((modifier) => {
-            const details = describeUnitModifier(modifier)
+      ? summarizeUnitModifiers(unit.modifiers)
+          .map((summary) => {
             const turns =
-              modifier.turnsRemaining === 'indefinite'
+              summary.turnsRemaining === 'indefinite'
                 ? 'indefinite'
-                : `${modifier.turnsRemaining} turn${modifier.turnsRemaining === 1 ? '' : 's'}`
-            return `<li class="unit-status-row ${details.kind}"><span class="unit-status-kind">${details.kind}</span><span class="unit-status-name">${details.label}</span><span class="unit-status-turns">${turns}</span></li>`
+                : `${summary.turnsRemaining} turn${summary.turnsRemaining === 1 ? '' : 's'}`
+            const stackSuffix = summary.count > 1 ? ` x${summary.count}` : ''
+            return `<li class="unit-status-row ${summary.kind}"><span class="unit-status-kind">${summary.kind}</span><span class="unit-status-name">${summary.label}${stackSuffix}</span><span class="unit-status-turns">${turns}</span></li>`
           })
           .join('')
       : '<li class="unit-status-row none"><span class="unit-status-name">No active effects.</span></li>'
@@ -3008,6 +3131,54 @@ function drawTeleportAnimation(animation: TeleportAnimation, progress: number): 
 
 function drawChainLightningAnimation(animation: ChainLightningAnimation, progress: number): void {
   drawLightningArc(projectHex(animation.from), projectHex(animation.to), progress)
+}
+
+function drawBurnDamageAnimation(target: Hex, progress: number): void {
+  const center = projectHex(target)
+  const pulse = Math.sin(progress * Math.PI)
+  const alpha = 0.3 + pulse * 0.7
+  const flameHeight = layout.size * (0.44 + pulse * 0.25)
+  const baseY = center.y + layout.size * 0.22
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = alpha
+
+  for (let i = -1; i <= 1; i += 1) {
+    const offsetX = i * layout.size * 0.16 + Math.sin((progress + i * 0.17) * Math.PI * 10) * layout.size * 0.04
+    const topY = baseY - flameHeight * (1 - Math.abs(i) * 0.12)
+    const flameWidth = layout.size * (0.12 + pulse * 0.06)
+
+    const flame = ctx.createLinearGradient(center.x + offsetX, baseY, center.x + offsetX, topY)
+    flame.addColorStop(0, 'rgba(255, 70, 20, 0.95)')
+    flame.addColorStop(0.55, 'rgba(255, 150, 40, 0.92)')
+    flame.addColorStop(1, 'rgba(255, 245, 160, 0.9)')
+    ctx.fillStyle = flame
+    ctx.beginPath()
+    ctx.moveTo(center.x + offsetX - flameWidth, baseY)
+    ctx.quadraticCurveTo(center.x + offsetX - flameWidth * 0.4, topY + flameHeight * 0.45, center.x + offsetX, topY)
+    ctx.quadraticCurveTo(center.x + offsetX + flameWidth * 0.4, topY + flameHeight * 0.45, center.x + offsetX + flameWidth, baseY)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  const scorchRadius = layout.size * (0.3 + pulse * 0.12)
+  const scorchGlow = ctx.createRadialGradient(
+    center.x,
+    center.y + layout.size * 0.1,
+    scorchRadius * 0.2,
+    center.x,
+    center.y + layout.size * 0.1,
+    scorchRadius
+  )
+  scorchGlow.addColorStop(0, 'rgba(255, 180, 80, 0.75)')
+  scorchGlow.addColorStop(1, 'rgba(150, 20, 0, 0)')
+  ctx.fillStyle = scorchGlow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y + layout.size * 0.08, scorchRadius, scorchRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.restore()
 }
 
 function drawMeteorImpact(target: Hex, progress: number): void {
@@ -3442,6 +3613,10 @@ function drawBoard(): void {
 
   if (currentAnimation?.type === 'lightning') {
     drawLightningStrike(projectHex(currentAnimation.target), animationProgress)
+  }
+
+  if (currentAnimation?.type === 'burn') {
+    drawBurnDamageAnimation(currentAnimation.target, animationProgress)
   }
 
   if (currentAnimation?.type === 'meteor') {
@@ -3911,11 +4086,11 @@ function renderHand(): void {
       const isPendingTransfer = pendingCardTransfer?.cardId === card.id && pendingCardTransfer?.target === 'hand'
       if (isPendingTransfer) {
         return `
-          <button class="card ${cardTypeClassNames} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-layer="hand" ${getCardStyleAttr(def)}></button>
+          <button class="card ${cardTypeClassNames} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def)}></button>
         `
       }
       return `
-        <button class="card ${cardTypeClassNames} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-layer="hand" ${getCardStyleAttr(def, isHidden)}>
+        <button class="card ${cardTypeClassNames} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def, isHidden)}>
           ${renderCardFace(def)}
         </button>
       `
@@ -3930,11 +4105,12 @@ function renderHand(): void {
       if (state.ready[planningPlayer]) return
       const cardId = button.dataset.cardId ?? null
       if (!cardId) return
-      if (overlayLocked && overlaySourceId !== cardId) {
+      const buttonKey = getCardVisualKey(button)
+      if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
         overlayLocked = false
         clearOverlayClone()
       }
-      if (overlayClone && overlaySourceId === cardId && overlayClone.style.display !== 'none') {
+      if (overlayClone && buttonKey && getOverlaySourceKey() === buttonKey && overlayClone.style.display !== 'none') {
         overlayLocked = true
         overlaySourceEl = button
         overlaySourceVisibility = button.style.opacity
@@ -3942,7 +4118,7 @@ function renderHand(): void {
       } else {
         showOverlayClone(button, true, true)
       }
-      hoverCardId = cardId
+      hoverCardKey = buttonKey
       selectedCardId = cardId
       pendingOrder = selectedCardId ? { cardId: selectedCardId, params: {} } : null
       statusEl.textContent = selectedCardId ? 'Pick a unit/tile on the board.' : 'Select a card to start planning.'
@@ -3999,11 +4175,11 @@ function renderOrders(): void {
       const isPendingTransfer = pendingCardTransfer?.cardId === order.cardId && pendingCardTransfer?.target === 'orders'
       if (isPendingTransfer) {
         return `
-          <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} card-placeholder" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" ${getCardStyleAttr(def)}></div>
+          <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} card-placeholder" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-def-id="${def.id}" data-card-layer="queue" ${getCardStyleAttr(def)}></div>
         `
       }
       return `
-        <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${getCardStyleAttr(def, isHidden)}>
+        <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-def-id="${def.id}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${getCardStyleAttr(def, isHidden)}>
           ${renderCardFace(def, { orderIndex: index + 1 })}
         </div>
       `
@@ -5373,6 +5549,16 @@ function parseChainLightningPath(logEntries: string[]): string[] {
     .filter((value) => value.length > 0)
 }
 
+function parseBurnDamageTargets(logEntries: string[]): string[] {
+  const targets: string[] = []
+  logEntries.forEach((entry) => {
+    const match = entry.match(/^Burn deals \d+ damage to unit (.+)\.$/)
+    if (!match) return
+    targets.push(match[1])
+  })
+  return targets
+}
+
 function buildAnimations(
   order: GameState['actionQueue'][number],
   before: Record<string, UnitSnapshot>,
@@ -5568,6 +5754,23 @@ function buildAnimations(
       })
     }
 
+    if (effect.type === 'teamAttackForward') {
+      const lunges = Object.values(state.units)
+        .filter((unit) => unit.owner === order.player && (unit.kind === 'unit' || unit.kind === 'commander'))
+        .map((unit) => ({
+          unitId: unit.id,
+          from: { ...unit.pos },
+          dir: unit.facing,
+        }))
+      if (lunges.length > 0) {
+        animations.push({
+          type: 'teamLunge',
+          lunges,
+          duration: LUNGE_DURATION_MS,
+        })
+      }
+    }
+
     if (effect.type === 'boost') {
       const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder, effect.unitParam)
       if (!resolvedId) continue
@@ -5603,6 +5806,16 @@ function buildAnimations(
       })
     }
   }
+
+  parseBurnDamageTargets(logEntries).forEach((unitId) => {
+    const target = before[unitId] ?? state.units[unitId]
+    if (!target) return
+    animations.push({
+      type: 'burn',
+      target: { ...target.pos },
+      duration: BURN_DURATION_MS,
+    })
+  })
 
   const animatedMoveIds = new Set<string>()
   animations.forEach((animation) => {
@@ -5703,6 +5916,22 @@ function resolveNextActionAnimated(): void {
   const currentOrder = state.actionQueue[state.actionIndex]
   resolveNextAction(state)
   if (!currentOrder) {
+    const burnAnimations = parseBurnDamageTargets(state.log.slice(logStart))
+      .map((unitId) => {
+        const target = before[unitId] ?? state.units[unitId]
+        if (!target) return null
+        return {
+          type: 'burn',
+          target: { ...target.pos },
+          duration: BURN_DURATION_MS,
+        } as BoardAnimation
+      })
+      .filter((animation): animation is BoardAnimation => animation !== null)
+    if (burnAnimations.length > 0) {
+      animationQueue.push(...burnAnimations)
+      if (!currentAnimation) runNextAnimation()
+      return
+    }
     finalizeOnlineResolutionReplay()
     render()
     return
@@ -6076,6 +6305,7 @@ function getDirectionBase(
   step: SelectionStep
 ): Hex | null {
   if (defId === 'reinforce_spawn' && params.tile) return params.tile
+  if (defId === 'reinforce_battlefield_recruitment' && params.tile) return params.tile
   const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
   if (!unitSnapshot) return null
   if (defId === 'move_forward_face' && step === 'faceDirection') {
@@ -6842,8 +7072,11 @@ canvas.addEventListener('touchend', (event) => {
       const touch = event.changedTouches[0]
       const hex = touch ? pickHexFromClient(touch.clientX, touch.clientY) : null
       if (hex) {
+        const canInspectUnitBeforeTap = isUnitStatusInspectionEnabled()
         handleBoardClick(hex)
-        togglePinnedUnitStatusFromHex(hex)
+        if (canInspectUnitBeforeTap) {
+          togglePinnedUnitStatusFromHex(hex)
+        }
       }
     }
     ignoreClick = true

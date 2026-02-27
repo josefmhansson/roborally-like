@@ -840,16 +840,20 @@ function tickUnitModifiers(state: GameState): void {
     if (!unit) return
     if (unit.modifiers.length === 0) return
 
-    const burnStacks = unit.modifiers.filter(
+    const burnEntries = unit.modifiers.filter(
       (modifier) => modifier.type === 'burn' && isActiveDuration(modifier.turnsRemaining)
-    ).length
-    if (burnStacks > 0) {
-      state.log.push(`Burn deals ${burnStacks} damage to unit ${unit.id}.`)
-      applyDamage(state, unit, burnStacks)
+    )
+    if (burnEntries.length > 0) {
+      state.log.push(`Burn deals 1 damage to unit ${unit.id}.`)
+      applyDamage(state, unit, 1)
     }
 
     const afterDamage = state.units[unitId]
     if (!afterDamage) return
+    const firstBurn = afterDamage.modifiers.find((modifier) => modifier.type === 'burn')
+    if (firstBurn) {
+      afterDamage.modifiers = afterDamage.modifiers.filter((modifier) => modifier.type !== 'burn' || modifier === firstBurn)
+    }
     afterDamage.modifiers.forEach((modifier) => {
       if (modifier.turnsRemaining === 'indefinite') return
       modifier.turnsRemaining -= 1
@@ -1011,7 +1015,7 @@ function boostUnit(state: GameState, unit: Unit, amount: number): void {
 function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers'][number]['type'], turns: ModifierDuration): void {
   const normalizedTurns = normalizeDuration(turns)
   if (!normalizedTurns) return
-  if (modifier === 'burn' || modifier === 'vulnerable' || modifier === 'strong') {
+  if (modifier === 'vulnerable' || modifier === 'strong') {
     unit.modifiers.push({ type: modifier, turnsRemaining: normalizedTurns })
     const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
     const stacks = unit.modifiers.filter(
@@ -1441,6 +1445,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       if (!tile) return false
       if (!inBounds(state.boardRows, state.boardCols, tile)) return false
       if (!isValidBarricadeSpawnTile(state, order.player, tile)) return false
+      if (effect.facingParam && params.direction === undefined) return false
       if (getTrapAt(state, tile)) return false
       if (getUnitAt(state, tile)) return false
       continue
@@ -1666,7 +1671,8 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         state.log.push(`${CARD_DEFS[order.defId].name} fails (invalid recruitment tile).`)
         return
       }
-      const facing = getDefaultSpawnFacing(state, order.player)
+      const facing = effect.facingParam ? params.direction : getDefaultSpawnFacing(state, order.player)
+      if (facing === undefined) return
       const spawnedId = spawnUnit(state, order.player, tile, facing, 'unit', effect.strength)
       if (!spawnedId) {
         state.log.push(`${CARD_DEFS[order.defId].name} fails (tile occupied or blocked).`)

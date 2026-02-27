@@ -305,7 +305,7 @@ test('battlefield recruitment spawns a 1-strength unit adjacent to a friendly un
   const tile = candidates[0]
   const beforeIds = new Set(Object.keys(state.units))
 
-  assert.ok(planOrder(state, 0, cardId, { tile }))
+  assert.ok(planOrder(state, 0, cardId, { tile, direction: 0 }))
   readyAndResolve(state)
 
   const recruited = Object.values(state.units).find(
@@ -318,6 +318,7 @@ test('battlefield recruitment spawns a 1-strength unit adjacent to a friendly un
   )
   assert.ok(recruited)
   assert.equal(recruited.strength, 1)
+  assert.equal(recruited.facing, 0)
 })
 
 test('mass boost grants +2 strength to all friendly units', () => {
@@ -626,7 +627,7 @@ test('burn deals damage each turn and lasts indefinitely', () => {
   assert.equal(state.units[enemyUnit.id], undefined)
 })
 
-test('burn stacks when applied multiple times and deals damage per stack', () => {
+test('burn does not stack when applied multiple times', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'spell_burn'),
@@ -647,14 +648,14 @@ test('burn stacks when applied multiple times and deals damage per stack', () =>
   const afterFirstTurn = state.units[enemyUnit.id]
   assert.ok(afterFirstTurn)
   const stacks = afterFirstTurn.modifiers.filter((modifier) => modifier.type === 'burn')
-  assert.equal(stacks.length, 2)
-  assert.equal(afterFirstTurn.strength, 4)
+  assert.equal(stacks.length, 1)
+  assert.equal(afterFirstTurn.strength, 5)
 
   readyAndResolve(state)
 
   const afterSecondTurn = state.units[enemyUnit.id]
   assert.ok(afterSecondTurn)
-  assert.equal(afterSecondTurn.strength, 2)
+  assert.equal(afterSecondTurn.strength, 4)
 })
 
 test('disarm reduces damage dealt by the target unit for two turns', () => {

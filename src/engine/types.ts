@@ -151,6 +151,7 @@ export type CardEffect =
       type: 'spawnAdjacentFriendly'
       tileParam: 'tile'
       strength: number
+      facingParam?: 'direction'
     }
   | {
       type: 'boostAllFriendly'
