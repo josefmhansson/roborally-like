@@ -50,3 +50,20 @@ test('redaction strips detailed planned card names during planning', () => {
     true
   )
 })
+
+test('redaction only reveals traps owned by the viewing seat', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom()
+  room.state.traps = [
+    { id: 'trap-0', owner: 0, kind: 'pitfall', pos: { q: 2, r: 2 } },
+    { id: 'trap-1', owner: 1, kind: 'explosive', pos: { q: 3, r: 3 } },
+  ]
+
+  const seat0View = buildStateView(room, 0)
+  const seat1View = buildStateView(room, 1)
+
+  assert.equal(seat0View.stateView.traps.length, 1)
+  assert.equal(seat0View.stateView.traps[0]?.owner, 0)
+  assert.equal(seat1View.stateView.traps.length, 1)
+  assert.equal(seat1View.stateView.traps[0]?.owner, 1)
+})

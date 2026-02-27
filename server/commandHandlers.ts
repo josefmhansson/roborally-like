@@ -219,6 +219,7 @@ function cloneGameState(source: GameState): GameState {
     boardCols: source.boardCols,
     tiles: source.tiles.map((tile) => ({ ...tile })),
     units,
+    traps: source.traps.map((trap) => ({ ...trap, pos: { ...trap.pos } })),
     players,
     ready: [source.ready[0], source.ready[1]],
     actionBudgets: [source.actionBudgets[0], source.actionBudgets[1]],

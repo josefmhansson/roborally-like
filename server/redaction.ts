@@ -1,4 +1,4 @@
-import type { CardInstance, GameState, Order, PlayerId, Tile, Unit, UnitId } from '../src/engine/types'
+import type { CardInstance, GameState, Order, PlayerId, Tile, Trap, Unit, UnitId } from '../src/engine/types'
 import type { GameStateView, PresenceState, ViewMeta } from '../src/shared/net/view'
 import type { Room } from './roomManager'
 
@@ -40,11 +40,14 @@ export function buildStateViewForState(
     }
   })
 
+  const traps = cloneTraps(sourceState.traps.filter((trap) => trap.owner === seat))
+
   const stateView: GameStateView = {
     boardRows: sourceState.boardRows,
     boardCols: sourceState.boardCols,
     tiles: cloneTiles(sourceState.tiles),
     units,
+    traps,
     players,
     ready: [sourceState.ready[0], sourceState.ready[1]],
     actionBudgets: [sourceState.actionBudgets[0], sourceState.actionBudgets[1]],
@@ -101,6 +104,13 @@ function cloneOrders(orders: Order[]): Order[] {
       tile: order.params.tile ? { ...order.params.tile } : undefined,
       tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
     },
+  }))
+}
+
+function cloneTraps(traps: Trap[]): Trap[] {
+  return traps.map((trap) => ({
+    ...trap,
+    pos: { ...trap.pos },
   }))
 }
 

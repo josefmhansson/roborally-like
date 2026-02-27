@@ -4,6 +4,7 @@ import type {
   Order,
   Phase,
   PlayerId,
+  Trap,
   Tile,
   Unit,
   UnitId,
@@ -26,6 +27,7 @@ export type GameStateView = {
   boardCols: number
   tiles: Tile[]
   units: Record<UnitId, Unit>
+  traps: Trap[]
   players: [PlayerView, PlayerView]
   ready: [boolean, boolean]
   actionBudgets: [number, number]
