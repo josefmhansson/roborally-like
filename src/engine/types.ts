@@ -9,9 +9,9 @@ export type Direction = 0 | 1 | 2 | 3 | 4 | 5
 
 export type UnitId = string
 
-export type UnitKind = 'unit' | 'stronghold' | 'barricade'
+export type UnitKind = 'unit' | 'commander' | 'barricade'
 
-export type UnitModifierType = 'cannotMove' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
+export type UnitModifierType = 'cannotMove' | 'slow' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
 
 export type ModifierDuration = number | 'indefinite'
 

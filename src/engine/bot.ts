@@ -388,7 +388,7 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
 
   if (defId === 'spell_meteor') {
     const candidates = new Map<string, Hex>()
-    const enemyUnits = Object.values(projected.units).filter((unit) => unit.kind !== 'stronghold' && unit.owner !== player)
+    const enemyUnits = Object.values(projected.units).filter((unit) => unit.owner !== player)
     enemyUnits.forEach((unit) => {
       addHexCandidate(candidates, unit.pos)
       DIRECTIONS.forEach((direction) => {
@@ -407,7 +407,6 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
 
     return [...candidates.values()]
       .filter((hex) => inBounds(projected, hex))
-      .filter((hex) => getUnitAt(projected, hex)?.kind !== 'stronghold')
       .map((tile) => ({ tile: { ...tile } }))
   }
 
@@ -431,11 +430,21 @@ function getFriendlyUnitRefs(
   const refs: UnitRef[] = []
 
   Object.values(state.units)
-    .filter((unit) => unit.owner === player && (unit.kind === 'unit' || (includeBarricades && unit.kind === 'barricade')))
+    .filter(
+      (unit) =>
+        unit.owner === player &&
+        (unit.kind === 'unit' || unit.kind === 'commander' || (includeBarricades && unit.kind === 'barricade'))
+    )
     .forEach((unit) => {
       const projectedUnit = projected.units[unit.id]
       if (!projectedUnit) return
-      if (projectedUnit.kind !== 'unit' && !(includeBarricades && projectedUnit.kind === 'barricade')) return
+      if (
+        projectedUnit.kind !== 'unit' &&
+        projectedUnit.kind !== 'commander' &&
+        !(includeBarricades && projectedUnit.kind === 'barricade')
+      ) {
+        return
+      }
       refs.push({ refId: unit.id, snapshot: projectedUnit })
     })
 
@@ -849,8 +858,12 @@ function hexKey(hex: Hex): string {
 }
 
 function projectMoveEnd(state: GameState, unit: Unit, direction: Direction, distance: number): Hex {
+  if (hasActiveUnitModifier(unit, 'cannotMove')) {
+    return { ...unit.pos }
+  }
+  const maxDistance = hasActiveUnitModifier(unit, 'slow') ? Math.min(distance, 1) : distance
   let current = { ...unit.pos }
-  for (let step = 0; step < distance; step += 1) {
+  for (let step = 0; step < maxDistance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state, next)) break
     const occupied = getUnitAt(state, next)
@@ -867,4 +880,11 @@ function hexDistance(a: Hex, b: Hex): number {
   const dr = aAxial.r - bAxial.r
   const ds = -aAxial.q - aAxial.r - (-bAxial.q - bAxial.r)
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2
+}
+
+function hasActiveUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['type']): boolean {
+  return unit.modifiers.some((modifier) => {
+    if (modifier.type !== modifierType) return false
+    return modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0
+  })
 }

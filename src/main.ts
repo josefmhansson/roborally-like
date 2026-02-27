@@ -168,7 +168,7 @@ app.innerHTML = `
             <input id="setting-cols" type="number" min="4" max="14" step="1" />
           </label>
           <label>
-            Stronghold strength
+            Commander strength
             <input id="setting-stronghold" type="number" min="1" max="20" step="1" />
           </label>
           <label>
@@ -535,15 +535,12 @@ const tileImages: Record<TileKind, ImageAsset> = {
 }
 const spawnBaseImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_base.png'))
 const spawnTeamImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_team.png'))
-const strongholdBaseImage = loadImage(resolveAssetUrl('assets/buildings/stronghold_base.png'))
-const strongholdTeamImage = loadImage(resolveAssetUrl('assets/buildings/stronghold_team.png'))
 const unitBaseImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_base.png'))
 const unitTeamImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_team.png'))
 const barricadeBaseImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_base.png'))
 const barricadeTeamImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_team.png'))
 const unitTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
-const strongholdTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 
 let gameSettings: GameSettings = { ...DEFAULT_SETTINGS }
@@ -691,10 +688,10 @@ const TILE_ANCHOR_Y = 0.45
 const TILE_GAP = 0.6
 const BUILDING_IMAGE_SCALE = 1.8
 const BUILDING_ANCHOR_Y = 0.7
-const STRONGHOLD_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.3
 const SPAWN_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.5
 const SPAWN_ANCHOR_Y = BUILDING_ANCHOR_Y - 0.08
 const UNIT_IMAGE_SCALE = 1.1
+const COMMANDER_IMAGE_SCALE = UNIT_IMAGE_SCALE * 1.5
 const UNIT_ANCHOR_Y = 0.78
 const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
 const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
@@ -846,6 +843,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
       p2: normalizeDeckInput(parsed.loadouts.p2),
     }
     state = parsed.state as GameState
+    normalizeCommanderUnitsInState(state)
     suppressWinnerModalForRestoredOutcome = state.winner !== null
     planningPlayer = parsed.planningPlayer === 1 ? 1 : 0
     selectedCardId = typeof parsed.selectedCardId === 'string' ? parsed.selectedCardId : null
@@ -1521,7 +1519,7 @@ function mapViewToState(view: GameStateView): GameState {
     }
   })
 
-  return {
+  const mapped: GameState = {
     boardRows: view.boardRows,
     boardCols: view.boardCols,
     tiles: view.tiles.map((tile) => ({ ...tile })),
@@ -1541,6 +1539,21 @@ function mapViewToState(view: GameStateView): GameState {
     spawnedByOrder: { ...view.spawnedByOrder },
     settings: { ...view.settings },
   }
+  normalizeCommanderUnitsInState(mapped)
+  return mapped
+}
+
+function normalizeCommanderUnitsInState(sourceState: GameState): void {
+  Object.values(sourceState.units).forEach((unit) => {
+    const rawKind = (unit as { kind: string }).kind
+    if (rawKind === 'stronghold') {
+      ;(unit as Unit).kind = 'commander'
+    }
+    if (unit.kind !== 'commander') return
+    const hasSlow = unit.modifiers.some((modifier) => modifier.type === 'slow')
+    if (hasSlow) return
+    unit.modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
+  })
 }
 
 function cloneCards(cards: CardInstance[] | null): CardInstance[] {
@@ -2365,12 +2378,12 @@ function getTintedTeamLayer(
   return canvasEl
 }
 
-function drawUnitSprite(center: { x: number; y: number }, owner: PlayerId): void {
+function drawUnitSprite(center: { x: number; y: number }, owner: PlayerId, scale = UNIT_IMAGE_SCALE): void {
   if (!unitBaseImage.loaded) return
-  drawAnchoredImage(unitBaseImage, center, UNIT_IMAGE_SCALE, UNIT_ANCHOR_Y)
+  drawAnchoredImage(unitBaseImage, center, scale, UNIT_ANCHOR_Y)
   const tinted = getTintedTeamLayer(owner, unitTeamImage, unitTeamCache)
   if (!tinted) return
-  drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, UNIT_IMAGE_SCALE, UNIT_ANCHOR_Y)
+  drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
 }
 
 function drawBarricadeSprite(
@@ -2493,6 +2506,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'cannotMove') {
     return { label: 'Cannot move', kind: 'debuff' }
   }
+  if (modifier.type === 'slow') {
+    return { label: 'Slow', kind: 'debuff' }
+  }
   if (modifier.type === 'burn') {
     return { label: 'Burn', kind: 'debuff' }
   }
@@ -2509,7 +2525,7 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
 }
 
 function getUnitPopoverLabel(unit: Unit): string {
-  if (unit.kind === 'stronghold') return 'Stronghold'
+  if (unit.kind === 'commander') return 'Commander'
   if (unit.kind === 'barricade') return 'Barricade'
   return 'Unit'
 }
@@ -2946,22 +2962,13 @@ function drawBoard(): void {
     ctx.stroke()
   }
 
-  const structures: { pos: Hex; owner: PlayerId; kind: 'spawn' | 'stronghold' }[] = []
+  const structures: { pos: Hex; owner: PlayerId }[] = []
   for (const tile of state.tiles) {
     const key = tile.id
-    if (key === `${state.units['stronghold-0']?.pos.q},${state.units['stronghold-0']?.pos.r}`) {
-      structures.push({ pos: { q: tile.q, r: tile.r }, owner: 0, kind: 'stronghold' })
-      continue
-    }
-    if (key === `${state.units['stronghold-1']?.pos.q},${state.units['stronghold-1']?.pos.r}`) {
-      structures.push({ pos: { q: tile.q, r: tile.r }, owner: 1, kind: 'stronghold' })
-      continue
-    }
     if (spawnTopKeys.has(key) || spawnBottomKeys.has(key)) {
       structures.push({
         pos: { q: tile.q, r: tile.r },
         owner: spawnTopKeys.has(key) ? 0 : 1,
-        kind: 'spawn',
       })
     }
   }
@@ -2970,31 +2977,17 @@ function drawBoard(): void {
     .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q)
     .forEach((item) => {
       const center = projectHex(item.pos)
-      if (item.kind === 'stronghold') {
-        drawStructureSprite(
-          center,
-          item.owner,
-          strongholdBaseImage,
-          strongholdTeamImage,
-          strongholdTeamCache,
-          STRONGHOLD_IMAGE_SCALE,
-          BUILDING_ANCHOR_Y
-        )
-      } else {
-        drawStructureSprite(
-          center,
-          item.owner,
-          spawnBaseImage,
-          spawnTeamImage,
-          spawnTeamCache,
-          SPAWN_IMAGE_SCALE,
-          SPAWN_ANCHOR_Y
-        )
-      }
+      drawStructureSprite(
+        center,
+        item.owner,
+        spawnBaseImage,
+        spawnTeamImage,
+        spawnTeamCache,
+        SPAWN_IMAGE_SCALE,
+        SPAWN_ANCHOR_Y
+      )
     })
 
-  drawStrongholdPreviewOverlays()
-  drawStrongholdProjectedDestroyIndicators()
   drawSelectableHighlights()
 
   if (previewState && state.phase === 'planning') {
@@ -3130,74 +3123,6 @@ function drawSelectableHighlights(): void {
   })
 }
 
-function getProjectedDestroyedStrongholds(): Unit[] {
-  if (!previewState || state.phase !== 'planning') return []
-  const currentPreview = previewState
-  const strongholds: Unit[] = []
-  ;([0, 1] as PlayerId[]).forEach((player) => {
-    const strongholdId = `stronghold-${player}`
-    const actual = state.units[strongholdId]
-    if (!actual) return
-    const preview = currentPreview.units[strongholdId]
-    const previewStrength = preview?.strength ?? 0
-    if (previewStrength > 0) return
-    strongholds.push(actual)
-  })
-  return strongholds
-}
-
-function drawStrongholdProjectedDestroyIndicators(): void {
-  const destroyedStrongholds = getProjectedDestroyedStrongholds()
-  destroyedStrongholds.forEach((stronghold) => {
-    const center = projectHex(stronghold.pos)
-    const arm = layout.size * 0.57
-    ctx.save()
-    ctx.globalAlpha = 0.94
-    ctx.translate(center.x, center.y)
-    ctx.scale(1, BOARD_TILT)
-    ctx.beginPath()
-    ctx.moveTo(-arm, -arm)
-    ctx.lineTo(arm, arm)
-    ctx.moveTo(-arm, arm)
-    ctx.lineTo(arm, -arm)
-    ctx.strokeStyle = 'rgba(90, 0, 0, 0.9)'
-    ctx.lineWidth = 7
-    ctx.lineCap = 'round'
-    ctx.stroke()
-    ctx.strokeStyle = '#ff2b2b'
-    ctx.lineWidth = 4.2
-    ctx.stroke()
-    ctx.restore()
-  })
-}
-
-function drawStrongholdPreviewOverlays(): void {
-  const destroyedStrongholds = getProjectedDestroyedStrongholds()
-  destroyedStrongholds.forEach((actual) => {
-    const center = projectHex(actual.pos)
-
-    ctx.save()
-    ctx.globalAlpha = 0.6
-    ctx.filter = 'grayscale(1) brightness(0.7)'
-    drawStructureSprite(
-      center,
-      actual.owner,
-      strongholdBaseImage,
-      strongholdTeamImage,
-      strongholdTeamCache,
-      STRONGHOLD_IMAGE_SCALE,
-      BUILDING_ANCHOR_Y
-    )
-    ctx.filter = 'none'
-    ctx.restore()
-
-    ctx.save()
-    ctx.globalAlpha = 0.9
-    drawStrengthDots(center, actual.strength, 0, '#ff2b2b')
-    ctx.restore()
-  })
-}
-
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
   const color = getRingTint(unit.owner)
@@ -3216,7 +3141,8 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   const overrideAlpha = alphaOverride ?? 1
   ctx.globalAlpha = animationAlpha * overrideAlpha
 
-  if (unit.modifiers.length > 0 && unit.kind !== 'stronghold') {
+  const showModifierGlow = unit.modifiers.some((modifier) => modifier.type !== 'slow')
+  if (showModifierGlow) {
     const glowRadius = unit.kind === 'barricade' ? layout.size * 0.72 : layout.size * 0.9
     const glowGradient = ctx.createRadialGradient(
       center.x,
@@ -3247,7 +3173,7 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     drawBoostGlow(center, animationProgress)
   }
 
-  if (unit.kind === 'unit') {
+  if (unit.kind === 'unit' || unit.kind === 'commander') {
     const next = neighbor(unit.pos, unit.facing)
     const target = projectHex(next)
     const dir = {
@@ -3329,10 +3255,10 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
 
   if (unit.kind === 'unit' && unitBaseImage.loaded) {
     drawUnitSprite(center, unit.owner)
+  } else if (unit.kind === 'commander' && unitBaseImage.loaded) {
+    drawUnitSprite(center, unit.owner, COMMANDER_IMAGE_SCALE)
   } else if (unit.kind === 'barricade' && barricadeBaseImage.loaded) {
     drawBarricadeSprite(center, unit.owner)
-  } else if (unit.kind === 'stronghold' && strongholdBaseImage.loaded) {
-    // Stronghold sprite already drawn as structure; skip circle.
   }
 
   drawStrengthDots(center, unit.strength, previewStrength, color)
@@ -3398,6 +3324,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
       ghostCtx.restore()
     }
   } else {
+    const unitSpriteScale = unit.kind === 'commander' ? COMMANDER_IMAGE_SCALE : UNIT_IMAGE_SCALE
     const next = neighbor(unit.pos, unit.facing)
     const target = projectHex(next)
     const base = projectHex(unit.pos)
@@ -3441,7 +3368,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
     if (unitBaseImage.loaded) {
       ghostCtx.save()
       ghostCtx.filter = 'grayscale(1) brightness(1.8)'
-      drawAnchoredImageTo(ghostCtx, unitBaseImage, localCenter, UNIT_IMAGE_SCALE, UNIT_ANCHOR_Y)
+      drawAnchoredImageTo(ghostCtx, unitBaseImage, localCenter, unitSpriteScale, UNIT_ANCHOR_Y)
       ghostCtx.filter = 'none'
       ghostCtx.restore()
     }
@@ -3460,7 +3387,6 @@ function drawGhostUnits(snapshot: GameState): void {
   const snapshotUnitIds = new Set(Object.keys(snapshot.units))
 
   for (const unit of Object.values(snapshot.units)) {
-    if (unit.kind === 'stronghold') continue
     const actual = state.units[unit.id]
     const moved =
       !actual ||
@@ -3494,7 +3420,6 @@ function drawGhostUnits(snapshot: GameState): void {
   }
 
   for (const unit of Object.values(state.units)) {
-    if (unit.kind === 'stronghold') continue
     if (snapshotUnitIds.has(unit.id)) continue
 
     const center = projectHex(unit.pos)
@@ -4641,7 +4566,7 @@ function renderRoguelikeWinnerModal(): void {
     }
     if (roguelikeRun.uiStage === 'draft_pick') {
       winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Draft 1 card.`
-      winnerNoteEl.textContent = `Stronghold HP: ${roguelikeRun.strongholdHp}. Pick one card to add before match ${nextMatch}.`
+      winnerNoteEl.textContent = `Commander HP: ${roguelikeRun.strongholdHp}. Pick one card to add before match ${nextMatch}.`
       winnerMenuButton.textContent = 'End Run'
       winnerResetButton.classList.add('hidden')
       winnerRematchButton.classList.add('hidden')
@@ -4670,9 +4595,9 @@ function renderRoguelikeWinnerModal(): void {
         .join('')
     } else {
       winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
-      winnerNoteEl.textContent = `Stronghold HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
+      winnerNoteEl.textContent = `Commander HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
       winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.textContent = '+10 Stronghold HP'
+      winnerResetButton.textContent = '+10 Commander HP'
       winnerRematchButton.classList.remove('hidden')
       winnerRematchButton.textContent = 'Random Reward'
       winnerResetButton.disabled = false
@@ -6006,7 +5931,7 @@ winnerResetButton.addEventListener('click', () => {
     if (state.winner === BOT_HUMAN_PLAYER) {
       if (roguelikeRun.uiStage !== 'reward_choice') return
       roguelikeRun.strongholdHp += 10
-      showRoguelikeRewardNotice('Reward gained: +10 stronghold HP.')
+      showRoguelikeRewardNotice('Reward gained: +10 commander HP.')
       return
     }
     startRoguelikeRun()

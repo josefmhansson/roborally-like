@@ -16,7 +16,7 @@ function readyAndResolve(state: GameState): void {
   resolveAllActions(state)
 }
 
-function clearNonStrongholdUnits(state: GameState): void {
+function clearNonCommanderUnits(state: GameState): void {
   Object.keys(state.units).forEach((unitId) => {
     if (!unitId.startsWith('stronghold-')) {
       delete state.units[unitId]
@@ -26,11 +26,49 @@ function clearNonStrongholdUnits(state: GameState): void {
 
 test('player 1 starts from the lower side of the board', () => {
   const state = createGameState()
-  const p1Stronghold = state.units['stronghold-0']
-  const p2Stronghold = state.units['stronghold-1']
-  assert.ok(p1Stronghold)
-  assert.ok(p2Stronghold)
-  assert.ok(p1Stronghold.pos.r > p2Stronghold.pos.r)
+  const p1Commander = state.units['stronghold-0']
+  const p2Commander = state.units['stronghold-1']
+  assert.ok(p1Commander)
+  assert.ok(p2Commander)
+  assert.equal(p1Commander.kind, 'commander')
+  assert.equal(p2Commander.kind, 'commander')
+  assert.ok(p1Commander.pos.r > p2Commander.pos.r)
+})
+
+test('commander has Slow and cannot move more than one tile per turn', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_forward'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const commander = state.units['stronghold-0']
+  assert.ok(commander)
+  assert.equal(commander.kind, 'commander')
+  assert.ok(commander.modifiers.some((modifier) => modifier.type === 'slow'))
+  const commanderStartPos = { ...commander.pos }
+
+  const moveDirection = ([0, 1, 2, 3, 4, 5] as Direction[]).find((direction) => {
+    const target = neighbor(commander.pos, direction)
+    if (target.q < 0 || target.q >= state.boardCols || target.r < 0 || target.r >= state.boardRows) return false
+    return !Object.values(state.units).some((unit) => unit.pos.q === target.q && unit.pos.r === target.r)
+  })
+  assert.ok(moveDirection !== undefined)
+  const direction = moveDirection as Direction
+
+  const firstMoveCard = findCardId(state, 0, 'move_forward')
+  assert.ok(planOrder(state, 0, firstMoveCard, { unitId: commander.id, direction, distance: 3 }))
+  const secondMoveCard = findCardId(state, 0, 'move_forward')
+  assert.ok(planOrder(state, 0, secondMoveCard, { unitId: commander.id, direction, distance: 3 }))
+
+  readyAndResolve(state)
+
+  const commanderAfter = state.units['stronghold-0']
+  assert.ok(commanderAfter)
+  const expectedPos = neighbor(commanderStartPos, direction)
+  assert.deepEqual(commanderAfter.pos, expectedPos)
+  assert.ok(commanderAfter.modifiers.some((modifier) => modifier.type === 'slow'))
+  assert.equal(commanderAfter.modifiers.some((modifier) => modifier.type === 'cannotMove'), false)
 })
 
 test('barricade card spawns two barricade units on valid tiles', () => {
@@ -270,7 +308,7 @@ test('disarm reduces damage dealt by the target unit for two turns', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'attack_fwd_lr'),
   })
 
-  clearNonStrongholdUnits(state)
+  clearNonCommanderUnits(state)
   const actorPos = { q: 2, r: 2 }
   const enemyPos = neighbor(actorPos, 0)
   state.units['p1-actor'] = {
@@ -334,7 +372,7 @@ test('bleed applies stackable vulnerable that increases damage taken', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  clearNonStrongholdUnits(state)
+  clearNonCommanderUnits(state)
   const actorPos = { q: 2, r: 2 }
   const targetPos = neighbor(actorPos, 0)
   state.units['p1-bleeder'] = {
@@ -381,7 +419,7 @@ test('rage and bolster share strong logic with stacking and turn duration', () =
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  clearNonStrongholdUnits(state)
+  clearNonCommanderUnits(state)
   const actorPos = { q: 2, r: 2 }
   const targetPos = neighbor(actorPos, 0)
   state.units['p1-rager'] = {
@@ -521,7 +559,7 @@ test('shove deals collision damage when push destination is occupied', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  clearNonStrongholdUnits(state)
+  clearNonCommanderUnits(state)
   const actorPos = { q: 2, r: 2 }
   const targetPos = neighbor(actorPos, 0)
   const blockerPos = neighbor(targetPos, 0)
@@ -573,7 +611,7 @@ test('whirlwind damages adjacent units and pushes when space is open', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  clearNonStrongholdUnits(state)
+  clearNonCommanderUnits(state)
   const actorPos = { q: 2, r: 2 }
   const frontPos = neighbor(actorPos, 0)
   const frontPushPos = neighbor(frontPos, 0)
@@ -649,31 +687,40 @@ test('whirlwind costs 2 AP', () => {
   assert.equal(secondPlanned, null)
 })
 
-test('whirlwind can damage enemy stronghold and does not push it', () => {
+test('whirlwind can damage and push enemy commander', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'attack_whirlwind'),
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  clearNonStrongholdUnits(state)
-  const enemyStronghold = state.units['stronghold-1']
-  assert.ok(enemyStronghold && enemyStronghold.kind === 'stronghold')
-  const strongholdStartPos = { ...enemyStronghold.pos }
-  const strongholdStartStrength = enemyStronghold.strength
+  clearNonCommanderUnits(state)
+  const enemyCommander = state.units['stronghold-1']
+  assert.ok(enemyCommander && enemyCommander.kind === 'commander')
+  const commanderStartPos = { ...enemyCommander.pos }
+  const commanderStartStrength = enemyCommander.strength
 
-  const actorPos = ([0, 1, 2, 3, 4, 5] as Direction[]).map((dir) => neighbor(enemyStronghold.pos, dir)).find((tile) => {
-    if (tile.q < 0 || tile.q >= state.boardCols || tile.r < 0 || tile.r >= state.boardRows) return false
-    return !Object.values(state.units).some((unit) => unit.pos.q === tile.q && unit.pos.r === tile.r)
-  })
-  assert.ok(actorPos)
+  const setup = ([0, 1, 2, 3, 4, 5] as Direction[])
+    .map((dir) => {
+      const actorTile = neighbor(enemyCommander.pos, dir)
+      const pushTile = neighbor(enemyCommander.pos, ((dir + 3) % 6) as Direction)
+      return { dir, actorTile, pushTile }
+    })
+    .find(({ actorTile, pushTile }) => {
+      if (actorTile.q < 0 || actorTile.q >= state.boardCols || actorTile.r < 0 || actorTile.r >= state.boardRows) return false
+      if (pushTile.q < 0 || pushTile.q >= state.boardCols || pushTile.r < 0 || pushTile.r >= state.boardRows) return false
+      const actorOccupied = Object.values(state.units).some((unit) => unit.pos.q === actorTile.q && unit.pos.r === actorTile.r)
+      const pushOccupied = Object.values(state.units).some((unit) => unit.pos.q === pushTile.q && unit.pos.r === pushTile.r)
+      return !actorOccupied && !pushOccupied
+    })
+  assert.ok(setup)
 
   state.units['ww-actor-stronghold'] = {
     id: 'ww-actor-stronghold',
     owner: 0,
     kind: 'unit',
     strength: 5,
-    pos: actorPos,
+    pos: setup.actorTile,
     facing: 0,
     modifiers: [],
   }
@@ -684,8 +731,8 @@ test('whirlwind can damage enemy stronghold and does not push it', () => {
 
   readyAndResolve(state)
 
-  const strongholdAfter = state.units['stronghold-1']
-  assert.ok(strongholdAfter)
-  assert.equal(strongholdAfter.strength, strongholdStartStrength - 3)
-  assert.deepEqual(strongholdAfter.pos, strongholdStartPos)
+  const commanderAfter = state.units['stronghold-1']
+  assert.ok(commanderAfter)
+  assert.equal(commanderAfter.strength, commanderStartStrength - 3)
+  assert.notDeepEqual(commanderAfter.pos, commanderStartPos)
 })

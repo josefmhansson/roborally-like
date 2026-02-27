@@ -30,6 +30,7 @@ const TILE_BASE_WEIGHT: Record<TileKind, number> = {
   shrub: 1,
 }
 const SAME_KIND_BONUS = 2.2
+let slowMoveUsage = new WeakMap<Unit, number>()
 
 export const DEFAULT_SETTINGS = {
   boardRows: DEFAULT_BOARD_SIZE,
@@ -47,7 +48,29 @@ function sameHex(a: Hex, b: Hex): boolean {
 }
 
 function isDamageableUnit(unit: Unit): boolean {
-  return unit.kind !== 'stronghold'
+  return unit.kind === 'unit' || unit.kind === 'commander' || unit.kind === 'barricade'
+}
+
+function isCommanderUnit(unit: Unit): boolean {
+  return unit.kind === 'commander'
+}
+
+function canActAsUnit(unit: Unit): boolean {
+  return unit.kind === 'unit' || unit.kind === 'commander'
+}
+
+function getAllowedMoveDistance(unit: Unit, requestedDistance: number): number {
+  if (!hasUnitModifier(unit, 'slow')) return requestedDistance
+  const used = slowMoveUsage.get(unit) ?? 0
+  const remaining = Math.max(0, 1 - used)
+  return Math.min(requestedDistance, remaining)
+}
+
+function recordSlowMovement(unit: Unit, movedDistance: number): void {
+  if (movedDistance <= 0) return
+  if (!hasUnitModifier(unit, 'slow')) return
+  const used = slowMoveUsage.get(unit) ?? 0
+  slowMoveUsage.set(unit, used + movedDistance)
 }
 
 function isCardAllowedToTargetBarricades(defId: CardDefId): boolean {
@@ -102,7 +125,7 @@ function isActingUnitRequirement(defId: CardDefId): boolean {
 
 export function canCardSelectUnit(defId: CardDefId, unit: Unit): boolean {
   if (isActingUnitRequirement(defId)) {
-    return unit.kind === 'unit'
+    return canActAsUnit(unit)
   }
   return canCardTargetUnit(defId, unit)
 }
@@ -197,15 +220,15 @@ function createDeckFromList(defIds: CardDefId[]): { id: string; defId: CardDefId
   return shuffle(defIds.map((defId, index) => ({ id: `c${index + 1}`, defId })))
 }
 
-function createStronghold(owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
+function createCommander(owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
   return {
     id: `stronghold-${owner}`,
     owner,
-    kind: 'stronghold',
+    kind: 'commander',
     strength,
     pos,
     facing,
-    modifiers: [],
+    modifiers: [{ type: 'slow', turnsRemaining: 'indefinite' }],
   }
 }
 
@@ -240,8 +263,8 @@ export function createGameState(
   const units: Record<UnitId, Unit> = {}
   const topFacing: Direction = 5
   const bottomFacing: Direction = 2
-  units['stronghold-0'] = createStronghold(0, bottomPos, settings.strongholdStrength, bottomFacing)
-  units['stronghold-1'] = createStronghold(1, topPos, settings.strongholdStrength, topFacing)
+  units['stronghold-0'] = createCommander(0, bottomPos, settings.strongholdStrength, bottomFacing)
+  units['stronghold-1'] = createCommander(1, topPos, settings.strongholdStrength, topFacing)
   const p1Front = neighbor(units['stronghold-0'].pos, units['stronghold-0'].facing)
   const p2Front = neighbor(units['stronghold-1'].pos, units['stronghold-1'].facing)
   if (inBounds(rows, cols, p1Front)) {
@@ -295,11 +318,12 @@ function getUsedActionPoints(state: GameState, player: PlayerId): number {
 }
 
 export function getSpawnTiles(state: GameState, player: PlayerId): Hex[] {
-  const stronghold = state.units[`stronghold-${player}`]
-  if (!stronghold) return []
+  const [topPos, bottomPos] = getStrongholdPositions(state.boardRows, state.boardCols)
+  const anchor = player === 0 ? bottomPos : topPos
   const tiles: Hex[] = []
+  tiles.push({ ...anchor })
   for (let dir = 0 as Direction; dir < 6; dir += 1) {
-    const candidate = neighbor(stronghold.pos, dir)
+    const candidate = neighbor(anchor, dir)
     if (inBounds(state.boardRows, state.boardCols, candidate)) {
       tiles.push(candidate)
     }
@@ -311,7 +335,7 @@ export function getBarricadeSpawnTiles(state: GameState, player: PlayerId): Hex[
   const candidates = new Map<string, Hex>()
 
   Object.values(state.units)
-    .filter((unit) => unit.owner === player && (unit.kind === 'stronghold' || unit.kind === 'unit'))
+    .filter((unit) => unit.owner === player && (unit.kind === 'commander' || unit.kind === 'unit'))
     .forEach((unit) => {
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const adjacent = neighbor(unit.pos, dir)
@@ -722,6 +746,7 @@ export function getPlannedOrderValidity(state: GameState, player: PlayerId): boo
 }
 
 function finishTurn(state: GameState): void {
+  slowMoveUsage = new WeakMap<Unit, number>()
   tickUnitModifiers(state)
   state.players[0].orders = []
   state.players[1].orders = []
@@ -785,7 +810,7 @@ function validateOrderParams(
         if (!unit) return false
         if (unit.owner !== player) return false
         if (requireActingUnit) {
-          if (unit.kind !== 'unit') return false
+          if (!canActAsUnit(unit)) return false
         } else if (!canCardTargetUnit(defId, unit)) {
           return false
         }
@@ -805,8 +830,6 @@ function validateOrderParams(
   if (def.requires.tile === 'any') {
     if (!params.tile) return false
     if (!inBounds(state.boardRows, state.boardCols, params.tile)) return false
-    const unit = getUnitAt(state, params.tile)
-    if (unit?.kind === 'stronghold') return false
   }
   if (def.requires.tile === 'barricade') {
     if (!params.tile) return false
@@ -905,6 +928,14 @@ function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers
 
 function clearUnitModifiers(state: GameState, unit: Unit): void {
   if (unit.modifiers.length === 0) return
+  if (isCommanderUnit(unit)) {
+    const hadRemovable = unit.modifiers.some((modifier) => modifier.type !== 'slow')
+    unit.modifiers = [{ type: 'slow', turnsRemaining: 'indefinite' }]
+    if (hadRemovable) {
+      state.log.push(`Unit ${unit.id} has removable modifiers removed.`)
+    }
+    return
+  }
   unit.modifiers = []
   state.log.push(`Unit ${unit.id} has all modifiers removed.`)
 }
@@ -947,28 +978,32 @@ function applyDamage(state: GameState, unit: Unit, amount: number, sourceUnit?: 
   if (unit.strength <= 0) {
     delete state.units[unit.id]
     state.log.push(`Unit ${unit.id} is destroyed.`)
-    if (unit.kind === 'stronghold') {
+    if (isCommanderUnit(unit)) {
       state.winner = unit.owner === 0 ? 1 : 0
-      state.log.push(`Player ${state.winner + 1} wins by destroying the stronghold.`)
+      state.log.push(`Player ${state.winner + 1} wins by defeating the enemy commander.`)
     }
   }
 }
 
 function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: number): void {
-  if (unit.kind !== 'unit') return
+  if (!canActAsUnit(unit)) return
   if (hasUnitModifier(unit, 'cannotMove')) {
     state.log.push(`Unit ${unit.id} cannot move this turn.`)
     return
   }
+  const maxDistance = getAllowedMoveDistance(unit, distance)
+  let movedDistance = 0
   let current = { ...unit.pos }
-  for (let step = 0; step < distance; step += 1) {
+  for (let step = 0; step < maxDistance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state.boardRows, state.boardCols, next)) break
     if (getUnitAt(state, next)) break
     current = next
+    movedDistance += 1
   }
   if (current.q !== unit.pos.q || current.r !== unit.pos.r) {
     setUnitPosition(unit, current)
+    recordSlowMovement(unit, movedDistance)
     state.log.push(`Unit ${unit.id} moves to ${current.q},${current.r}.`)
   } else {
     state.log.push(`Unit ${unit.id} cannot move.`)
@@ -976,18 +1011,22 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
 }
 
 function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, distance: number): Hex | null {
-  if (unit.kind !== 'unit') return null
+  if (!canActAsUnit(unit)) return null
   if (hasUnitModifier(unit, 'cannotMove')) {
     return { ...unit.pos }
   }
+  const maxDistance = getAllowedMoveDistance(unit, distance)
+  let movedDistance = 0
   let current = { ...unit.pos }
-  for (let step = 0; step < distance; step += 1) {
+  for (let step = 0; step < maxDistance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state.boardRows, state.boardCols, next)) break
     if (getUnitAt(state, next)) break
     current = next
+    movedDistance += 1
   }
   setUnitPosition(unit, current)
+  recordSlowMovement(unit, movedDistance)
   return current
 }
 
@@ -1024,7 +1063,6 @@ function getAttackTargets(state: GameState, origin: Unit, mode: 'nearest' | 'lin
 
 function pushUnit(state: GameState, unit: Unit, direction: Direction, distance: number): boolean {
   if (distance <= 0) return false
-  if (unit.kind === 'stronghold') return false
   let current = { ...unit.pos }
   for (let step = 0; step < distance; step += 1) {
     const next = neighbor(current, direction)
@@ -1092,7 +1130,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       if (!resolved) return false
       const unit = state.units[resolved]
       if (!unit) return false
-      if (unit.kind !== 'unit') return false
+      if (!canActAsUnit(unit)) return false
       const direction = resolveDirection(unit.facing, params, effect.direction)
       if (direction === null) return false
       const distance =
@@ -1111,7 +1149,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
       const unit = state.units[resolved]
-      if (!unit || unit.kind !== 'unit') return false
+      if (!unit || !canActAsUnit(unit)) return false
       continue
     }
 
@@ -1138,16 +1176,12 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
     if (effect.type === 'damageTile') {
       if (!params.tile) return false
       if (!inBounds(state.boardRows, state.boardCols, params.tile)) return false
-      const unit = getUnitAt(state, params.tile)
-      if (unit?.kind === 'stronghold') return false
       continue
     }
 
     if (effect.type === 'damageTileArea') {
       if (!params.tile) return false
       if (!inBounds(state.boardRows, state.boardCols, params.tile)) return false
-      const unit = getUnitAt(state, params.tile)
-      if (unit?.kind === 'stronghold') return false
       continue
     }
 
@@ -1164,7 +1198,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
       const unit = state.units[resolved]
-      if (!unit || unit.kind !== 'unit') return false
+      if (!unit || !canActAsUnit(unit)) return false
       const directions = resolveDirections(unit.facing, params, effect.directions)
       if (directions.length === 0) return false
       continue
@@ -1175,7 +1209,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
       const unit = state.units[resolved]
-      if (!unit || unit.kind !== 'unit') return false
+      if (!unit || !canActAsUnit(unit)) return false
       const directions = resolveDirections(unit.facing, params, effect.directions)
       if (directions.length === 0) return false
       continue
@@ -1186,7 +1220,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
       const unit = state.units[resolved]
-      if (!unit || unit.kind !== 'unit') return false
+      if (!unit || !canActAsUnit(unit)) return false
       const direction = resolveDirection(unit.facing, params, effect.direction)
       if (direction === null) return false
       continue
@@ -1197,7 +1231,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       const resolved = resolveUnitId(state, order.player, params.unitId)
       if (!resolved) return false
       const unit = state.units[resolved]
-      if (!unit || unit.kind !== 'unit') return false
+      if (!unit || !canActAsUnit(unit)) return false
       continue
     }
   }
@@ -1329,7 +1363,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       const nextDirection = effect.directionParam === 'faceDirection' ? params.faceDirection : params.direction
       if (!resolvedUnitId || nextDirection === undefined) return
       const unit = state.units[resolvedUnitId]
-      if (!unit || unit.kind !== 'unit') return
+      if (!unit || !canActAsUnit(unit)) return
       unit.facing = nextDirection
       state.log.push(`Unit ${unit.id} faces ${nextDirection}.`)
       return
@@ -1338,7 +1372,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
-      if (!unit || unit.kind !== 'unit') return
+      if (!unit || !canActAsUnit(unit)) return
       const damage = typeof effect.damage === 'number' ? effect.damage : unit.strength
       const directions = resolveDirections(unit.facing, params, effect.directions)
       directions.forEach((dir) => {
@@ -1351,7 +1385,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
-      if (!unit || unit.kind !== 'unit') return
+      if (!unit || !canActAsUnit(unit)) return
       const directions = resolveDirections(unit.facing, params, effect.directions)
       directions.forEach((dir) => {
         const targets = getAttackTargets(state, unit, effect.mode, dir)
@@ -1366,7 +1400,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId) return
       const actingUnit = state.units[resolvedUnitId]
-      if (!actingUnit || actingUnit.kind !== 'unit') return
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
 
       const direction = resolveDirection(actingUnit.facing, params, effect.direction)
       if (direction === null) return
@@ -1412,18 +1446,18 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId) return
       const actingUnit = state.units[resolvedUnitId]
-      if (!actingUnit || actingUnit.kind !== 'unit') return
+      if (!actingUnit || !canActAsUnit(actingUnit)) return
 
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const targetTile = neighbor(actingUnit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
         const target = getUnitAt(state, targetTile)
         if (!target) continue
-        if (target.kind !== 'stronghold' && !canCardTargetUnit(order.defId, target)) continue
+        if (!canCardTargetUnit(order.defId, target)) continue
         applyDamage(state, target, effect.damage, actingUnit)
 
         const surviving = state.units[target.id]
-        if (!surviving || surviving.kind === 'stronghold') continue
+        if (!surviving) continue
         pushUnit(state, surviving, dir, effect.pushDistance)
       }
       return
