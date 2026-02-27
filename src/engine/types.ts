@@ -1,5 +1,7 @@
 export type PlayerId = 0 | 1
 
+export type PlayerClassId = 'commander' | 'warleader' | 'archmage'
+
 export type Hex = {
   q: number
   r: number
@@ -11,7 +13,7 @@ export type UnitId = string
 
 export type UnitKind = 'unit' | 'commander' | 'barricade'
 
-export type UnitModifierType = 'cannotMove' | 'slow' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
+export type UnitModifierType = 'cannotMove' | 'slow' | 'spellResistance' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
 
 export type ModifierDuration = number | 'indefinite'
 

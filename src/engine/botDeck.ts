@@ -1,5 +1,6 @@
 import { CARD_DEFS } from './cards'
-import type { CardDefId, CardType, GameSettings } from './types'
+import { isCardAllowedForClass } from './classes'
+import type { CardDefId, CardType, GameSettings, PlayerClassId } from './types'
 
 type BotDeckCategory = Extract<CardType, 'attack' | 'reinforcement' | 'movement' | 'spell'>
 type CategoryCounts = Record<BotDeckCategory, number>
@@ -16,7 +17,7 @@ const SPELL_TARGET_RATIO = 0.1
 const RECRUIT_CARD_ID: CardDefId = 'reinforce_spawn'
 
 const CARD_IDS = Object.keys(CARD_DEFS) as CardDefId[]
-const CARDS_BY_CATEGORY: Record<BotDeckCategory, CardDefId[]> = {
+const ALL_CARDS_BY_CATEGORY: Record<BotDeckCategory, CardDefId[]> = {
   attack: [],
   reinforcement: [],
   movement: [],
@@ -26,17 +27,25 @@ const CARDS_BY_CATEGORY: Record<BotDeckCategory, CardDefId[]> = {
 CARD_IDS.forEach((cardId) => {
   if (cardId === RECRUIT_CARD_ID) return
   const category = CARD_DEFS[cardId].type as BotDeckCategory
-  if (CARDS_BY_CATEGORY[category]) {
-    CARDS_BY_CATEGORY[category].push(cardId)
+  if (ALL_CARDS_BY_CATEGORY[category]) {
+    ALL_CARDS_BY_CATEGORY[category].push(cardId)
   }
 })
 
-export function generateClusteredBotDeck(settings: Pick<GameSettings, 'deckSize' | 'maxCopies'>): CardDefId[] {
+type BotDeckGenerationOptions = {
+  classId?: PlayerClassId
+}
+
+export function generateClusteredBotDeck(
+  settings: Pick<GameSettings, 'deckSize' | 'maxCopies'>,
+  options: BotDeckGenerationOptions = {}
+): CardDefId[] {
   const deckSize = Math.max(0, Math.floor(settings.deckSize))
   const maxCopies = Math.max(1, Math.floor(settings.maxCopies))
   if (deckSize <= 0) return []
 
-  const capacities = getCategoryCapacities(maxCopies)
+  const cardsByCategory = getCardsByCategory(options.classId)
+  const capacities = getCategoryCapacities(cardsByCategory, maxCopies)
   const totalCapacity = sumCategoryCounts(capacities) + maxCopies
   if (totalCapacity <= 0) return []
 
@@ -49,7 +58,7 @@ export function generateClusteredBotDeck(settings: Pick<GameSettings, 'deckSize'
 
   const deck: CardDefId[] = []
   ALL_CATEGORIES.forEach((category) => {
-    const categoryCards = buildClusteredCategoryCards(category, categoryCounts[category], maxCopies)
+    const categoryCards = buildClusteredCategoryCards(cardsByCategory, category, categoryCounts[category], maxCopies)
     deck.push(...categoryCards)
   })
   for (let index = 0; index < requiredRecruitCount; index += 1) {
@@ -58,12 +67,29 @@ export function generateClusteredBotDeck(settings: Pick<GameSettings, 'deckSize'
   return shuffle(deck)
 }
 
-function getCategoryCapacities(maxCopies: number): CategoryCounts {
+function getCardsByCategory(classId?: PlayerClassId): Record<BotDeckCategory, CardDefId[]> {
+  if (!classId) {
+    return {
+      attack: [...ALL_CARDS_BY_CATEGORY.attack],
+      reinforcement: [...ALL_CARDS_BY_CATEGORY.reinforcement],
+      movement: [...ALL_CARDS_BY_CATEGORY.movement],
+      spell: [...ALL_CARDS_BY_CATEGORY.spell],
+    }
+  }
   return {
-    attack: CARDS_BY_CATEGORY.attack.length * maxCopies,
-    reinforcement: CARDS_BY_CATEGORY.reinforcement.length * maxCopies,
-    movement: CARDS_BY_CATEGORY.movement.length * maxCopies,
-    spell: CARDS_BY_CATEGORY.spell.length * maxCopies,
+    attack: ALL_CARDS_BY_CATEGORY.attack.filter((cardId) => isCardAllowedForClass(cardId, classId)),
+    reinforcement: ALL_CARDS_BY_CATEGORY.reinforcement.filter((cardId) => isCardAllowedForClass(cardId, classId)),
+    movement: ALL_CARDS_BY_CATEGORY.movement.filter((cardId) => isCardAllowedForClass(cardId, classId)),
+    spell: ALL_CARDS_BY_CATEGORY.spell.filter((cardId) => isCardAllowedForClass(cardId, classId)),
+  }
+}
+
+function getCategoryCapacities(cardsByCategory: Record<BotDeckCategory, CardDefId[]>, maxCopies: number): CategoryCounts {
+  return {
+    attack: cardsByCategory.attack.length * maxCopies,
+    reinforcement: cardsByCategory.reinforcement.length * maxCopies,
+    movement: cardsByCategory.movement.length * maxCopies,
+    spell: cardsByCategory.spell.length * maxCopies,
   }
 }
 
@@ -187,13 +213,14 @@ function createCategoryTargets(deckSize: number, bounds: CategoryBounds): Catego
 }
 
 function buildClusteredCategoryCards(
+  cardsByCategory: Record<BotDeckCategory, CardDefId[]>,
   category: BotDeckCategory,
   count: number,
   maxCopies: number
 ): CardDefId[] {
   if (count <= 0) return []
 
-  const pool = shuffle([...CARDS_BY_CATEGORY[category]])
+  const pool = shuffle([...cardsByCategory[category]])
   if (pool.length === 0) return []
 
   const minimumUnique = Math.max(1, Math.ceil(count / maxCopies))

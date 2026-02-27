@@ -228,7 +228,10 @@ function createCommander(owner: PlayerId, pos: Hex, strength: number, facing: Di
     strength,
     pos,
     facing,
-    modifiers: [{ type: 'slow', turnsRemaining: 'indefinite' }],
+    modifiers: [
+      { type: 'slow', turnsRemaining: 'indefinite' },
+      { type: 'spellResistance', turnsRemaining: 'indefinite' },
+    ],
   }
 }
 
@@ -929,8 +932,13 @@ function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers
 function clearUnitModifiers(state: GameState, unit: Unit): void {
   if (unit.modifiers.length === 0) return
   if (isCommanderUnit(unit)) {
-    const hadRemovable = unit.modifiers.some((modifier) => modifier.type !== 'slow')
-    unit.modifiers = [{ type: 'slow', turnsRemaining: 'indefinite' }]
+    const hadRemovable = unit.modifiers.some(
+      (modifier) => modifier.type !== 'slow' && modifier.type !== 'spellResistance'
+    )
+    unit.modifiers = [
+      { type: 'slow', turnsRemaining: 'indefinite' },
+      { type: 'spellResistance', turnsRemaining: 'indefinite' },
+    ]
     if (hadRemovable) {
       state.log.push(`Unit ${unit.id} has removable modifiers removed.`)
     }
@@ -969,10 +977,20 @@ function addPlayerModifier(
   )
 }
 
-function applyDamage(state: GameState, unit: Unit, amount: number, sourceUnit?: Unit | null): void {
+function applyDamage(
+  state: GameState,
+  unit: Unit,
+  amount: number,
+  sourceUnit?: Unit | null,
+  sourceDefId?: CardDefId
+): void {
   const dealtDelta = getDamageDealtDelta(sourceUnit ?? null)
   const takenDelta = getDamageTakenDelta(unit)
-  const resolvedDamage = Math.max(0, amount + dealtDelta + takenDelta)
+  let resolvedDamage = Math.max(0, amount + dealtDelta + takenDelta)
+  const isSpellDamage = sourceDefId ? CARD_DEFS[sourceDefId].type === 'spell' : false
+  if (isSpellDamage && isCommanderUnit(unit) && hasUnitModifier(unit, 'spellResistance')) {
+    resolvedDamage = Math.floor(resolvedDamage / 2)
+  }
   unit.strength -= resolvedDamage
   state.log.push(`Unit ${unit.id} takes ${resolvedDamage} damage.`)
   if (unit.strength <= 0) {
@@ -1305,7 +1323,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
       if (!unit || !canCardTargetUnit(order.defId, unit)) return
-      applyDamage(state, unit, effect.amount)
+      applyDamage(state, unit, effect.amount, null, order.defId)
       return
     }
     case 'damageTile': {
@@ -1313,7 +1331,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       if (!tile) return
       const unit = getUnitAt(state, tile)
       if (!unit || !isDamageableUnit(unit)) return
-      applyDamage(state, unit, effect.amount)
+      applyDamage(state, unit, effect.amount, null, order.defId)
       return
     }
     case 'damageTileArea': {
@@ -1321,14 +1339,14 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect): void {
       if (!tile) return
       const centerUnit = getUnitAt(state, tile)
       if (centerUnit && isDamageableUnit(centerUnit)) {
-        applyDamage(state, centerUnit, effect.centerAmount)
+        applyDamage(state, centerUnit, effect.centerAmount, null, order.defId)
       }
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const neighborTile = neighbor(tile, dir)
         if (!inBounds(state.boardRows, state.boardCols, neighborTile)) continue
         const target = getUnitAt(state, neighborTile)
         if (!target || !isDamageableUnit(target)) continue
-        applyDamage(state, target, effect.splashAmount)
+        applyDamage(state, target, effect.splashAmount, null, order.defId)
       }
       return
     }

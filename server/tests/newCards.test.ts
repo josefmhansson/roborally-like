@@ -71,6 +71,30 @@ test('commander has Slow and cannot move more than one tile per turn', () => {
   assert.equal(commanderAfter.modifiers.some((modifier) => modifier.type === 'cannotMove'), false)
 })
 
+test('commander spell resistance halves spell damage rounded down', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_meteor'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const enemyCommander = state.units['stronghold-1']
+  assert.ok(enemyCommander)
+  assert.equal(enemyCommander.kind, 'commander')
+  assert.ok(enemyCommander.modifiers.some((modifier) => modifier.type === 'spellResistance'))
+  const startStrength = enemyCommander.strength
+
+  const meteorCardId = findCardId(state, 0, 'spell_meteor')
+  const planned = planOrder(state, 0, meteorCardId, { tile: { ...enemyCommander.pos } })
+  assert.ok(planned)
+
+  readyAndResolve(state)
+
+  const commanderAfter = state.units['stronghold-1']
+  assert.ok(commanderAfter)
+  assert.equal(commanderAfter.strength, startStrength - 2)
+})
+
 test('barricade card spawns two barricade units on valid tiles', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -172,7 +196,7 @@ test('snare now lasts four turns total', () => {
   assert.equal(state.turn, 2)
 })
 
-test('divination grants two extra cards on the next draw phase', () => {
+test('divination grants three extra cards on the next draw phase', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 10, drawPerTurn: 3 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'spell_divination'),
@@ -186,7 +210,7 @@ test('divination grants two extra cards on the next draw phase', () => {
   readyAndResolve(state)
 
   assert.equal(state.turn, 2)
-  assert.equal(state.players[0].hand.length, settings.drawPerTurn + 2)
+  assert.equal(state.players[0].hand.length, settings.drawPerTurn + 3)
   assert.equal(state.players[0].modifiers.length, 0)
 })
 

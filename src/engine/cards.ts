@@ -1,4 +1,4 @@
-import type { CardDefId, CardEffect, CardType, Direction } from './types'
+import type { CardDefId, CardEffect, CardType, Direction, PlayerClassId } from './types'
 import { DIRECTION_NAMES } from './hex'
 
 export type CardTargetRequirement = {
@@ -16,6 +16,7 @@ export type CardDef = {
   name: string
   description: string
   type: CardType
+  classId?: PlayerClassId
   requires: CardTargetRequirement
   keywords?: CardKeyword[]
   canTargetBarricades?: boolean
@@ -83,6 +84,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Barricade',
     description: 'Spawns 2 1-strength barricades adjacent to an existing unit or building.',
     type: 'reinforcement',
+    classId: 'commander',
     requires: { tile: 'barricade', tile2: 'barricade' },
     effects: [
       {
@@ -121,6 +123,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Rage',
     description: 'Give a unit Vulnerable and Strong indefinitely.',
     type: 'reinforcement',
+    classId: 'warleader',
     actionCost: 0,
     requires: { unit: 'friendly' },
     canTargetBarricades: false,
@@ -232,6 +235,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Death Ray',
     description: 'Fire a death ray forward, dealing 1 damage to every unit in line.',
     type: 'attack',
+    classId: 'archmage',
     requires: { unit: 'friendly' },
     effects: [
       {
@@ -360,6 +364,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Charge',
     description: 'Face a direction, move up to 4 tiles, then deal 2 damage to the tile in front.',
     type: 'attack',
+    classId: 'warleader',
     actionCost: 2,
     requires: { unit: 'friendly', direction: true },
     effects: [
@@ -431,6 +436,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Whirlwind',
     description: 'Deal 3 damage to surrounding units and push them back 1 tile if possible.',
     type: 'attack',
+    classId: 'warleader',
     actionCost: 2,
     requires: { unit: 'friendly' },
     effects: [
@@ -447,6 +453,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Lightning',
     description: 'Deal 1 damage to any unit on the board.',
     type: 'spell',
+    classId: 'archmage',
     requires: { unit: 'any' },
     effects: [
       {
@@ -461,6 +468,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Meteor',
     description: 'Deal 5 damage to a chosen tile and 1 damage to adjacent tiles (units only).',
     type: 'spell',
+    classId: 'archmage',
     actionCost: 3,
     requires: { tile: 'any' },
     effects: [
@@ -549,14 +557,15 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   spell_divination: {
     id: 'spell_divination',
     name: 'Divination',
-    description: 'Draw 2 extra cards next turn.',
+    description: 'Draw 3 extra cards next turn.',
     type: 'spell',
+    classId: 'archmage',
     requires: {},
     effects: [
       {
         type: 'applyPlayerModifier',
         modifier: 'extraDraw',
-        amount: 2,
+        amount: 3,
         turns: 1,
       },
     ],
@@ -582,32 +591,24 @@ export const STARTING_DECK: CardDefId[] = [
   'reinforce_spawn',
   'reinforce_boost',
   'reinforce_boost_spawn',
-  'reinforce_barricade',
   'reinforce_quick_boost',
-  'reinforce_rage',
   'reinforce_bolster',
   'move_forward',
   'move_any',
   'move_forward_face',
   'move_quickstep',
   'move_pivot',
-  'attack_line',
   'attack_disarm',
   'attack_bleed',
   'attack_fwd_lr',
   'attack_fwd',
   'attack_arrow',
-  'attack_charge',
   'attack_jab',
   'attack_shove',
-  'attack_whirlwind',
-  'spell_lightning',
-  'spell_meteor',
   'spell_invest',
   'spell_trip',
   'spell_snare',
   'spell_dispel',
-  'spell_divination',
   'spell_burn',
 ]
 

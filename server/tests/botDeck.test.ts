@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CARD_DEFS } from '../../src/engine/cards'
+import { isCardAllowedForClass } from '../../src/engine/classes'
 import { generateClusteredBotDeck } from '../../src/engine/botDeck'
 import type { CardDefId } from '../../src/engine/types'
 
@@ -91,4 +92,17 @@ test('bot deck generator tends to cluster copies instead of all-singleton decks'
     clusteredRuns >= 90,
     `expected clustered decks in most runs, got ${clusteredRuns}/${runs}`
   )
+})
+
+test('bot deck generator respects class-specific card pools when class is provided', () => {
+  const classId = 'archmage'
+  const deck = generateClusteredBotDeck({ deckSize: 18, maxCopies: 3 }, { classId })
+  assert.equal(deck.length, 18)
+  deck.forEach((cardId) => {
+    assert.equal(
+      isCardAllowedForClass(cardId, classId),
+      true,
+      `card ${cardId} is not available to class ${classId}`
+    )
+  })
 })

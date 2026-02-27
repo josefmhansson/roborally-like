@@ -19,6 +19,13 @@
   --frame-movement: #f6f2ea;
   --frame-attack: #ff5b5b;
   --frame-spell: #4aa6ff;
+  --class-commander-color: #8f2e24;
+  --class-warleader-color: #2f6f2f;
+  --class-archmage-color: #2457a8;
+  --match-class-primary: #e59a3a;
+  --match-class-dark: #b85b28;
+  --match-class-light: #f1b24b;
+  --match-class-border: rgba(241, 178, 75, 0.4);
   --card-width: 153px;
   --card-height: 200px;
   --card-radius: 16px;
@@ -805,6 +812,8 @@ input[type='number'] {
   position: relative;
   overflow: hidden;
   --card-tint: #3b4f7d;
+  --card-text-color: #111827;
+  --card-class-color: transparent;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   appearance: none;
@@ -932,6 +941,36 @@ body.debug-cards .card.card-placeholder::after {
   filter: drop-shadow(0 0 10px rgba(241, 178, 75, 0.5)) drop-shadow(0 0 20px rgba(241, 178, 75, 0.35));
 }
 
+.card.card-class-commander {
+  --card-text-color: var(--class-commander-color);
+  --card-class-color: var(--class-commander-color);
+}
+
+.card.card-class-warleader {
+  --card-text-color: var(--class-warleader-color);
+  --card-class-color: var(--class-warleader-color);
+}
+
+.card.card-class-archmage {
+  --card-text-color: var(--class-archmage-color);
+  --card-class-color: var(--class-archmage-color);
+}
+
+.card-class-mark {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  font-size: 6.4px;
+  letter-spacing: 0.55px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--card-class-color);
+  border: 1px solid var(--card-class-color);
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
 .card-title {
   position: absolute;
   top: 28px;
@@ -939,7 +978,7 @@ body.debug-cards .card.card-placeholder::after {
   right: 22px;
   font-size: 14px;
   font-weight: 600;
-  color: #111827;
+  color: var(--card-text-color);
 }
 
 .card-art {
@@ -963,7 +1002,7 @@ body.debug-cards .card.card-placeholder::after {
   left: 18px;
   right: 36px;
   font-size: 8px;
-  color: #000000;
+  color: var(--card-text-color);
   line-height: 1.4;
 }
 
@@ -998,7 +1037,7 @@ body.debug-cards .card.card-placeholder::after {
   left: 18px;
   right: 36px;
   font-size: 8px;
-  color: #5b6475;
+  color: var(--card-text-color);
 }
 
 .card-ap {
@@ -1136,6 +1175,24 @@ select {
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+body.in-match .game-screen .btn,
+body.in-match #winner-modal .btn {
+  background: linear-gradient(120deg, var(--match-class-dark), var(--match-class-light));
+}
+
+body.in-match .game-screen .btn.ghost,
+body.in-match #winner-modal .btn.ghost {
+  background: rgba(8, 12, 24, 0.35);
+  border: 1px solid var(--match-class-border);
+  color: var(--ink);
+}
+
+body.in-match .game-screen .btn.ready,
+body.in-match #winner-modal .btn.ready {
+  border: 1px solid var(--match-class-border);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
 .actions {
@@ -1660,6 +1717,14 @@ body.debug-cards .hidden-card {
     left: 10px;
     right: 16px;
     font-size: 10px;
+  }
+
+  .card-class-mark {
+    top: 8px;
+    left: 9px;
+    font-size: 5px;
+    letter-spacing: 0.45px;
+    padding: 1px 4px;
   }
 
   .card-art {

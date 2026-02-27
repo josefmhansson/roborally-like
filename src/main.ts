@@ -1,5 +1,16 @@
 import './style.css'
 import { CARD_DEFS, STARTING_DECK } from './engine/cards'
+import {
+  DEFAULT_PLAYER_CLASSES,
+  getCardClassId,
+  getCardPoolForClass,
+  getPlayerClassForSeat,
+  isCardAllowedForClass,
+  isPlayerClassId,
+  pickRandomPlayerClass,
+  PLAYER_CLASS_DEFS,
+  type PlayerClasses,
+} from './engine/classes'
 import { DIRECTIONS, hexToPixel, neighbor, rotateDirection } from './engine/hex'
 import {
   canCardSelectUnit,
@@ -34,6 +45,7 @@ import type {
   Hex,
   OrderParams,
   PlayerId,
+  PlayerClassId,
   TileKind,
   Unit,
 } from './engine/types'
@@ -119,6 +131,14 @@ app.innerHTML = `
         </div>
         <div class="loadout-meta">
           <div id="loadout-count"></div>
+          <label class="select-inline">
+            Class
+            <select id="loadout-class">
+              <option value="commander">Commander</option>
+              <option value="warleader">Warleader</option>
+              <option value="archmage">Archmage</option>
+            </select>
+          </label>
           <div id="loadout-controls" class="loadout-controls hidden">
             <div class="filter-group">
               <button class="btn ghost filter-btn" data-filter="all">All</button>
@@ -285,6 +305,7 @@ const loadoutRandomButton = document.querySelector<HTMLButtonElement>('#loadout-
 const loadoutFilterToggleButton = document.querySelector<HTMLButtonElement>('#loadout-filters')!
 const loadoutContinueButton = document.querySelector<HTMLButtonElement>('#loadout-continue')!
 const loadoutCountLabel = document.querySelector<HTMLDivElement>('#loadout-count')!
+const loadoutClassSelect = document.querySelector<HTMLSelectElement>('#loadout-class')!
 const loadoutControls = document.querySelector<HTMLDivElement>('#loadout-controls')!
 const loadoutSelected = document.querySelector<HTMLDivElement>('#loadout-selected')!
 const loadoutAll = document.querySelector<HTMLDivElement>('#loadout-all')!
@@ -358,6 +379,7 @@ if (
   !loadoutFilterToggleButton ||
   !loadoutContinueButton ||
   !loadoutCountLabel ||
+  !loadoutClassSelect ||
   !loadoutControls ||
   !loadoutSelected ||
   !loadoutAll ||
@@ -535,19 +557,53 @@ const tileImages: Record<TileKind, ImageAsset> = {
 }
 const spawnBaseImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_base.png'))
 const spawnTeamImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_team.png'))
-const unitBaseImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_base.png'))
-const unitTeamImage = loadImage(resolveAssetUrl('assets/units/unit_soldier_team.png'))
 const barricadeBaseImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_base.png'))
 const barricadeTeamImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_team.png'))
-const unitTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
+
+type ClassSpriteSet = {
+  unitBaseImage: ImageAsset
+  unitTeamImage: ImageAsset
+  commanderBaseImage: ImageAsset
+  commanderTeamImage: ImageAsset
+  unitTeamCache: Map<PlayerId, HTMLCanvasElement>
+  commanderTeamCache: Map<PlayerId, HTMLCanvasElement>
+}
+
+const classSpriteSets: Record<PlayerClassId, ClassSpriteSet> = {
+  commander: {
+    unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.unitBaseAsset)),
+    unitTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.unitTeamAsset)),
+    commanderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.commanderBaseAsset)),
+    commanderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.commanderTeamAsset)),
+    unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    commanderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+  },
+  warleader: {
+    unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.unitBaseAsset)),
+    unitTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.unitTeamAsset)),
+    commanderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.commanderBaseAsset)),
+    commanderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.commanderTeamAsset)),
+    unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    commanderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+  },
+  archmage: {
+    unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.unitBaseAsset)),
+    unitTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.unitTeamAsset)),
+    commanderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.commanderBaseAsset)),
+    commanderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.commanderTeamAsset)),
+    unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    commanderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+  },
+}
 
 let gameSettings: GameSettings = { ...DEFAULT_SETTINGS }
 let loadouts: { p1: CardDefId[]; p2: CardDefId[] } = {
   p1: STARTING_DECK.slice(0, gameSettings.deckSize),
   p2: STARTING_DECK.slice(0, gameSettings.deckSize),
 }
+let playerClasses: PlayerClasses = { ...DEFAULT_PLAYER_CLASSES }
 let state = createGameState(gameSettings, loadouts)
 let planningPlayer: PlayerId = 0
 let selectedCardId: string | null = null
@@ -623,7 +679,6 @@ const ROGUELIKE_STARTING_DECK: CardDefId[] = [
   'attack_fwd',
   'attack_arrow',
 ]
-const ALL_CARD_IDS = Object.keys(CARD_DEFS) as CardDefId[]
 
 type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
 type RoguelikeUiStage = 'reward_choice' | 'draft_pick' | 'remove_pick' | 'reward_notice' | 'run_over'
@@ -640,6 +695,7 @@ type RoguelikeRunState = {
   wins: number
   strongholdHp: number
   deck: CardDefId[]
+  playerClass: PlayerClassId
   bonusDrawPerTurn: number
   bonusActionBudget: number
   bonusStartingUnits: number
@@ -691,7 +747,7 @@ const BUILDING_ANCHOR_Y = 0.7
 const SPAWN_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.5
 const SPAWN_ANCHOR_Y = BUILDING_ANCHOR_Y - 0.08
 const UNIT_IMAGE_SCALE = 1.1
-const COMMANDER_IMAGE_SCALE = UNIT_IMAGE_SCALE * 1.5
+const COMMANDER_IMAGE_SCALE = UNIT_IMAGE_SCALE
 const UNIT_ANCHOR_Y = 0.78
 const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
 const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
@@ -700,14 +756,16 @@ const GHOST_ALPHA = 0.6
 type SeedPayload = {
   settings: GameSettings
   loadouts: { p1: CardDefId[]; p2: CardDefId[] }
+  playerClasses?: PlayerClasses
 }
 
 type PersistedProgress = {
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   screen: 'menu' | 'loadout' | 'settings' | 'game'
   localMode?: 'local' | 'bot' | 'roguelike'
   gameSettings: GameSettings
   loadouts: { p1: CardDefId[]; p2: CardDefId[] }
+  playerClasses?: PlayerClasses
   state: GameState
   planningPlayer: PlayerId
   selectedCardId: string | null
@@ -733,6 +791,55 @@ function normalizeDeckInput(input: unknown): CardDefId[] {
   return input.filter((id): id is CardDefId => typeof id === 'string' && id in CARD_DEFS)
 }
 
+function normalizePlayerClassInput(input: unknown, fallback: PlayerClassId = DEFAULT_PLAYER_CLASSES.p1): PlayerClassId {
+  return isPlayerClassId(input) ? input : fallback
+}
+
+function normalizePlayerClassesInput(input: unknown): PlayerClasses {
+  if (!input || typeof input !== 'object') return { ...DEFAULT_PLAYER_CLASSES }
+  const source = input as Partial<PlayerClasses>
+  return {
+    p1: normalizePlayerClassInput(source.p1, DEFAULT_PLAYER_CLASSES.p1),
+    p2: normalizePlayerClassInput(source.p2, DEFAULT_PLAYER_CLASSES.p2),
+  }
+}
+
+function getLoadoutClass(player: PlayerId): PlayerClassId {
+  return getPlayerClassForSeat(playerClasses, player)
+}
+
+function setLoadoutClass(player: PlayerId, classId: PlayerClassId): void {
+  if (player === 0) {
+    playerClasses.p1 = classId
+  } else {
+    playerClasses.p2 = classId
+  }
+}
+
+function sanitizeDeckForCurrentClass(
+  deck: CardDefId[],
+  classId: PlayerClassId,
+  enforceClassRestrictions = true
+): CardDefId[] {
+  const counts: Partial<Record<CardDefId, number>> = {}
+  const filtered: CardDefId[] = []
+  for (const cardId of deck) {
+    if (enforceClassRestrictions && !isCardAllowedForClass(cardId, classId)) continue
+    const currentCount = counts[cardId] ?? 0
+    if (currentCount >= gameSettings.maxCopies) continue
+    filtered.push(cardId)
+    counts[cardId] = currentCount + 1
+    if (filtered.length >= gameSettings.deckSize) break
+  }
+  return filtered
+}
+
+function sanitizeLoadoutsForCurrentClasses(options: { enforceClassRestrictions?: boolean } = {}): void {
+  const enforceClassRestrictions = options.enforceClassRestrictions ?? mode !== 'online'
+  loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, playerClasses.p1, enforceClassRestrictions)
+  loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, playerClasses.p2, enforceClassRestrictions)
+}
+
 function isBotControlledMode(modeValue: PlayMode = mode): boolean {
   return modeValue === 'bot' || modeValue === 'roguelike'
 }
@@ -747,11 +854,13 @@ function getLocalTelemetryMode(modeValue: PlayMode): 'local' | 'bot' {
   return modeValue === 'local' ? 'local' : 'bot'
 }
 
-function createInitialRoguelikeRunState(): RoguelikeRunState {
+function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClasses.p1): RoguelikeRunState {
+  const normalizedClass = normalizePlayerClassInput(playerClass, DEFAULT_PLAYER_CLASSES.p1)
   return {
     wins: 0,
     strongholdHp: ROGUELIKE_STARTING_STRONGHOLD_HP,
-    deck: [...ROGUELIKE_STARTING_DECK],
+    deck: sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], normalizedClass),
+    playerClass: normalizedClass,
     bonusDrawPerTurn: 0,
     bonusActionBudget: 0,
     bonusStartingUnits: 0,
@@ -766,7 +875,8 @@ function createInitialRoguelikeRunState(): RoguelikeRunState {
 function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   if (!input || typeof input !== 'object') return null
   const source = input as Partial<RoguelikeRunState>
-  const deck = normalizeDeckInput(source.deck)
+  const playerClass = normalizePlayerClassInput(source.playerClass, playerClasses.p1)
+  const deck = sanitizeDeckForCurrentClass(normalizeDeckInput(source.deck), playerClass)
   const uiStage =
     source.uiStage === 'reward_choice' ||
     source.uiStage === 'draft_pick' ||
@@ -779,14 +889,18 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   return {
     wins: Math.max(0, Math.floor(Number(source.wins) || 0)),
     strongholdHp: Math.max(1, Math.floor(Number(source.strongholdHp) || ROGUELIKE_STARTING_STRONGHOLD_HP)),
-    deck: deck.length > 0 ? deck : [...ROGUELIKE_STARTING_DECK],
+    deck:
+      deck.length > 0
+        ? deck
+        : sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass),
+    playerClass,
     bonusDrawPerTurn: Math.max(0, Math.floor(Number(source.bonusDrawPerTurn) || 0)),
     bonusActionBudget: Math.max(0, Math.floor(Number(source.bonusActionBudget) || 0)),
     bonusStartingUnits: Math.max(0, Math.floor(Number(source.bonusStartingUnits) || 0)),
     bonusStartingUnitStrength: Math.max(0, Math.floor(Number(source.bonusStartingUnitStrength) || 0)),
     resultHandled: Boolean(source.resultHandled),
     uiStage,
-    draftOptions: normalizeDeckInput(source.draftOptions).slice(0, 3),
+    draftOptions: sanitizeDeckForCurrentClass(normalizeDeckInput(source.draftOptions), playerClass, true).slice(0, 3),
     rewardNoticeMessage: typeof source.rewardNoticeMessage === 'string' ? source.rewardNoticeMessage : null,
   }
 }
@@ -806,7 +920,7 @@ function persistProgressNow(): void {
   if (mode === 'online') return
   try {
     const payload: PersistedProgress = {
-      version: 3,
+      version: 4,
       screen,
       localMode: getPersistedLocalMode(mode),
       gameSettings,
@@ -814,6 +928,7 @@ function persistProgressNow(): void {
         p1: [...loadouts.p1],
         p2: [...loadouts.p2],
       },
+      playerClasses: { ...playerClasses },
       state,
       planningPlayer,
       selectedCardId,
@@ -833,15 +948,18 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     const raw = localStorage.getItem(PROGRESS_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<PersistedProgress>
-    if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3) return null
+    if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4) return null
     if (!parsed.state || !Array.isArray(parsed.state.tiles) || !Array.isArray(parsed.state.players)) return null
     if (!parsed.gameSettings || !parsed.loadouts) return null
 
     gameSettings = { ...DEFAULT_SETTINGS, ...parsed.gameSettings }
+    playerClasses =
+      parsed.version === 4 ? normalizePlayerClassesInput(parsed.playerClasses) : { ...DEFAULT_PLAYER_CLASSES }
     loadouts = {
       p1: normalizeDeckInput(parsed.loadouts.p1),
       p2: normalizeDeckInput(parsed.loadouts.p2),
     }
+    sanitizeLoadoutsForCurrentClasses()
     state = parsed.state as GameState
     normalizeCommanderUnitsInState(state)
     suppressWinnerModalForRestoredOutcome = state.winner !== null
@@ -879,13 +997,14 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     }
 
     roguelikeRun = null
-    if ((parsed.version === 2 || parsed.version === 3) && parsed.localMode === 'bot') {
+    if ((parsed.version === 2 || parsed.version === 3 || parsed.version === 4) && parsed.localMode === 'bot') {
       applyPlayMode('bot')
       planningPlayer = BOT_HUMAN_PLAYER
-    } else if (parsed.version === 3 && parsed.localMode === 'roguelike') {
+    } else if ((parsed.version === 3 || parsed.version === 4) && parsed.localMode === 'roguelike') {
       const restoredRun = normalizeRoguelikeRunInput(parsed.roguelikeRun)
       if (restoredRun) {
         roguelikeRun = restoredRun
+        playerClasses.p1 = restoredRun.playerClass
         applyPlayMode('roguelike')
         planningPlayer = BOT_HUMAN_PLAYER
       } else {
@@ -1551,8 +1670,13 @@ function normalizeCommanderUnitsInState(sourceState: GameState): void {
     }
     if (unit.kind !== 'commander') return
     const hasSlow = unit.modifiers.some((modifier) => modifier.type === 'slow')
-    if (hasSlow) return
-    unit.modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
+    const hasSpellResistance = unit.modifiers.some((modifier) => modifier.type === 'spellResistance')
+    if (!hasSlow) {
+      unit.modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
+    }
+    if (!hasSpellResistance) {
+      unit.modifiers.unshift({ type: 'spellResistance', turnsRemaining: 'indefinite' })
+    }
   })
 }
 
@@ -1873,6 +1997,7 @@ function resetGameState(statusMessage: string): void {
   invalidateBotPlanning()
   resetCardVisualState()
   clearActionAnimationState()
+  sanitizeLoadoutsForCurrentClasses()
   state = createGameState(gameSettings, loadouts)
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false
@@ -2354,6 +2479,43 @@ function getRingTint(owner: PlayerId): string {
   return mixColor(getTeamTint(owner), '#000000', TEAM_RING_DARKEN)
 }
 
+function getSpriteSetForOwner(owner: PlayerId): ClassSpriteSet {
+  const classId = getLoadoutClass(owner)
+  return classSpriteSets[classId] ?? classSpriteSets.commander
+}
+
+function getUnitDisplayName(owner: PlayerId): string {
+  const classId = getLoadoutClass(owner)
+  return PLAYER_CLASS_DEFS[classId].unitName
+}
+
+function getCommanderDisplayName(owner: PlayerId): string {
+  const classId = getLoadoutClass(owner)
+  return PLAYER_CLASS_DEFS[classId].name
+}
+
+function getMatchThemeClassId(): PlayerClassId {
+  if (mode === 'roguelike' && roguelikeRun) return roguelikeRun.playerClass
+  return getLoadoutClass(planningPlayer)
+}
+
+function applyMatchClassTheme(): void {
+  if (screen !== 'game') {
+    document.body.classList.remove('in-match')
+    document.body.removeAttribute('data-match-class')
+    return
+  }
+  const classId = getMatchThemeClassId()
+  const classColor = PLAYER_CLASS_DEFS[classId].color
+  const root = document.documentElement
+  root.style.setProperty('--match-class-primary', classColor)
+  root.style.setProperty('--match-class-dark', mixColor(classColor, '#000000', 0.26))
+  root.style.setProperty('--match-class-light', mixColor(classColor, '#ffffff', 0.14))
+  root.style.setProperty('--match-class-border', mixColor(classColor, '#ffffff', 0.18))
+  document.body.dataset.matchClass = classId
+  document.body.classList.add('in-match')
+}
+
 function getTintedTeamLayer(
   owner: PlayerId,
   base: ImageAsset,
@@ -2379,9 +2541,19 @@ function getTintedTeamLayer(
 }
 
 function drawUnitSprite(center: { x: number; y: number }, owner: PlayerId, scale = UNIT_IMAGE_SCALE): void {
-  if (!unitBaseImage.loaded) return
-  drawAnchoredImage(unitBaseImage, center, scale, UNIT_ANCHOR_Y)
-  const tinted = getTintedTeamLayer(owner, unitTeamImage, unitTeamCache)
+  const spriteSet = getSpriteSetForOwner(owner)
+  if (!spriteSet.unitBaseImage.loaded) return
+  drawAnchoredImage(spriteSet.unitBaseImage, center, scale, UNIT_ANCHOR_Y)
+  const tinted = getTintedTeamLayer(owner, spriteSet.unitTeamImage, spriteSet.unitTeamCache)
+  if (!tinted) return
+  drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
+}
+
+function drawCommanderSprite(center: { x: number; y: number }, owner: PlayerId, scale = COMMANDER_IMAGE_SCALE): void {
+  const spriteSet = getSpriteSetForOwner(owner)
+  if (!spriteSet.commanderBaseImage.loaded) return
+  drawAnchoredImage(spriteSet.commanderBaseImage, center, scale, UNIT_ANCHOR_Y)
+  const tinted = getTintedTeamLayer(owner, spriteSet.commanderTeamImage, spriteSet.commanderTeamCache)
   if (!tinted) return
   drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
 }
@@ -2509,6 +2681,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'slow') {
     return { label: 'Slow', kind: 'debuff' }
   }
+  if (modifier.type === 'spellResistance') {
+    return { label: 'Spell resistance', kind: 'buff' }
+  }
   if (modifier.type === 'burn') {
     return { label: 'Burn', kind: 'debuff' }
   }
@@ -2525,9 +2700,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
 }
 
 function getUnitPopoverLabel(unit: Unit): string {
-  if (unit.kind === 'commander') return 'Commander'
+  if (unit.kind === 'commander') return getCommanderDisplayName(unit.owner)
   if (unit.kind === 'barricade') return 'Barricade'
-  return 'Unit'
+  return getUnitDisplayName(unit.owner)
 }
 
 function hideUnitStatusPopover(): void {
@@ -2660,6 +2835,7 @@ function setScreen(next: typeof screen): void {
   if (screen !== 'game') {
     clearUnitStatusPopoverState()
   }
+  applyMatchClassTheme()
   if (screen === 'menu') updateSeedDisplay()
   if (screen === 'loadout') renderLoadout()
   if (screen === 'settings') renderSettings()
@@ -3141,7 +3317,9 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   const overrideAlpha = alphaOverride ?? 1
   ctx.globalAlpha = animationAlpha * overrideAlpha
 
-  const showModifierGlow = unit.modifiers.some((modifier) => modifier.type !== 'slow')
+  const showModifierGlow = unit.modifiers.some(
+    (modifier) => modifier.type !== 'slow' && modifier.type !== 'spellResistance'
+  )
   if (showModifierGlow) {
     const glowRadius = unit.kind === 'barricade' ? layout.size * 0.72 : layout.size * 0.9
     const glowGradient = ctx.createRadialGradient(
@@ -3253,10 +3431,10 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     ctx.restore()
   }
 
-  if (unit.kind === 'unit' && unitBaseImage.loaded) {
+  if (unit.kind === 'unit') {
     drawUnitSprite(center, unit.owner)
-  } else if (unit.kind === 'commander' && unitBaseImage.loaded) {
-    drawUnitSprite(center, unit.owner, COMMANDER_IMAGE_SCALE)
+  } else if (unit.kind === 'commander') {
+    drawCommanderSprite(center, unit.owner, COMMANDER_IMAGE_SCALE)
   } else if (unit.kind === 'barricade' && barricadeBaseImage.loaded) {
     drawBarricadeSprite(center, unit.owner)
   }
@@ -3365,10 +3543,12 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
 
     ghostCtx.restore()
 
-    if (unitBaseImage.loaded) {
+    const spriteSet = getSpriteSetForOwner(unit.owner)
+    const troopBaseImage = unit.kind === 'commander' ? spriteSet.commanderBaseImage : spriteSet.unitBaseImage
+    if (troopBaseImage.loaded) {
       ghostCtx.save()
       ghostCtx.filter = 'grayscale(1) brightness(1.8)'
-      drawAnchoredImageTo(ghostCtx, unitBaseImage, localCenter, unitSpriteScale, UNIT_ANCHOR_Y)
+      drawAnchoredImageTo(ghostCtx, troopBaseImage, localCenter, unitSpriteScale, UNIT_ANCHOR_Y)
       ghostCtx.filter = 'none'
       ghostCtx.restore()
     }
@@ -3445,17 +3625,18 @@ function renderHand(): void {
   handEl.innerHTML = playerHand
     .map((card) => {
       const def = CARD_DEFS[card.defId]
+      const cardClassName = getCardClassName(def.id)
       const isSelected = selectedCardId === card.id
       const isHidden = hiddenCardIds.has(card.id)
       const isPendingTransfer = pendingCardTransfer?.cardId === card.id && pendingCardTransfer?.target === 'hand'
       if (isPendingTransfer) {
         return `
-          <button class="card type-${def.type} card-placeholder" data-card-id="${card.id}" data-card-layer="hand"></button>
+          <button class="card type-${def.type} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-layer="hand"></button>
         `
       }
       const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
-        <button class="card type-${def.type} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-layer="hand" ${hiddenStyle}>
+        <button class="card type-${def.type} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-layer="hand" ${hiddenStyle}>
           ${renderCardFace(def)}
         </button>
       `
@@ -3530,6 +3711,7 @@ function renderOrders(): void {
   ordersEl.innerHTML = ordersToShow
     .map((order, index) => {
       const def = CARD_DEFS[order.defId]
+      const cardClassName = getCardClassName(def.id)
       const isValid = inPlanning ? validity[index] ?? true : true
       const teamClass = `order-team-${order.player}`
       const resolvedClass = playedIds?.has(order.id) ? 'order-resolved' : ''
@@ -3537,12 +3719,12 @@ function renderOrders(): void {
       const isPendingTransfer = pendingCardTransfer?.cardId === order.cardId && pendingCardTransfer?.target === 'orders'
       if (isPendingTransfer) {
         return `
-          <div class="card order-card type-${def.type} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} card-placeholder" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue"></div>
+          <div class="card order-card type-${def.type} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} card-placeholder" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue"></div>
         `
       }
       const hiddenStyle = isHidden ? 'style="visibility:hidden;opacity:0;"' : ''
       return `
-        <div class="card order-card type-${def.type} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${hiddenStyle}>
+        <div class="card order-card type-${def.type} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${hiddenStyle}>
           ${renderCardFace(def, { orderIndex: index + 1 })}
         </div>
       `
@@ -3818,6 +4000,17 @@ function renderCardArt(defId: CardDefId): string {
   return `<div class="card-art" aria-hidden="true">${getCardArtSvg(defId)}</div>`
 }
 
+function getCardClassName(defId: CardDefId): string {
+  const classId = getCardClassId(defId)
+  return classId ? `card-class-${classId}` : 'card-class-generic'
+}
+
+function renderCardClassMark(defId: CardDefId): string {
+  const classId = getCardClassId(defId)
+  if (!classId) return ''
+  return `<div class="card-class-mark">${PLAYER_CLASS_DEFS[classId].name}</div>`
+}
+
 function renderCardFace(
   def: { id: CardDefId; name: string; description: string; actionCost?: number; keywords?: string[] },
   options: { metaText?: string; orderIndex?: number } = {}
@@ -3828,9 +4021,11 @@ function renderCardFace(
     def.keywords && def.keywords.length > 0
       ? `<div class="card-keywords">${def.keywords.map((keyword) => `<span class="card-keyword">${keyword}</span>`).join('')}</div>`
       : ''
+  const classMark = renderCardClassMark(def.id)
   const orderIndex = options.orderIndex ? `<div class="order-index">#${options.orderIndex}</div>` : ''
   return [
     renderApBadge(apCost),
+    classMark,
     `<div class="card-title">${def.name}</div>`,
     renderCardArt(def.id),
     `<div class="card-desc">${def.description}</div>`,
@@ -3995,9 +4190,12 @@ function renderLog(): void {
 
 function renderLoadout(): void {
   applyCardAssetCssVars()
+  sanitizeLoadoutsForCurrentClasses()
   if (mode === 'online') {
     loadoutPlayer = 0
   }
+  const loadoutClass = getLoadoutClass(loadoutPlayer)
+  const loadoutClassDef = PLAYER_CLASS_DEFS[loadoutClass]
   const deck = loadoutPlayer === 0 ? loadouts.p1 : loadouts.p2
   loadoutToggleButton.textContent = mode === 'online' ? 'Your Deck' : `Player ${loadoutPlayer + 1}`
   loadoutToggleButton.classList.toggle('hidden', mode === 'online')
@@ -4005,7 +4203,14 @@ function renderLoadout(): void {
   loadoutContinueButton.disabled = !(mode === 'online' && onlineSession)
   loadoutContinueButton.textContent =
     mode === 'online' && state.winner !== null ? 'Save Deck + Back to Match' : 'Continue to Match'
-  loadoutCountLabel.textContent = `${deck.length}/${gameSettings.deckSize} cards`
+  loadoutCountLabel.textContent =
+    mode === 'online'
+      ? `${deck.length}/${gameSettings.deckSize} cards`
+      : `${deck.length}/${gameSettings.deckSize} cards | ${loadoutClassDef.name}`
+  loadoutClassSelect.value = loadoutClass
+  loadoutClassSelect.disabled = mode === 'online'
+  loadoutClassSelect.style.borderColor = loadoutClassDef.color
+  loadoutClassSelect.parentElement?.classList.toggle('hidden', mode === 'online')
   loadoutControls.classList.toggle('hidden', !loadoutFiltersExpanded)
   loadoutFilterToggleButton.classList.toggle('active', loadoutFiltersExpanded)
   loadoutFilterToggleButton.textContent = loadoutFiltersExpanded ? 'Filter ▲' : 'Filter ▼'
@@ -4042,7 +4247,9 @@ function renderLoadout(): void {
     })
   })
 
+  const classPool = mode === 'online' ? null : new Set(getCardPoolForClass(loadoutClass))
   const allCards = Object.values(CARD_DEFS)
+    .filter((def) => (classPool ? classPool.has(def.id) : true))
     .filter((def) => loadoutFilter === 'all' || def.type === loadoutFilter)
     .sort((a, b) => {
       if (loadoutSortMode === 'name') return a.name.localeCompare(b.name)
@@ -4055,8 +4262,9 @@ function renderLoadout(): void {
     .map((def) => {
       const count = counts[def.id] ?? 0
       const disabled = deck.length >= gameSettings.deckSize || count >= gameSettings.maxCopies
+      const cardClassName = getCardClassName(def.id)
       return `
-        <button class="card loadout-card type-${def.type} ${disabled ? 'disabled' : ''}" data-add-id="${def.id}" ${
+        <button class="card loadout-card type-${def.type} ${cardClassName} ${disabled ? 'disabled' : ''}" data-add-id="${def.id}" ${
           disabled ? 'disabled' : ''
         }>
           ${renderCardFace(def, { metaText: `${def.type} | ${count}/${gameSettings.maxCopies}` })}
@@ -4070,6 +4278,7 @@ function renderLoadout(): void {
     button.addEventListener('click', () => {
       if (deck.length >= gameSettings.deckSize) return
       const defId = button.dataset.addId as CardDefId
+      if (classPool && !isCardAllowedForClass(defId, loadoutClass)) return
       const count = counts[defId] ?? 0
       if (count >= gameSettings.maxCopies) return
       deck.push(defId)
@@ -4107,22 +4316,11 @@ function clamp(value: number, min: number, max: number): number {
 function resizeDecks(newSize: number): void {
   if (loadouts.p1.length > newSize) loadouts.p1 = loadouts.p1.slice(0, newSize)
   if (loadouts.p2.length > newSize) loadouts.p2 = loadouts.p2.slice(0, newSize)
+  sanitizeLoadoutsForCurrentClasses()
 }
 
 function enforceMaxCopies(): void {
-  const trimDeck = (deck: CardDefId[]): CardDefId[] => {
-    const counts: Record<CardDefId, number> = {} as Record<CardDefId, number>
-    const next: CardDefId[] = []
-    deck.forEach((id) => {
-      counts[id] = (counts[id] ?? 0) + 1
-      if (counts[id] <= gameSettings.maxCopies) {
-        next.push(id)
-      }
-    })
-    return next
-  }
-  loadouts.p1 = trimDeck(loadouts.p1)
-  loadouts.p2 = trimDeck(loadouts.p2)
+  sanitizeLoadoutsForCurrentClasses()
   updateSeedDisplay()
 }
 
@@ -4150,6 +4348,7 @@ function getSeedPayload(): SeedPayload {
   return {
     settings: { ...gameSettings },
     loadouts: { p1: [...loadouts.p1], p2: [...loadouts.p2] },
+    playerClasses: { ...playerClasses },
   }
 }
 
@@ -4163,12 +4362,12 @@ function applySeed(seed: string): void {
   invalidateBotPlanning()
   const payload = decodeSeed(seed)
   gameSettings = { ...DEFAULT_SETTINGS, ...payload.settings }
+  playerClasses = normalizePlayerClassesInput(payload.playerClasses)
   loadouts = {
     p1: [...(payload.loadouts?.p1 ?? [])],
     p2: [...(payload.loadouts?.p2 ?? [])],
   }
-  resizeDecks(gameSettings.deckSize)
-  enforceMaxCopies()
+  sanitizeLoadoutsForCurrentClasses()
   state = createGameState(gameSettings, loadouts)
   resetLocalTelemetryForCurrentMatch()
   if (isBotControlledMode()) {
@@ -4402,11 +4601,18 @@ function startNextRoguelikeMatch(statusMessage: string): void {
     ...gameSettings,
     strongholdStrength: ROGUELIKE_STARTING_STRONGHOLD_HP,
   }
-  loadouts.p1 = [...roguelikeRun.deck]
+  playerClasses.p1 = roguelikeRun.playerClass
+  loadouts.p1 = sanitizeDeckForCurrentClass([...roguelikeRun.deck], roguelikeRun.playerClass, true)
+  if (loadouts.p1.length === 0) {
+    loadouts.p1 = sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], roguelikeRun.playerClass, true)
+  }
+  roguelikeRun.deck = [...loadouts.p1]
+  const botClass = pickRandomPlayerClass()
+  playerClasses.p2 = botClass
   loadouts.p2 = generateClusteredBotDeck({
     deckSize: ROGUELIKE_OPPONENT_DECK_SIZE,
     maxCopies: settings.maxCopies,
-  })
+  }, { classId: botClass })
 
   state = createGameState(settings, loadouts)
   applyRoguelikeMatchModifiers(state, roguelikeRun)
@@ -4427,7 +4633,7 @@ function startNextRoguelikeMatch(statusMessage: string): void {
 
 function startRoguelikeRun(): void {
   applyPlayMode('roguelike')
-  roguelikeRun = createInitialRoguelikeRunState()
+  roguelikeRun = createInitialRoguelikeRunState(getLoadoutClass(0))
   startNextRoguelikeMatch('Roguelike run started. Match 1 begins.')
   setScreen('game')
 }
@@ -4443,8 +4649,8 @@ function pickWeightedRoguelikeReward(): RoguelikeRandomReward {
   return entries[entries.length - 1][0]
 }
 
-function pickRandomCardOptions(count: number): CardDefId[] {
-  const pool = [...ALL_CARD_IDS]
+function pickRandomCardOptions(count: number, classId: PlayerClassId): CardDefId[] {
+  const pool = [...getCardPoolForClass(classId)]
   for (let i = pool.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1))
     ;[pool[i], pool[j]] = [pool[j], pool[i]]
@@ -4482,7 +4688,7 @@ function chooseRoguelikeRandomReward(): void {
   }
 
   if (reward === 'draft') {
-    roguelikeRun.draftOptions = pickRandomCardOptions(3)
+    roguelikeRun.draftOptions = pickRandomCardOptions(3, roguelikeRun.playerClass)
     roguelikeRun.uiStage = 'draft_pick'
     render()
     return
@@ -4559,14 +4765,14 @@ function renderRoguelikeWinnerModal(): void {
       return
     }
     if (roguelikeRun.uiStage === 'draft_pick' && roguelikeRun.draftOptions.length < 3) {
-      roguelikeRun.draftOptions = pickRandomCardOptions(3)
+      roguelikeRun.draftOptions = pickRandomCardOptions(3, roguelikeRun.playerClass)
     }
     if (roguelikeRun.uiStage === 'remove_pick' && roguelikeRun.deck.length <= 1) {
       roguelikeRun.uiStage = 'reward_choice'
     }
     if (roguelikeRun.uiStage === 'draft_pick') {
       winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Draft 1 card.`
-      winnerNoteEl.textContent = `Commander HP: ${roguelikeRun.strongholdHp}. Pick one card to add before match ${nextMatch}.`
+      winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP: ${roguelikeRun.strongholdHp}. Pick one card to add before match ${nextMatch}.`
       winnerMenuButton.textContent = 'End Run'
       winnerResetButton.classList.add('hidden')
       winnerRematchButton.classList.add('hidden')
@@ -4595,9 +4801,9 @@ function renderRoguelikeWinnerModal(): void {
         .join('')
     } else {
       winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
-      winnerNoteEl.textContent = `Commander HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
+      winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
       winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.textContent = '+10 Commander HP'
+      winnerResetButton.textContent = `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
       winnerRematchButton.classList.remove('hidden')
       winnerRematchButton.textContent = 'Random Reward'
       winnerResetButton.disabled = false
@@ -4687,6 +4893,7 @@ function renderMeta(): void {
 }
 
 function render(): void {
+  applyMatchClassTheme()
   previewState = state.phase === 'planning' ? simulatePlannedState(state, planningPlayer) : null
   const handScroll = handEl.scrollLeft
   const ordersScroll = ordersEl.scrollLeft
@@ -5647,7 +5854,9 @@ menuStartBotButton.addEventListener('click', () => {
     setOnlineStatus('')
   }
   applyPlayMode('bot')
-  loadouts.p2 = generateClusteredBotDeck(gameSettings)
+  const botClass = pickRandomPlayerClass()
+  setLoadoutClass(BOT_PLAYER, botClass)
+  loadouts.p2 = generateClusteredBotDeck(gameSettings, { classId: botClass })
   resetGameState('Select a card to start planning.')
   planningPlayer = BOT_HUMAN_PLAYER
   setScreen('game')
@@ -5761,7 +5970,9 @@ loadoutClearButton.addEventListener('click', () => {
 
 loadoutRandomButton.addEventListener('click', () => {
   const targetPlayer: PlayerId = mode === 'online' ? 0 : loadoutPlayer
-  const randomizedDeck = generateClusteredBotDeck(gameSettings)
+  const randomClass = pickRandomPlayerClass()
+  setLoadoutClass(targetPlayer, randomClass)
+  const randomizedDeck = generateClusteredBotDeck(gameSettings, { classId: randomClass })
   if (targetPlayer === 0) {
     loadouts.p1 = randomizedDeck
   } else {
@@ -5777,6 +5988,18 @@ loadoutFilterToggleButton.addEventListener('click', () => {
 
 loadoutSort.addEventListener('change', () => {
   loadoutSortMode = (loadoutSort.value as 'type' | 'name') ?? 'type'
+  renderLoadout()
+})
+
+loadoutClassSelect.addEventListener('change', () => {
+  if (mode === 'online') return
+  const nextClass = normalizePlayerClassInput(loadoutClassSelect.value, getLoadoutClass(loadoutPlayer))
+  setLoadoutClass(loadoutPlayer, nextClass)
+  if (loadoutPlayer === 0) {
+    loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, nextClass, true)
+  } else {
+    loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, nextClass, true)
+  }
   renderLoadout()
 })
 
@@ -5931,7 +6154,7 @@ winnerResetButton.addEventListener('click', () => {
     if (state.winner === BOT_HUMAN_PLAYER) {
       if (roguelikeRun.uiStage !== 'reward_choice') return
       roguelikeRun.strongholdHp += 10
-      showRoguelikeRewardNotice('Reward gained: +10 commander HP.')
+      showRoguelikeRewardNotice(`Reward gained: +10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP.`)
       return
     }
     startRoguelikeRun()
@@ -5971,6 +6194,7 @@ winnerExtraEl.addEventListener('click', (event) => {
 
   if (action === 'draft' && roguelikeRun.uiStage === 'draft_pick') {
     if (!roguelikeRun.draftOptions.includes(cardId)) return
+    if (!isCardAllowedForClass(cardId, roguelikeRun.playerClass)) return
     roguelikeRun.deck.push(cardId)
     startRoguelikeMatchAfterReward(`Reward gained: added ${CARD_DEFS[cardId].name}.`)
     return
