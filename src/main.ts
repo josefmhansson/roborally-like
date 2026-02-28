@@ -472,6 +472,7 @@ type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
 type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
+type AdjacentStrikeAnimation = { type: 'adjacentStrike'; origin: Hex; duration: number }
 type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
 type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
@@ -508,6 +509,7 @@ type BoardAnimation =
   | LightningAnimation
   | BurnAnimation
   | ExecuteAnimation
+  | AdjacentStrikeAnimation
   | TrapTriggerAnimation
   | MeteorAnimation
   | ArrowAnimation
@@ -524,6 +526,7 @@ const DEATH_DURATION_MS = 260
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
 const EXECUTE_DURATION_MS = 360
+const ADJACENT_STRIKE_DURATION_MS = 220
 const TRAP_TRIGGER_DURATION_MS = 320
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
 const METEOR_DURATION_MS = 1600
@@ -3221,6 +3224,53 @@ function drawExecuteAnimation(target: Hex, progress: number): void {
   ctx.restore()
 }
 
+function drawAdjacentStrikeAnimation(origin: Hex, progress: number): void {
+  const center = projectHex(origin)
+  const pulse = Math.sin(progress * Math.PI)
+  const alpha = 0.35 + pulse * 0.65
+  const radius = layout.size * (0.36 + pulse * 0.18)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = alpha
+
+  for (let direction = 0 as Direction; direction < 6; direction += 1) {
+    const targetCenter = projectHex(neighbor(origin, direction))
+    const dx = targetCenter.x - center.x
+    const dy = targetCenter.y - center.y
+    const length = Math.hypot(dx, dy)
+    if (length <= 0.001) continue
+    const nx = dx / length
+    const ny = dy / length
+    const start = {
+      x: center.x + nx * (layout.size * 0.32),
+      y: center.y + ny * (layout.size * 0.32),
+    }
+    const end = {
+      x: start.x + nx * radius,
+      y: start.y + ny * radius,
+    }
+
+    ctx.strokeStyle = 'rgba(255, 235, 190, 0.95)'
+    ctx.lineWidth = Math.max(1.6, layout.size * 0.07)
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(end.x, end.y)
+    ctx.stroke()
+  }
+
+  const ring = ctx.createRadialGradient(center.x, center.y, radius * 0.3, center.x, center.y, radius * 1.2)
+  ring.addColorStop(0, 'rgba(255, 255, 230, 0.85)')
+  ring.addColorStop(0.6, 'rgba(255, 170, 90, 0.65)')
+  ring.addColorStop(1, 'rgba(255, 80, 40, 0)')
+  ctx.fillStyle = ring
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, radius * 1.1, radius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
 function drawTrapTriggerAnimation(animation: TrapTriggerAnimation, progress: number): void {
   const center = projectHex(animation.target)
   const t = easeInOutCubic(progress)
@@ -3713,6 +3763,10 @@ function drawBoard(): void {
     drawExecuteAnimation(currentAnimation.target, animationProgress)
   }
 
+  if (currentAnimation?.type === 'adjacentStrike') {
+    drawAdjacentStrikeAnimation(currentAnimation.origin, animationProgress)
+  }
+
   if (currentAnimation?.type === 'trapTrigger') {
     drawTrapTriggerAnimation(currentAnimation, animationProgress)
   }
@@ -3819,10 +3873,7 @@ function drawSelectableHighlights(): void {
 
   const isUnitStep = nextStep === 'unit' || nextStep === 'unit2'
   const isDirectionStep = nextStep === 'direction' || nextStep === 'moveDirection' || nextStep === 'faceDirection'
-  const useDirectionArrows =
-    isDirectionStep &&
-    !(defId === 'move_forward_face' && nextStep === 'moveDirection') &&
-    defId !== 'attack_blade_dance'
+  const useDirectionArrows = isDirectionStep
   const stroke = isUnitStep ? '#ffe66a' : '#7bd8ff'
   const lineWidth = 2.2
 
@@ -5679,18 +5730,34 @@ function parseUnitPositionUpdates(logEntries: string[]): Map<string, Hex> {
   return updates
 }
 
-function parseUnitMoveEvents(logEntries: string[]): Map<string, Hex[]> {
-  const events = new Map<string, Hex[]>()
-  logEntries.forEach((entry) => {
+function parseUnitMoveEvents(logEntries: string[]): Map<string, { index: number; pos: Hex }[]> {
+  const events = new Map<string, { index: number; pos: Hex }[]>()
+  logEntries.forEach((entry, index) => {
     const match = entry.match(/^Unit (.+) moves to (-?\d+),(-?\d+)\.$/)
     if (!match) return
     const unitId = match[1]
-    const tile = { q: Number(match[2]), r: Number(match[3]) }
+    const tile = { index, pos: { q: Number(match[2]), r: Number(match[3]) } }
     const queue = events.get(unitId) ?? []
     queue.push(tile)
     events.set(unitId, queue)
   })
   return events
+}
+
+function parseDestroyedUnits(logEntries: string[]): { index: number; unitId: string }[] {
+  const destroyed: { index: number; unitId: string }[] = []
+  logEntries.forEach((entry, index) => {
+    const destroyedMatch = entry.match(/^Unit (.+) is destroyed\.$/)
+    if (destroyedMatch) {
+      destroyed.push({ index, unitId: destroyedMatch[1] })
+      return
+    }
+    const executedMatch = entry.match(/^Unit (.+) is executed\.$/)
+    if (executedMatch) {
+      destroyed.push({ index, unitId: executedMatch[1] })
+    }
+  })
+  return destroyed
 }
 
 function parseTrapTriggers(logEntries: string[]): { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] {
@@ -5727,14 +5794,45 @@ function buildAnimations(
   const animations: BoardAnimation[] = []
   const loggedPositions = parseUnitPositionUpdates(logEntries)
   const loggedMoveEvents = parseUnitMoveEvents(logEntries)
+  const destroyedEvents = parseDestroyedUnits(logEntries)
   const trapTriggers = parseTrapTriggers(logEntries)
   const animatedPositions = new Map<string, Hex>()
+  const destroyedAnimated = new Set<string>()
+  let destroyedCursor = 0
 
-  const consumeLoggedMove = (unitId: string): Hex | null => {
+  const consumeLoggedMove = (unitId: string): { index: number; pos: Hex } | null => {
     const queue = loggedMoveEvents.get(unitId)
     if (!queue || queue.length === 0) return null
     const [next] = queue.splice(0, 1)
     return next
+  }
+
+  const enqueueDestroyedUpTo = (maxLogIndex: number): void => {
+    while (destroyedCursor < destroyedEvents.length && destroyedEvents[destroyedCursor].index <= maxLogIndex) {
+      const event = destroyedEvents[destroyedCursor]
+      destroyedCursor += 1
+      if (destroyedAnimated.has(event.unitId)) continue
+      if (state.units[event.unitId]) continue
+      const snapshot = before[event.unitId]
+      if (!snapshot) continue
+      const deathPos = animatedPositions.get(event.unitId) ?? loggedPositions.get(event.unitId) ?? snapshot.pos
+      pendingDeathUnits.set(event.unitId, {
+        id: event.unitId,
+        owner: snapshot.owner,
+        kind: snapshot.kind,
+        strength: snapshot.strength,
+        pos: { ...deathPos },
+        facing: snapshot.facing,
+        modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
+      })
+      deathAlphaOverrides.set(event.unitId, 1)
+      animations.push({
+        type: 'death',
+        unit: pendingDeathUnits.get(event.unitId)!,
+        duration: DEATH_DURATION_MS,
+      })
+      destroyedAnimated.add(event.unitId)
+    }
   }
 
   for (const effect of def.effects) {
@@ -5763,7 +5861,11 @@ function buildAnimations(
       if (!resolvedId) continue
       const beforeUnit = before[resolvedId]
       const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
-      const destination = consumeLoggedMove(resolvedId) ?? loggedPositions.get(resolvedId)
+      const consumedMove = consumeLoggedMove(resolvedId)
+      if (consumedMove) {
+        enqueueDestroyedUpTo(consumedMove.index - 1)
+      }
+      const destination = consumedMove?.pos ?? loggedPositions.get(resolvedId)
       if (!from || !destination) continue
       if (from.q === destination.q && from.r === destination.r) continue
       animations.push({
@@ -5781,7 +5883,11 @@ function buildAnimations(
       if (!resolvedId) continue
       const beforeUnit = before[resolvedId]
       const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
-      const destination = consumeLoggedMove(resolvedId) ?? getOrderTileParam(order.params, effect.tileParam)
+      const consumedMove = consumeLoggedMove(resolvedId)
+      if (consumedMove) {
+        enqueueDestroyedUpTo(consumedMove.index - 1)
+      }
+      const destination = consumedMove?.pos ?? getOrderTileParam(order.params, effect.tileParam)
       if (!from || !destination) continue
       if (from.q === destination.q && from.r === destination.r) continue
       animations.push({
@@ -5806,6 +5912,18 @@ function buildAnimations(
         type: 'execute',
         target: { ...target.pos },
         duration: EXECUTE_DURATION_MS,
+      })
+    }
+
+    if (effect.type === 'damageAdjacent') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const origin = animatedPositions.get(resolvedId) ?? before[resolvedId]?.pos ?? state.units[resolvedId]?.pos
+      if (!origin) continue
+      animations.push({
+        type: 'adjacentStrike',
+        origin: { ...origin },
+        duration: ADJACENT_STRIKE_DURATION_MS,
       })
     }
 
@@ -6052,25 +6170,7 @@ function buildAnimations(
     })
   })
 
-  Object.entries(before).forEach(([unitId, unit]) => {
-    if (state.units[unitId]) return
-    const deathPos = loggedPositions.get(unitId) ?? unit.pos
-    pendingDeathUnits.set(unitId, {
-      id: unitId,
-      owner: unit.owner,
-      kind: unit.kind,
-      strength: unit.strength,
-      pos: { ...deathPos },
-      facing: unit.facing,
-      modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
-    })
-    deathAlphaOverrides.set(unitId, 1)
-    animations.push({
-      type: 'death',
-      unit: pendingDeathUnits.get(unitId)!,
-      duration: DEATH_DURATION_MS,
-    })
-  })
+  enqueueDestroyedUpTo(Number.MAX_SAFE_INTEGER)
 
   return animations
 }
@@ -6360,10 +6460,6 @@ function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionSte
     if (params.tile.q === params.tile2.q && params.tile.r === params.tile2.r) return 'tile2'
   }
   if (defId === 'reinforce_spawn' && params.tile && params.direction === undefined) return 'direction'
-  if (defId === 'move_forward_face') {
-    if (params.moveDirection === undefined) return 'moveDirection'
-    if (params.faceDirection === undefined) return 'faceDirection'
-  }
   if (defId === 'attack_fwd' && params.direction === undefined) return 'direction'
   const moveSemantics = deriveMoveSemantics(defId)
   if (moveSemantics?.directionSource !== 'facing' && moveSemantics?.distanceSource.type === 'param') {
@@ -6440,38 +6536,34 @@ function getTeleportSelectionTargets(
     })
 }
 
-function getBladeDanceSelectionTargets(
+type TileSelectionParam = 'tile' | 'tile2' | 'tile3'
+
+function getMoveToTileSelectionTargets(
   snapshot: GameState,
+  defId: CardDefId,
   params: OrderParams,
   player: PlayerId,
-  step: 'tile' | 'tile2' | 'tile3'
-): Hex[] {
-  const actorId = params.unitId
-  if (!actorId) return []
-  const actor = getUnitSnapshot(snapshot, actorId, player)
-  if (!actor) return []
-  const actorUnit = snapshot.units[actorId]
-  if (
-    actorUnit &&
-    actorUnit.modifiers.some(
-      (modifier) => modifier.type === 'cannotMove' && (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
-    )
-  ) {
-    return []
-  }
-
-  const base = step === 'tile' ? actor.pos : step === 'tile2' ? params.tile : params.tile2
-  if (!base) return []
-  const occupiedByOthers = new Set(
-    Object.values(snapshot.units)
-      .filter((unit) => unit.id !== actorId)
-      .map((unit) => `${unit.pos.q},${unit.pos.r}`)
+  step: TileSelectionParam
+): Hex[] | null {
+  const moveToTileEffects = CARD_DEFS[defId].effects.filter(
+    (effect): effect is Extract<CardEffect, { type: 'moveToTile' }> =>
+      effect.type === 'moveToTile' && effect.unitParam === 'unitId'
   )
+  const stepIndex = moveToTileEffects.findIndex((effect) => effect.tileParam === step)
+  if (stepIndex === -1) return null
 
-  return DIRECTIONS.map((_, index) => neighbor(base, index as Direction)).filter((hex) => {
-    if (!isTile(hex)) return false
-    return !occupiedByOthers.has(`${hex.q},${hex.r}`)
-  })
+  const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
+  if (!unitSnapshot) return []
+  const base = stepIndex === 0 ? unitSnapshot.pos : getOrderTileParam(params, moveToTileEffects[stepIndex - 1].tileParam)
+  if (!base) return []
+
+  const maxDistance = moveToTileEffects[stepIndex].maxDistance
+  return snapshot.tiles
+    .map((tile) => ({ q: tile.q, r: tile.r }))
+    .filter((tile) => {
+      if (tile.q === base.q && tile.r === base.r) return false
+      return hexDistance(base, tile) <= maxDistance
+    })
 }
 
 function getSelectableHexes(
@@ -6509,9 +6601,8 @@ function getSelectableHexes(
   }
 
   if (step === 'tile') {
-    if (defId === 'attack_blade_dance') {
-      return getBladeDanceSelectionTargets(snapshot, params, player, 'tile')
-    }
+    const chainedMoveTargets = getMoveToTileSelectionTargets(snapshot, defId, params, player, 'tile')
+    if (chainedMoveTargets) return chainedMoveTargets
     if (CARD_DEFS[defId].requires.tile === 'any') {
       if (defId === 'move_teleport') {
         return getTeleportSelectionTargets(snapshot, params, player, 3)
@@ -6525,9 +6616,8 @@ function getSelectableHexes(
   }
 
   if (step === 'tile2') {
-    if (defId === 'attack_blade_dance') {
-      return getBladeDanceSelectionTargets(snapshot, params, player, 'tile2')
-    }
+    const chainedMoveTargets = getMoveToTileSelectionTargets(snapshot, defId, params, player, 'tile2')
+    if (chainedMoveTargets) return chainedMoveTargets
     if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
       const blocked = params.tile
       return getBarricadeSpawnTiles(snapshot, player).filter((hex) =>
@@ -6541,9 +6631,8 @@ function getSelectableHexes(
   }
 
   if (step === 'tile3') {
-    if (defId === 'attack_blade_dance') {
-      return getBladeDanceSelectionTargets(snapshot, params, player, 'tile3')
-    }
+    const chainedMoveTargets = getMoveToTileSelectionTargets(snapshot, defId, params, player, 'tile3')
+    if (chainedMoveTargets) return chainedMoveTargets
     if (CARD_DEFS[defId].requires.tile3 === 'any') {
       return snapshot.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
     }
@@ -6575,33 +6664,28 @@ function getDirectionBase(
   if (defId === 'reinforce_battlefield_recruitment' && params.tile) return params.tile
   const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
   if (!unitSnapshot) return null
-  if (defId === 'move_forward_face' && step === 'faceDirection') {
-    return projectChainedDirectionBase(unitSnapshot.pos, params, ['moveDirection'])
-  }
-  if (defId === 'attack_blade_dance') {
-    if (step === 'moveDirection') {
-      return projectChainedDirectionBase(unitSnapshot.pos, params, ['direction'])
-    }
-    if (step === 'faceDirection') {
-      return projectChainedDirectionBase(unitSnapshot.pos, params, ['direction', 'moveDirection'])
+
+  const directionParam = step === 'faceDirection' ? 'faceDirection' : step === 'moveDirection' ? 'moveDirection' : 'direction'
+  const faceIndex = CARD_DEFS[defId].effects.findIndex(
+    (effect) =>
+      effect.type === 'face' &&
+      effect.unitParam === 'unitId' &&
+      effect.directionParam === directionParam
+  )
+  if (faceIndex !== -1) {
+    for (let i = faceIndex - 1; i >= 0; i -= 1) {
+      const effect = CARD_DEFS[defId].effects[i]
+      if (effect.type === 'moveToTile' && effect.unitParam === 'unitId') {
+        const tile = getOrderTileParam(params, effect.tileParam)
+        if (tile) return tile
+      }
+      if (effect.type === 'teleport' && effect.unitParam === 'unitId') {
+        const tile = getOrderTileParam(params, effect.tileParam)
+        if (tile) return tile
+      }
     }
   }
   return unitSnapshot.pos
-}
-
-function projectChainedDirectionBase(
-  base: Hex,
-  params: OrderParams,
-  keys: ('direction' | 'moveDirection' | 'faceDirection')[]
-): Hex | null {
-  let current = { ...base }
-  for (const key of keys) {
-    const direction = params[key]
-    if (direction === undefined) return null
-    current = stepInDirection(current, direction, 1)
-    if (!isTile(current)) return null
-  }
-  return current
 }
 
 function stepInDirection(base: Hex, direction: Direction, distance: number): Hex {
@@ -6781,15 +6865,15 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'tile') {
-    if (defId === 'attack_blade_dance') {
-      const validTiles = getBladeDanceSelectionTargets(selectionState, activeOrder.params, planningPlayer, 'tile')
-      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+    const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile')
+    if (chainedMoveTargets) {
+      if (chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile = hex
         delete activeOrder.params.tile2
         delete activeOrder.params.tile3
-        statusEl.textContent = 'First Blade Dance step selected.'
+        statusEl.textContent = 'Move target selected.'
       } else {
-        statusEl.textContent = 'Select an adjacent open tile.'
+        statusEl.textContent = 'Select a highlighted move target.'
       }
     } else {
       const tileRequirement = CARD_DEFS[defId].requires.tile
@@ -6820,14 +6904,14 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'tile2') {
-    if (defId === 'attack_blade_dance') {
-      const validTiles = getBladeDanceSelectionTargets(selectionState, activeOrder.params, planningPlayer, 'tile2')
-      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+    const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile2')
+    if (chainedMoveTargets) {
+      if (chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile2 = hex
         delete activeOrder.params.tile3
-        statusEl.textContent = 'Second Blade Dance step selected.'
+        statusEl.textContent = 'Second move target selected.'
       } else {
-        statusEl.textContent = 'Select an adjacent open tile for step 2.'
+        statusEl.textContent = 'Select a highlighted second move target.'
       }
     } else if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
       const validTiles = getBarricadeSpawnTiles(selectionState, planningPlayer)
@@ -6851,13 +6935,13 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'tile3') {
-    if (defId === 'attack_blade_dance') {
-      const validTiles = getBladeDanceSelectionTargets(selectionState, activeOrder.params, planningPlayer, 'tile3')
-      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+    const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile3')
+    if (chainedMoveTargets) {
+      if (chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile3 = hex
-        statusEl.textContent = 'Third Blade Dance step selected.'
+        statusEl.textContent = 'Third move target selected.'
       } else {
-        statusEl.textContent = 'Select an adjacent open tile for step 3.'
+        statusEl.textContent = 'Select a highlighted third move target.'
       }
     } else if (CARD_DEFS[defId].requires.tile3 === 'any') {
       const validTiles = selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))

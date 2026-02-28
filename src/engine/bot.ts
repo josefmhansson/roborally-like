@@ -323,15 +323,14 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
   if (defId === 'move_forward_face') {
     const params: OrderParams[] = []
     refs.forEach((ref) => {
-      DIRECTIONS.forEach((moveDirection) => {
-        const end = projectMoveEnd(projected, ref.snapshot, moveDirection, 1)
-        const moved = end.q !== ref.snapshot.pos.q || end.r !== ref.snapshot.pos.r
+      DIRECTIONS.forEach((direction) => {
+        const destination = neighbor(ref.snapshot.pos, direction)
+        if (!inBounds(projected, destination)) return
         DIRECTIONS.forEach((faceDirection) => {
-          if (!moved && faceDirection === ref.snapshot.facing) return
           params.push({
             unitId: ref.refId,
-            moveDirection,
-            faceDirection,
+            tile: { ...destination },
+            direction: faceDirection,
           })
         })
       })
@@ -388,23 +387,17 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   const params: OrderParams[] = []
   if (defId === 'attack_blade_dance') {
     refs.forEach((ref) => {
-      const keyOf = (hex: Hex): string => `${hex.q},${hex.r}`
-      const occupiedByOthers = new Set(
-        Object.values(projected.units)
-          .filter((unit) => unit.id !== ref.snapshot.id)
-          .map((unit) => keyOf(unit.pos))
-      )
       const firstTargets = DIRECTIONS.map((direction) => neighbor(ref.snapshot.pos, direction)).filter(
-        (tile) => inBounds(projected, tile) && !occupiedByOthers.has(keyOf(tile))
+        (tile) => inBounds(projected, tile)
       )
 
       firstTargets.forEach((first) => {
         const secondTargets = DIRECTIONS.map((direction) => neighbor(first, direction)).filter(
-          (tile) => inBounds(projected, tile) && !occupiedByOthers.has(keyOf(tile))
+          (tile) => inBounds(projected, tile)
         )
         secondTargets.forEach((second) => {
           const thirdTargets = DIRECTIONS.map((direction) => neighbor(second, direction)).filter(
-            (tile) => inBounds(projected, tile) && !occupiedByOthers.has(keyOf(tile))
+            (tile) => inBounds(projected, tile)
           )
           thirdTargets.forEach((third) => {
             params.push({
@@ -422,7 +415,6 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
 
   if (
     defId === 'attack_fwd' ||
-    defId === 'attack_charge' ||
     defId === 'attack_jab' ||
     defId === 'attack_shove' ||
     defId === 'attack_disarm' ||
@@ -431,6 +423,18 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
         params.push({ unitId: ref.refId, direction })
+      })
+    })
+    return params
+  }
+
+  if (defId === 'attack_charge') {
+    const distances = CARD_DEFS[defId].requires.distanceOptions ?? [1, 2, 3, 4, 5]
+    refs.forEach((ref) => {
+      DIRECTIONS.forEach((direction) => {
+        distances.forEach((distance) => {
+          params.push({ unitId: ref.refId, direction, distance })
+        })
       })
     })
     return params

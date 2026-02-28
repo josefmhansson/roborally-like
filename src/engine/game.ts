@@ -1457,12 +1457,8 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       const allowedRange = getAllowedMoveDistance(unit, effect.maxDistance)
       const distance = hexDistance(origin, destination)
       if (direction === null || distance <= 0 || distance > allowedRange) return false
-      const occupiedByOther = Object.values(state.units).some((candidate) => {
-        if (candidate.id === resolved) return false
-        const candidatePos = getVirtualPosition(candidate.id)
-        return Boolean(candidatePos && sameHex(candidatePos, destination))
-      })
-      if (occupiedByOther) return false
+      // moveToTile targets are intent-based: allow selecting occupied tiles and
+      // let execution resolve whether the move can actually complete.
       virtualPositions.set(resolved, { ...destination })
       continue
     }

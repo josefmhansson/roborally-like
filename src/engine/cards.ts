@@ -233,18 +233,18 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     name: 'Step',
     description: 'Move 1 step in any direction, then face any direction.',
     type: 'movement',
-    requires: { unit: 'friendly', moveDirection: true, faceDirection: true },
+    requires: { unit: 'friendly', tile: 'any', direction: true },
     effects: [
       {
-        type: 'move',
+        type: 'moveToTile',
         unitParam: 'unitId',
-        direction: { type: 'param', key: 'moveDirection' },
-        distance: 1,
+        tileParam: 'tile',
+        maxDistance: 1,
       },
       {
         type: 'face',
         unitParam: 'unitId',
-        directionParam: 'faceDirection',
+        directionParam: 'direction',
       },
     ],
   },
@@ -529,12 +529,12 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   attack_charge: {
     id: 'attack_charge',
     name: 'Charge',
-    description: 'Face a direction, move up to 4 tiles, then deal 2 damage to the tile in front.',
+    description: 'Face a direction, move up to 5 tiles, then deal 2 damage to the tile in front.',
     type: 'attack',
     countsAs: ['movement'],
     classId: 'warleader',
     actionCost: 2,
-    requires: { unit: 'friendly', direction: true },
+    requires: { unit: 'friendly', distanceOptions: [1, 2, 3, 4, 5] },
     effects: [
       {
         type: 'face',
@@ -545,7 +545,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'move',
         unitParam: 'unitId',
         direction: { type: 'param', key: 'direction' },
-        distance: 4,
+        distance: { type: 'param', key: 'distance' },
       },
       {
         type: 'attack',
