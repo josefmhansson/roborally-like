@@ -460,6 +460,11 @@ type UnitSnapshot = {
   modifiers: Unit['modifiers']
 }
 type MoveAnimation = { type: 'move'; unitId: string; from: Hex; to: Hex; duration: number }
+type TeamMoveAnimation = {
+  type: 'teamMove'
+  moves: { unitId: string; from: Hex; to: Hex }[]
+  duration: number
+}
 type LungeAnimation = { type: 'lunge'; unitId: string; from: Hex; dir: Direction; duration: number }
 type TeamLungeAnimation = {
   type: 'teamLunge'
@@ -471,7 +476,7 @@ type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
-type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
+type ExecuteAnimation = { type: 'execute'; target: Hex; facing: Direction; duration: number }
 type AdjacentStrikeAnimation = { type: 'adjacentStrike'; origin: Hex; duration: number }
 type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
@@ -501,6 +506,7 @@ type HarpoonAnimation = {
 type DeathRayAnimation = { type: 'deathRay'; from: Hex; targets: Hex[]; duration: number }
 type BoardAnimation =
   | MoveAnimation
+  | TeamMoveAnimation
   | LungeAnimation
   | TeamLungeAnimation
   | SpawnAnimation
@@ -2736,6 +2742,17 @@ function getAnimatedCenter(unit: Unit): { x: number; y: number } {
     }
   }
 
+  if (currentAnimation.type === 'teamMove') {
+    const move = currentAnimation.moves.find((entry) => entry.unitId === unit.id)
+    if (!move) return projectHex(unit.pos)
+    const from = projectHex(move.from)
+    const to = projectHex(move.to)
+    return {
+      x: from.x + (to.x - from.x) * t,
+      y: from.y + (to.y - from.y) * t,
+    }
+  }
+
   if (currentAnimation.type === 'lunge' && currentAnimation.unitId === unit.id) {
     const base = projectHex(currentAnimation.from)
     const neighborHex = neighbor(currentAnimation.from, currentAnimation.dir)
@@ -3191,8 +3208,13 @@ function drawBurnDamageAnimation(target: Hex, progress: number): void {
   ctx.restore()
 }
 
-function drawExecuteAnimation(target: Hex, progress: number): void {
+function drawExecuteAnimation(target: Hex, facing: Direction, progress: number): void {
   const center = projectHex(target)
+  const front = projectHex(neighbor(target, facing))
+  const focus = {
+    x: center.x + (front.x - center.x) * 0.28,
+    y: center.y + (front.y - center.y) * 0.28,
+  }
   const pulse = Math.sin(progress * Math.PI)
   const alpha = 0.35 + pulse * 0.65
   const size = layout.size * (0.3 + pulse * 0.2)
@@ -3206,20 +3228,20 @@ function drawExecuteAnimation(target: Hex, progress: number): void {
   ctx.lineCap = 'round'
 
   ctx.beginPath()
-  ctx.moveTo(center.x - size, center.y - size * BOARD_TILT)
-  ctx.lineTo(center.x + size, center.y + size * BOARD_TILT)
-  ctx.moveTo(center.x + size, center.y - size * BOARD_TILT)
-  ctx.lineTo(center.x - size, center.y + size * BOARD_TILT)
+  ctx.moveTo(focus.x - size, focus.y - size * BOARD_TILT)
+  ctx.lineTo(focus.x + size, focus.y + size * BOARD_TILT)
+  ctx.moveTo(focus.x + size, focus.y - size * BOARD_TILT)
+  ctx.lineTo(focus.x - size, focus.y + size * BOARD_TILT)
   ctx.stroke()
 
   const glowRadius = size * 1.6
-  const glow = ctx.createRadialGradient(center.x, center.y, glowRadius * 0.2, center.x, center.y, glowRadius)
+  const glow = ctx.createRadialGradient(focus.x, focus.y, glowRadius * 0.2, focus.x, focus.y, glowRadius)
   glow.addColorStop(0, 'rgba(255, 220, 220, 0.9)')
   glow.addColorStop(0.55, 'rgba(255, 90, 90, 0.75)')
   glow.addColorStop(1, 'rgba(255, 0, 0, 0)')
   ctx.fillStyle = glow
   ctx.beginPath()
-  ctx.ellipse(center.x, center.y, glowRadius, glowRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.ellipse(focus.x, focus.y, glowRadius, glowRadius * BOARD_TILT, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 }
@@ -3760,7 +3782,7 @@ function drawBoard(): void {
   }
 
   if (currentAnimation?.type === 'execute') {
-    drawExecuteAnimation(currentAnimation.target, animationProgress)
+    drawExecuteAnimation(currentAnimation.target, currentAnimation.facing, animationProgress)
   }
 
   if (currentAnimation?.type === 'adjacentStrike') {
@@ -5697,6 +5719,14 @@ function findAllUnitsInLine(before: Record<string, UnitSnapshot>, origin: Hex, d
   return targets
 }
 
+function getDirectionToNeighbor(from: Hex, to: Hex): Direction | null {
+  for (let direction = 0 as Direction; direction < 6; direction += 1) {
+    const candidate = neighbor(from, direction)
+    if (candidate.q === to.q && candidate.r === to.r) return direction
+  }
+  return null
+}
+
 function parseChainLightningPath(logEntries: string[]): string[] {
   const entry = logEntries.find((line) => line.startsWith('Chain lightning path: '))
   if (!entry) return []
@@ -5785,6 +5815,20 @@ function parseBurnDamageTargets(logEntries: string[]): string[] {
   return targets
 }
 
+function parseDamageEvents(logEntries: string[]): { index: number; unitId: string; amount: number }[] {
+  const events: { index: number; unitId: string; amount: number }[] = []
+  logEntries.forEach((entry, index) => {
+    const match = entry.match(/^Unit (.+) takes (\d+) damage\.$/)
+    if (!match) return
+    events.push({
+      index,
+      unitId: match[1],
+      amount: Number(match[2]),
+    })
+  })
+  return events
+}
+
 function buildAnimations(
   order: GameState['actionQueue'][number],
   before: Record<string, UnitSnapshot>,
@@ -5794,11 +5838,13 @@ function buildAnimations(
   const animations: BoardAnimation[] = []
   const loggedPositions = parseUnitPositionUpdates(logEntries)
   const loggedMoveEvents = parseUnitMoveEvents(logEntries)
+  const damageEvents = parseDamageEvents(logEntries)
   const destroyedEvents = parseDestroyedUnits(logEntries)
   const trapTriggers = parseTrapTriggers(logEntries)
   const animatedPositions = new Map<string, Hex>()
   const destroyedAnimated = new Set<string>()
   let destroyedCursor = 0
+  let lastConsumedLogIndex = -1
 
   const consumeLoggedMove = (unitId: string): { index: number; pos: Hex } | null => {
     const queue = loggedMoveEvents.get(unitId)
@@ -5859,11 +5905,15 @@ function buildAnimations(
     if (effect.type === 'move') {
       const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
       if (!resolvedId) continue
+      if (order.defId === 'move_tandem') {
+        continue
+      }
       const beforeUnit = before[resolvedId]
       const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
       const consumedMove = consumeLoggedMove(resolvedId)
       if (consumedMove) {
         enqueueDestroyedUpTo(consumedMove.index - 1)
+        lastConsumedLogIndex = Math.max(lastConsumedLogIndex, consumedMove.index)
       }
       const destination = consumedMove?.pos ?? loggedPositions.get(resolvedId)
       if (!from || !destination) continue
@@ -5878,26 +5928,36 @@ function buildAnimations(
       animatedPositions.set(resolvedId, { ...destination })
     }
 
-    if (effect.type === 'moveToTile') {
-      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
-      if (!resolvedId) continue
-      const beforeUnit = before[resolvedId]
-      const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
-      const consumedMove = consumeLoggedMove(resolvedId)
-      if (consumedMove) {
-        enqueueDestroyedUpTo(consumedMove.index - 1)
-      }
-      const destination = consumedMove?.pos ?? getOrderTileParam(order.params, effect.tileParam)
-      if (!from || !destination) continue
-      if (from.q === destination.q && from.r === destination.r) continue
-      animations.push({
-        type: 'move',
-        unitId: resolvedId,
-        from: { ...from },
-        to: { ...destination },
-        duration: MOVE_DURATION_MS,
+    if (effect.type === 'moveAdjacentFriendlyGroup' && order.defId === 'move_tandem') {
+      const formationMoves: Array<{ unitId: string; from: Hex; to: Hex; index: number }> = []
+      loggedMoveEvents.forEach((entries, unitId) => {
+        if (entries.length === 0) return
+        const beforeUnit = before[unitId]
+        if (!beforeUnit) return
+        const [firstMove] = entries.splice(0, 1)
+        if (!firstMove) return
+        if (beforeUnit.pos.q === firstMove.pos.q && beforeUnit.pos.r === firstMove.pos.r) return
+        formationMoves.push({
+          unitId,
+          from: { ...beforeUnit.pos },
+          to: { ...firstMove.pos },
+          index: firstMove.index,
+        })
       })
-      animatedPositions.set(resolvedId, { ...destination })
+      formationMoves.sort((a, b) => a.index - b.index)
+      if (formationMoves.length > 0) {
+        enqueueDestroyedUpTo(formationMoves[0].index - 1)
+        lastConsumedLogIndex = Math.max(lastConsumedLogIndex, formationMoves[formationMoves.length - 1].index)
+        animations.push({
+          type: 'teamMove',
+          moves: formationMoves.map((move) => ({ unitId: move.unitId, from: move.from, to: move.to })),
+          duration: MOVE_DURATION_MS,
+        })
+        formationMoves.forEach((move) => {
+          animatedPositions.set(move.unitId, { ...move.to })
+        })
+      }
+      continue
     }
 
     if (effect.type === 'executeForward') {
@@ -5911,6 +5971,7 @@ function buildAnimations(
       animations.push({
         type: 'execute',
         target: { ...target.pos },
+        facing: target.facing,
         duration: EXECUTE_DURATION_MS,
       })
     }
@@ -5920,6 +5981,45 @@ function buildAnimations(
       if (!resolvedId) continue
       const origin = animatedPositions.get(resolvedId) ?? before[resolvedId]?.pos ?? state.units[resolvedId]?.pos
       if (!origin) continue
+      if (order.defId === 'attack_blade_dance') {
+        const nextMoveIndex = (() => {
+          const queue = loggedMoveEvents.get(resolvedId)
+          if (!queue || queue.length === 0) return Number.MAX_SAFE_INTEGER
+          return queue[0].index
+        })()
+        const hitTargets = damageEvents
+          .filter(
+            (event) =>
+              event.index > lastConsumedLogIndex &&
+              event.index < nextMoveIndex &&
+              event.amount > 0
+          )
+          .map((event) => event.unitId)
+          .filter((unitId, index, all) => all.indexOf(unitId) === index)
+        hitTargets.forEach((targetId) => {
+          const targetPos =
+            animatedPositions.get(targetId) ??
+            loggedPositions.get(targetId) ??
+            state.units[targetId]?.pos ??
+            before[targetId]?.pos
+          if (!targetPos) return
+          const dir = getDirectionToNeighbor(origin, targetPos)
+          if (dir === null) return
+          animations.push({
+            type: 'lunge',
+            unitId: resolvedId,
+            from: { ...origin },
+            dir,
+            duration: LUNGE_DURATION_MS,
+          })
+        })
+        if (nextMoveIndex !== Number.MAX_SAFE_INTEGER) {
+          lastConsumedLogIndex = Math.max(lastConsumedLogIndex, nextMoveIndex - 1)
+        } else {
+          lastConsumedLogIndex = logEntries.length
+        }
+        continue
+      }
       animations.push({
         type: 'adjacentStrike',
         origin: { ...origin },
@@ -6098,6 +6198,20 @@ function buildAnimations(
       }
     }
 
+    if (effect.type === 'boostAllFriendly') {
+      Object.values(before).forEach((beforeUnit) => {
+        if (beforeUnit.owner !== order.player) return
+        const afterUnit = state.units[beforeUnit.id]
+        if (!afterUnit) return
+        if (afterUnit.strength <= beforeUnit.strength) return
+        animations.push({
+          type: 'boost',
+          unitId: beforeUnit.id,
+          duration: BOOST_DURATION_MS,
+        })
+      })
+    }
+
     if (effect.type === 'damage' && order.defId === 'spell_lightning') {
       const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
       if (!resolvedId) continue
@@ -6148,6 +6262,11 @@ function buildAnimations(
   animations.forEach((animation) => {
     if (animation.type === 'move') {
       animatedMoveIds.add(animation.unitId)
+    }
+    if (animation.type === 'teamMove') {
+      animation.moves.forEach((move) => {
+        animatedMoveIds.add(move.unitId)
+      })
     }
     if (animation.type === 'teleport') {
       animatedMoveIds.add(animation.unitId)
@@ -6538,6 +6657,51 @@ function getTeleportSelectionTargets(
 
 type TileSelectionParam = 'tile' | 'tile2' | 'tile3'
 
+type ChainedTileMoveConfig = {
+  directionParam: 'direction' | 'moveDirection' | 'faceDirection'
+  maxDistance: number
+  baseParam?: TileSelectionParam
+}
+
+function getChainedTileMoveConfig(defId: CardDefId, step: TileSelectionParam): ChainedTileMoveConfig | null {
+  if (defId === 'move_forward_face') {
+    return step === 'tile' ? { directionParam: 'moveDirection', maxDistance: 1 } : null
+  }
+  if (defId === 'attack_blade_dance') {
+    if (step === 'tile') return { directionParam: 'direction', maxDistance: 1 }
+    if (step === 'tile2') return { directionParam: 'moveDirection', maxDistance: 1, baseParam: 'tile' }
+    if (step === 'tile3') return { directionParam: 'faceDirection', maxDistance: 1, baseParam: 'tile2' }
+  }
+  return null
+}
+
+function getChainedTileMoveBase(
+  snapshot: GameState,
+  params: OrderParams,
+  player: PlayerId,
+  config: ChainedTileMoveConfig
+): Hex | null {
+  if (config.baseParam) {
+    const base = getOrderTileParam(params, config.baseParam)
+    return base ? { ...base } : null
+  }
+  const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
+  return unitSnapshot ? { ...unitSnapshot.pos } : null
+}
+
+function resolveDirectionAndDistance(base: Hex, target: Hex, maxDistance: number): { direction: Direction; distance: number } | null {
+  for (let direction = 0 as Direction; direction < 6; direction += 1) {
+    for (let distance = 1; distance <= maxDistance; distance += 1) {
+      const candidate = stepInDirection(base, direction, distance)
+      if (!isTile(candidate)) break
+      if (candidate.q === target.q && candidate.r === target.r) {
+        return { direction, distance }
+      }
+    }
+  }
+  return null
+}
+
 function getMoveToTileSelectionTargets(
   snapshot: GameState,
   defId: CardDefId,
@@ -6545,25 +6709,68 @@ function getMoveToTileSelectionTargets(
   player: PlayerId,
   step: TileSelectionParam
 ): Hex[] | null {
-  const moveToTileEffects = CARD_DEFS[defId].effects.filter(
-    (effect): effect is Extract<CardEffect, { type: 'moveToTile' }> =>
-      effect.type === 'moveToTile' && effect.unitParam === 'unitId'
-  )
-  const stepIndex = moveToTileEffects.findIndex((effect) => effect.tileParam === step)
-  if (stepIndex === -1) return null
-
-  const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
-  if (!unitSnapshot) return []
-  const base = stepIndex === 0 ? unitSnapshot.pos : getOrderTileParam(params, moveToTileEffects[stepIndex - 1].tileParam)
+  const config = getChainedTileMoveConfig(defId, step)
+  if (!config) return null
+  const base = getChainedTileMoveBase(snapshot, params, player, config)
   if (!base) return []
+  const targets: Hex[] = []
+  for (let direction = 0 as Direction; direction < 6; direction += 1) {
+    for (let distance = 1; distance <= config.maxDistance; distance += 1) {
+      const tile = stepInDirection(base, direction, distance)
+      if (!isTile(tile)) break
+      targets.push(tile)
+    }
+  }
+  return dedupeHexes(targets)
+}
 
-  const maxDistance = moveToTileEffects[stepIndex].maxDistance
-  return snapshot.tiles
-    .map((tile) => ({ q: tile.q, r: tile.r }))
-    .filter((tile) => {
-      if (tile.q === base.q && tile.r === base.r) return false
-      return hexDistance(base, tile) <= maxDistance
-    })
+function applyChainedTileMoveSelection(
+  snapshot: GameState,
+  defId: CardDefId,
+  params: OrderParams,
+  player: PlayerId,
+  step: TileSelectionParam,
+  selected: Hex
+): boolean {
+  const config = getChainedTileMoveConfig(defId, step)
+  if (!config) return false
+  const base = getChainedTileMoveBase(snapshot, params, player, config)
+  if (!base) return false
+  const resolved = resolveDirectionAndDistance(base, selected, config.maxDistance)
+  if (!resolved) return false
+
+  if (step === 'tile') {
+    params.tile = selected
+  } else if (step === 'tile2') {
+    params.tile2 = selected
+  } else {
+    params.tile3 = selected
+  }
+
+  if (config.directionParam === 'direction') {
+    params.direction = resolved.direction
+  } else if (config.directionParam === 'moveDirection') {
+    params.moveDirection = resolved.direction
+  } else {
+    params.faceDirection = resolved.direction
+  }
+
+  return true
+}
+
+function clearLaterChainedTileMoveSelections(defId: CardDefId, params: OrderParams, step: TileSelectionParam): void {
+  if (defId !== 'attack_blade_dance') return
+  if (step === 'tile') {
+    delete params.tile2
+    delete params.tile3
+    delete params.moveDirection
+    delete params.faceDirection
+    return
+  }
+  if (step === 'tile2') {
+    delete params.tile3
+    delete params.faceDirection
+  }
 }
 
 function getSelectableHexes(
@@ -6673,17 +6880,42 @@ function getDirectionBase(
       effect.directionParam === directionParam
   )
   if (faceIndex !== -1) {
-    for (let i = faceIndex - 1; i >= 0; i -= 1) {
+    let currentPos = { ...unitSnapshot.pos }
+    let currentFacing = unitSnapshot.facing
+    for (let i = 0; i < faceIndex; i += 1) {
       const effect = CARD_DEFS[defId].effects[i]
-      if (effect.type === 'moveToTile' && effect.unitParam === 'unitId') {
-        const tile = getOrderTileParam(params, effect.tileParam)
-        if (tile) return tile
+      if (effect.type === 'move' && effect.unitParam === 'unitId') {
+        const resolvedDirection =
+          effect.direction === 'facing'
+            ? currentFacing
+            : effect.direction.type === 'param'
+              ? effect.direction.key === 'moveDirection'
+                ? params.moveDirection
+                : effect.direction.key === 'faceDirection'
+                  ? params.faceDirection
+                  : params.direction
+              : undefined
+        const resolvedDistance = typeof effect.distance === 'number' ? effect.distance : params.distance
+        if (resolvedDirection !== undefined && resolvedDistance) {
+          currentPos = stepInDirection(currentPos, resolvedDirection, resolvedDistance)
+        }
+        continue
       }
       if (effect.type === 'teleport' && effect.unitParam === 'unitId') {
         const tile = getOrderTileParam(params, effect.tileParam)
-        if (tile) return tile
+        if (tile) {
+          currentPos = tile
+        }
+        continue
+      }
+      if (effect.type === 'face' && effect.unitParam === 'unitId') {
+        const nextFacing = effect.directionParam === 'faceDirection' ? params.faceDirection : params.direction
+        if (nextFacing !== undefined) {
+          currentFacing = nextFacing
+        }
       }
     }
+    return currentPos
   }
   return unitSnapshot.pos
 }
@@ -6867,10 +7099,11 @@ function handleBoardClick(hex: Hex): void {
   if (nextStep === 'tile') {
     const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile')
     if (chainedMoveTargets) {
-      if (chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-        activeOrder.params.tile = hex
-        delete activeOrder.params.tile2
-        delete activeOrder.params.tile3
+      if (
+        chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
+        applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile', hex)
+      ) {
+        clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile')
         statusEl.textContent = 'Move target selected.'
       } else {
         statusEl.textContent = 'Select a highlighted move target.'
@@ -6906,9 +7139,11 @@ function handleBoardClick(hex: Hex): void {
   if (nextStep === 'tile2') {
     const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile2')
     if (chainedMoveTargets) {
-      if (chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-        activeOrder.params.tile2 = hex
-        delete activeOrder.params.tile3
+      if (
+        chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
+        applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile2', hex)
+      ) {
+        clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile2')
         statusEl.textContent = 'Second move target selected.'
       } else {
         statusEl.textContent = 'Select a highlighted second move target.'
@@ -6937,8 +7172,10 @@ function handleBoardClick(hex: Hex): void {
   if (nextStep === 'tile3') {
     const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile3')
     if (chainedMoveTargets) {
-      if (chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-        activeOrder.params.tile3 = hex
+      if (
+        chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
+        applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile3', hex)
+      ) {
         statusEl.textContent = 'Third move target selected.'
       } else {
         statusEl.textContent = 'Select a highlighted third move target.'

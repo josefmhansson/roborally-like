@@ -92,13 +92,6 @@ function isAdjacentHex(a: Hex, b: Hex): boolean {
   return false
 }
 
-function getDirectionToNeighbor(from: Hex, to: Hex): Direction | null {
-  for (let direction = 0 as Direction; direction < 6; direction += 1) {
-    if (sameHex(neighbor(from, direction), to)) return direction
-  }
-  return null
-}
-
 function projectAlongDirection(hex: Hex, direction: Direction): number {
   const axial = offsetToAxial(hex)
   const delta = DIRECTIONS[direction]
@@ -169,7 +162,6 @@ function isActingUnitRequirement(defId: CardDefId): boolean {
   return def.effects.some(
       (effect) =>
       (effect.type === 'move' ||
-        effect.type === 'moveToTile' ||
         effect.type === 'teleport' ||
         effect.type === 'face' ||
         effect.type === 'attack' ||
@@ -742,7 +734,7 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
     const def = CARD_DEFS[order.defId]
     const context: OrderResolutionContext = { movedUnitOrigins: {} }
     for (const effect of def.effects) {
-      if (effect.type === 'move' || effect.type === 'moveToTile') {
+      if (effect.type === 'move') {
         const params = order.params
         if (!params.unitId) continue
         const resolvedUnitId = resolveUnitId(sim, order.player, params.unitId)
@@ -752,27 +744,38 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
         if (!context.movedUnitOrigins[resolvedUnitId]) {
           context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
         }
-        const start = { ...unit.pos }
-        let end: Hex | null = null
-        if (effect.type === 'move') {
-          const direction = resolveDirection(unit.facing, params, effect.direction)
-          if (direction === null) continue
-          const distance =
-            typeof effect.distance === 'number'
-              ? effect.distance
-              : params.distance !== undefined
-                ? params.distance
-                : null
-          if (!distance) continue
-          end = moveUnitWithPath(sim, unit, direction, distance)
-        } else {
-          const destination = getOrderTileParam(params, effect.tileParam)
-          if (!destination) continue
-          end = moveUnitToTileWithPath(sim, unit, destination, effect.maxDistance)
+        if (order.defId === 'move_tandem') {
+          continue
         }
+        const start = { ...unit.pos }
+        const direction = resolveDirection(unit.facing, params, effect.direction)
+        if (direction === null) continue
+        const distance =
+          typeof effect.distance === 'number'
+            ? effect.distance
+            : params.distance !== undefined
+              ? params.distance
+              : null
+        if (!distance) continue
+        const end = moveUnitWithPath(sim, unit, direction, distance)
         if (end && (end.q !== start.q || end.r !== start.r)) {
           segments.push({ from: start, to: end })
         }
+        continue
+      }
+      if (effect.type === 'moveAdjacentFriendlyGroup') {
+        const beforePositions = new Map<string, Hex>()
+        Object.values(sim.units).forEach((unit) => {
+          beforePositions.set(unit.id, { ...unit.pos })
+        })
+        applyEffect(sim, order, effect, context)
+        beforePositions.forEach((from, unitId) => {
+          const afterUnit = sim.units[unitId]
+          if (!afterUnit) return
+          const to = afterUnit.pos
+          if (from.q === to.q && from.r === to.r) return
+          segments.push({ from, to: { ...to } })
+        })
         continue
       }
       else if (effect.type !== 'budget' && effect.type !== 'chainLightning') {
@@ -1203,22 +1206,6 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
   }
 }
 
-function moveUnitToTile(state: GameState, unit: Unit, destination: Hex, maxDistance: number): void {
-  if (!canActAsUnit(unit)) return
-  if (!inBounds(state.boardRows, state.boardCols, destination)) {
-    state.log.push(`Unit ${unit.id} cannot move.`)
-    return
-  }
-  const direction = getDirectionToNeighbor(unit.pos, destination)
-  const distance = hexDistance(unit.pos, destination)
-  const allowed = getAllowedMoveDistance(unit, maxDistance)
-  if (direction === null || distance <= 0 || distance > allowed) {
-    state.log.push(`Unit ${unit.id} cannot move.`)
-    return
-  }
-  moveUnit(state, unit, direction, 1)
-}
-
 function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, distance: number): Hex | null {
   if (!canActAsUnit(unit)) return null
   if (hasUnitModifier(unit, 'cannotMove')) {
@@ -1245,14 +1232,134 @@ function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, di
   return current
 }
 
-function moveUnitToTileWithPath(state: GameState, unit: Unit, destination: Hex, maxDistance: number): Hex | null {
-  if (!canActAsUnit(unit)) return null
-  if (!inBounds(state.boardRows, state.boardCols, destination)) return { ...unit.pos }
-  const direction = getDirectionToNeighbor(unit.pos, destination)
-  const distance = hexDistance(unit.pos, destination)
-  const allowed = getAllowedMoveDistance(unit, maxDistance)
-  if (direction === null || distance <= 0 || distance > allowed) return { ...unit.pos }
-  return moveUnitWithPath(state, unit, direction, 1)
+function moveUnitFormation(state: GameState, unitIds: UnitId[], direction: Direction, distance: number): void {
+  const participants = unitIds.filter((unitId) => {
+    const unit = state.units[unitId]
+    return Boolean(unit && canActAsUnit(unit))
+  })
+  if (participants.length === 0) return
+
+  const participantSet = new Set(participants)
+  const remainingSteps = new Map<UnitId, number>()
+  const movedSteps = new Map<UnitId, number>()
+  const stoppedByTrap = new Set<UnitId>()
+  const cannotMoveLogged = new Set<UnitId>()
+  const lastKnownPositions = new Map<UnitId, Hex>()
+
+  participants.forEach((unitId) => {
+    const unit = state.units[unitId]
+    if (!unit || !canActAsUnit(unit)) return
+    lastKnownPositions.set(unitId, { ...unit.pos })
+    movedSteps.set(unitId, 0)
+    if (hasUnitModifier(unit, 'cannotMove')) {
+      state.log.push(`Unit ${unit.id} cannot move this turn.`)
+      cannotMoveLogged.add(unitId)
+      remainingSteps.set(unitId, 0)
+      return
+    }
+    const allowed = getAllowedMoveDistance(unit, distance)
+    remainingSteps.set(unitId, Math.max(0, allowed))
+  })
+
+  for (let step = 0; step < distance; step += 1) {
+    const stepCandidates = new Map<UnitId, Hex>()
+    participants.forEach((unitId) => {
+      if (stoppedByTrap.has(unitId)) return
+      const unit = state.units[unitId]
+      if (!unit || !canActAsUnit(unit)) return
+      const remaining = remainingSteps.get(unitId) ?? 0
+      if (remaining <= 0) return
+      const next = neighbor(unit.pos, direction)
+      if (!inBounds(state.boardRows, state.boardCols, next)) {
+        remainingSteps.set(unitId, 0)
+        return
+      }
+      stepCandidates.set(unitId, next)
+    })
+    if (stepCandidates.size === 0) break
+
+    const occupiedByTile = new Map<string, UnitId>()
+    Object.values(state.units).forEach((unit) => {
+      occupiedByTile.set(`${unit.pos.q},${unit.pos.r}`, unit.id)
+    })
+
+    const movable = new Set<UnitId>(stepCandidates.keys())
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const unitId of [...movable]) {
+        const target = stepCandidates.get(unitId)
+        if (!target) {
+          movable.delete(unitId)
+          changed = true
+          continue
+        }
+        const occupant = occupiedByTile.get(`${target.q},${target.r}`)
+        if (!occupant) continue
+        if (!participantSet.has(occupant) || !movable.has(occupant)) {
+          movable.delete(unitId)
+          changed = true
+        }
+      }
+    }
+
+    if (movable.size === 0) break
+
+    const movedThisStep = new Set<UnitId>(movable)
+    movedThisStep.forEach((unitId) => {
+      const unit = state.units[unitId]
+      const target = stepCandidates.get(unitId)
+      if (!unit || !target) return
+      setUnitPosition(unit, { ...target })
+      lastKnownPositions.set(unitId, { ...target })
+    })
+
+    movedThisStep.forEach((unitId) => {
+      const unit = state.units[unitId]
+      if (!unit) return
+      const trapResolution = triggerTrapAtCurrentTile(state, unit)
+      movedSteps.set(unitId, (movedSteps.get(unitId) ?? 0) + 1)
+      remainingSteps.set(unitId, Math.max(0, (remainingSteps.get(unitId) ?? 0) - 1))
+      const surviving = state.units[unitId]
+      if (!surviving) {
+        remainingSteps.set(unitId, 0)
+        if (trapResolution.stopMovement) {
+          stoppedByTrap.add(unitId)
+        }
+        return
+      }
+      if (trapResolution.stopMovement) {
+        stoppedByTrap.add(unitId)
+        remainingSteps.set(unitId, 0)
+      }
+    })
+
+    participants.forEach((unitId) => {
+      if (movedThisStep.has(unitId)) return
+      if ((remainingSteps.get(unitId) ?? 0) <= 0) return
+      remainingSteps.set(unitId, 0)
+    })
+  }
+
+  participants.forEach((unitId) => {
+    const moved = movedSteps.get(unitId) ?? 0
+    if (moved <= 0) {
+      if (!cannotMoveLogged.has(unitId)) {
+        state.log.push(`Unit ${unitId} cannot move.`)
+      }
+      return
+    }
+    const finalPos = state.units[unitId]?.pos ?? lastKnownPositions.get(unitId)
+    if (!finalPos) return
+    state.log.push(`Unit ${unitId} moves to ${finalPos.q},${finalPos.r}.`)
+    if (stoppedByTrap.has(unitId)) {
+      state.log.push(`Unit ${unitId} is stopped by a trap.`)
+    }
+    const surviving = state.units[unitId]
+    if (surviving) {
+      recordSlowMovement(surviving, moved)
+    }
+  })
 }
 
 function teleportUnit(state: GameState, unit: Unit, target: Hex, maxDistance: number): boolean {
@@ -1385,15 +1492,6 @@ function applyOrderForPlanning(state: GameState, order: Order): void {
 function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState): boolean {
   const def = CARD_DEFS[order.defId]
   const params = order.params
-  const virtualPositions = new Map<UnitId, Hex>()
-
-  const getVirtualPosition = (unitId: UnitId): Hex | null => {
-    const virtual = virtualPositions.get(unitId)
-    if (virtual) return virtual
-    const unit = state.units[unitId]
-    if (!unit) return null
-    return unit.pos
-  }
 
   for (const effect of def.effects) {
     if (effect.type === 'spawn') {
@@ -1439,27 +1537,6 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
             ? params.distance
             : null
       if (!distance) return false
-      continue
-    }
-
-    if (effect.type === 'moveToTile') {
-      if (!params.unitId) return false
-      const destination = getOrderTileParam(params, effect.tileParam)
-      if (!destination) return false
-      if (!inBounds(state.boardRows, state.boardCols, destination)) return false
-      const resolved = resolveUnitId(state, order.player, params.unitId)
-      if (!resolved) return false
-      const unit = state.units[resolved]
-      if (!unit || !canActAsUnit(unit)) return false
-      const origin = getVirtualPosition(resolved)
-      if (!origin) return false
-      const direction = getDirectionToNeighbor(origin, destination)
-      const allowedRange = getAllowedMoveDistance(unit, effect.maxDistance)
-      const distance = hexDistance(origin, destination)
-      if (direction === null || distance <= 0 || distance > allowedRange) return false
-      // moveToTile targets are intent-based: allow selecting occupied tiles and
-      // let execution resolve whether the move can actually complete.
-      virtualPositions.set(resolved, { ...destination })
       continue
     }
 
@@ -1687,6 +1764,9 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!context.movedUnitOrigins[resolvedUnitId]) {
         context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
       }
+      if (order.defId === 'move_tandem') {
+        return
+      }
       const direction = resolveDirection(unit.facing, params, effect.direction)
       if (direction === null) return
       const distance =
@@ -1697,18 +1777,6 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
             : null
       if (!distance) return
       moveUnit(state, unit, direction, distance)
-      return
-    }
-    case 'moveToTile': {
-      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
-      const destination = getOrderTileParam(params, effect.tileParam)
-      if (!resolvedUnitId || !destination) return
-      const unit = state.units[resolvedUnitId]
-      if (!unit || !canActAsUnit(unit)) return
-      if (!context.movedUnitOrigins[resolvedUnitId]) {
-        context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
-      }
-      moveUnitToTile(state, unit, destination, effect.maxDistance)
       return
     }
     case 'teleport': {
@@ -2051,22 +2119,11 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
             canActAsUnit(unit) &&
             isAdjacentHex(anchor, unit.pos)
         )
-        .sort((a, b) => projectAlongDirection(b.pos, direction) - projectAlongDirection(a.pos, direction))
         .map((unit) => unit.id)
-
-      adjacentIds.forEach((unitId) => {
-        const unit = state.units[unitId]
-        if (!unit || !canActAsUnit(unit)) return
-        moveUnit(state, unit, direction, distance)
-      })
-
-      const refreshedActing = state.units[resolvedUnitId]
-      if (!refreshedActing || !canActAsUnit(refreshedActing)) return
-      if (!sameHex(refreshedActing.pos, anchor)) return
-      const immediateNext = neighbor(refreshedActing.pos, direction)
-      if (!inBounds(state.boardRows, state.boardCols, immediateNext)) return
-      if (getUnitAt(state, immediateNext)) return
-      moveUnit(state, refreshedActing, direction, distance)
+      const participantIds = [resolvedUnitId, ...adjacentIds].sort(
+        (a, b) => projectAlongDirection(state.units[b].pos, direction) - projectAlongDirection(state.units[a].pos, direction)
+      )
+      moveUnitFormation(state, participantIds, direction, distance)
       return
     }
     default:

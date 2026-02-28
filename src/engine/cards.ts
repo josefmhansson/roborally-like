@@ -236,10 +236,10 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     requires: { unit: 'friendly', tile: 'any', direction: true },
     effects: [
       {
-        type: 'moveToTile',
+        type: 'move',
         unitParam: 'unitId',
-        tileParam: 'tile',
-        maxDistance: 1,
+        direction: { type: 'param', key: 'moveDirection' },
+        distance: 1,
       },
       {
         type: 'face',
@@ -492,10 +492,10 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     requires: { unit: 'friendly', tile: 'any', tile2: 'any', tile3: 'any' },
     effects: [
       {
-        type: 'moveToTile',
+        type: 'move',
         unitParam: 'unitId',
-        tileParam: 'tile',
-        maxDistance: 1,
+        direction: { type: 'param', key: 'direction' },
+        distance: 1,
       },
       {
         type: 'damageAdjacent',
@@ -503,10 +503,10 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         amount: 1,
       },
       {
-        type: 'moveToTile',
+        type: 'move',
         unitParam: 'unitId',
-        tileParam: 'tile2',
-        maxDistance: 1,
+        direction: { type: 'param', key: 'moveDirection' },
+        distance: 1,
       },
       {
         type: 'damageAdjacent',
@@ -514,10 +514,10 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         amount: 1,
       },
       {
-        type: 'moveToTile',
+        type: 'move',
         unitParam: 'unitId',
-        tileParam: 'tile3',
-        maxDistance: 1,
+        direction: { type: 'param', key: 'faceDirection' },
+        distance: 1,
       },
       {
         type: 'damageAdjacent',

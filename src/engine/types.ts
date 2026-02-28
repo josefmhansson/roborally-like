@@ -204,12 +204,6 @@ export type CardEffect =
       distance: number | { type: 'param'; key: 'distance' }
     }
   | {
-      type: 'moveToTile'
-      unitParam: 'unitId'
-      tileParam: 'tile' | 'tile2' | 'tile3'
-      maxDistance: number
-    }
-  | {
       type: 'teleport'
       unitParam: 'unitId'
       tileParam: 'tile'

@@ -330,6 +330,7 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
           params.push({
             unitId: ref.refId,
             tile: { ...destination },
+            moveDirection: direction,
             direction: faceDirection,
           })
         })
@@ -387,24 +388,23 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   const params: OrderParams[] = []
   if (defId === 'attack_blade_dance') {
     refs.forEach((ref) => {
-      const firstTargets = DIRECTIONS.map((direction) => neighbor(ref.snapshot.pos, direction)).filter(
-        (tile) => inBounds(projected, tile)
-      )
-
-      firstTargets.forEach((first) => {
-        const secondTargets = DIRECTIONS.map((direction) => neighbor(first, direction)).filter(
-          (tile) => inBounds(projected, tile)
-        )
-        secondTargets.forEach((second) => {
-          const thirdTargets = DIRECTIONS.map((direction) => neighbor(second, direction)).filter(
-            (tile) => inBounds(projected, tile)
-          )
-          thirdTargets.forEach((third) => {
+      DIRECTIONS.forEach((firstDirection) => {
+        const first = neighbor(ref.snapshot.pos, firstDirection)
+        if (!inBounds(projected, first)) return
+        DIRECTIONS.forEach((secondDirection) => {
+          const second = neighbor(first, secondDirection)
+          if (!inBounds(projected, second)) return
+          DIRECTIONS.forEach((thirdDirection) => {
+            const third = neighbor(second, thirdDirection)
+            if (!inBounds(projected, third)) return
             params.push({
               unitId: ref.refId,
               tile: { ...first },
               tile2: { ...second },
               tile3: { ...third },
+              direction: firstDirection,
+              moveDirection: secondDirection,
+              faceDirection: thirdDirection,
             })
           })
         })

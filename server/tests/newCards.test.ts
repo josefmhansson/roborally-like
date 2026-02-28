@@ -1238,6 +1238,9 @@ test('blade dance chains three moves and damages adjacent units after each step'
       tile: { q: 2, r: 2 },
       tile2: { q: 3, r: 1 },
       tile3: { q: 4, r: 1 },
+      direction: 0,
+      moveDirection: 1,
+      faceDirection: 0,
     })
   )
   readyAndResolve(state)
