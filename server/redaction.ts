@@ -103,6 +103,7 @@ function cloneOrders(orders: Order[]): Order[] {
       ...order.params,
       tile: order.params.tile ? { ...order.params.tile } : undefined,
       tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
+      tile3: order.params.tile3 ? { ...order.params.tile3 } : undefined,
     },
   }))
 }

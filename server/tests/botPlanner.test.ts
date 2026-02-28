@@ -127,6 +127,30 @@ test('bot planning is fair and ignores hidden opponent planning info', () => {
   assert.equal(serializePlan(resultA.orders), serializePlan(resultB.orders))
 })
 
+test('bot planning ignores hidden opponent traps', () => {
+  const base = setupBotPlanningState()
+  base.actionBudgets = [3, 2]
+  base.players[1].hand = [
+    { id: 'bot-move1', defId: 'move_any' },
+    { id: 'bot-move2', defId: 'move_forward' },
+  ]
+
+  const withoutHiddenTrap = cloneState(base)
+  const withHiddenTrap = cloneState(base)
+  withHiddenTrap.traps = [
+    {
+      id: 'hidden-pitfall',
+      owner: 0,
+      kind: 'pitfall',
+      pos: { q: 3, r: 2 },
+    },
+  ]
+
+  const resultA = buildBotPlan(withoutHiddenTrap, 1, { thinkTimeMs: 400 })
+  const resultB = buildBotPlan(withHiddenTrap, 1, { thinkTimeMs: 400 })
+  assert.equal(serializePlan(resultA.orders), serializePlan(resultB.orders))
+})
+
 test('bot avoids spending AP on no-impact orders', () => {
   const state = setupBotPlanningState()
   state.actionBudgets = [3, 3]

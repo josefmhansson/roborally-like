@@ -471,6 +471,8 @@ type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
+type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
+type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
 type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
 type TeleportAnimation = {
@@ -505,6 +507,8 @@ type BoardAnimation =
   | DeathAnimation
   | LightningAnimation
   | BurnAnimation
+  | ExecuteAnimation
+  | TrapTriggerAnimation
   | MeteorAnimation
   | ArrowAnimation
   | TeleportAnimation
@@ -519,6 +523,8 @@ const BOOST_DURATION_MS = 320
 const DEATH_DURATION_MS = 260
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
+const EXECUTE_DURATION_MS = 360
+const TRAP_TRIGGER_DURATION_MS = 320
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
 const METEOR_DURATION_MS = 1600
 const ARROW_DURATION_MS = 300
@@ -1758,6 +1764,7 @@ function cloneOrders(orders: GameState['actionQueue'] | null): GameState['action
       ...order.params,
       tile: order.params.tile ? { ...order.params.tile } : undefined,
       tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
+      tile3: order.params.tile3 ? { ...order.params.tile3 } : undefined,
     },
   }))
 }
@@ -2567,7 +2574,7 @@ function drawBoostGlow(center: { x: number; y: number }, progress: number): void
 }
 
 function getTeamTint(owner: PlayerId): string {
-  return owner === 0 ? '#2da9ff' : '#ff3b3b'
+  return owner === 0 ? '#2da9ff' : '#ff6666'
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -3181,6 +3188,89 @@ function drawBurnDamageAnimation(target: Hex, progress: number): void {
   ctx.restore()
 }
 
+function drawExecuteAnimation(target: Hex, progress: number): void {
+  const center = projectHex(target)
+  const pulse = Math.sin(progress * Math.PI)
+  const alpha = 0.35 + pulse * 0.65
+  const size = layout.size * (0.3 + pulse * 0.2)
+  const thickness = Math.max(2, layout.size * (0.06 + pulse * 0.04))
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = alpha
+  ctx.strokeStyle = 'rgba(255, 60, 60, 0.96)'
+  ctx.lineWidth = thickness
+  ctx.lineCap = 'round'
+
+  ctx.beginPath()
+  ctx.moveTo(center.x - size, center.y - size * BOARD_TILT)
+  ctx.lineTo(center.x + size, center.y + size * BOARD_TILT)
+  ctx.moveTo(center.x + size, center.y - size * BOARD_TILT)
+  ctx.lineTo(center.x - size, center.y + size * BOARD_TILT)
+  ctx.stroke()
+
+  const glowRadius = size * 1.6
+  const glow = ctx.createRadialGradient(center.x, center.y, glowRadius * 0.2, center.x, center.y, glowRadius)
+  glow.addColorStop(0, 'rgba(255, 220, 220, 0.9)')
+  glow.addColorStop(0.55, 'rgba(255, 90, 90, 0.75)')
+  glow.addColorStop(1, 'rgba(255, 0, 0, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, glowRadius, glowRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawTrapTriggerAnimation(animation: TrapTriggerAnimation, progress: number): void {
+  const center = projectHex(animation.target)
+  const t = easeInOutCubic(progress)
+  const alpha = 1 - t
+  const radius = layout.size * (0.18 + 0.65 * t)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = alpha
+
+  if (animation.trapKind === 'pitfall') {
+    ctx.strokeStyle = 'rgba(147, 102, 45, 0.95)'
+    ctx.lineWidth = 2.6
+    ctx.beginPath()
+    ctx.ellipse(center.x, center.y, radius, radius * BOARD_TILT, 0, 0, Math.PI * 2)
+    ctx.stroke()
+
+    const dust = ctx.createRadialGradient(center.x, center.y, radius * 0.2, center.x, center.y, radius * 1.2)
+    dust.addColorStop(0, 'rgba(170, 122, 60, 0.72)')
+    dust.addColorStop(1, 'rgba(90, 56, 24, 0)')
+    ctx.fillStyle = dust
+    ctx.beginPath()
+    ctx.ellipse(center.x, center.y, radius * 1.15, radius * 0.85 * BOARD_TILT, 0, 0, Math.PI * 2)
+    ctx.fill()
+  } else {
+    const burst = ctx.createRadialGradient(center.x, center.y, radius * 0.1, center.x, center.y, radius * 1.2)
+    burst.addColorStop(0, 'rgba(255, 245, 190, 0.95)')
+    burst.addColorStop(0.45, 'rgba(255, 156, 60, 0.92)')
+    burst.addColorStop(1, 'rgba(195, 75, 22, 0)')
+    ctx.fillStyle = burst
+    ctx.beginPath()
+    ctx.arc(center.x, center.y, radius * 1.15, 0, Math.PI * 2)
+    ctx.fill()
+
+    ctx.strokeStyle = 'rgba(255, 210, 165, 0.95)'
+    ctx.lineWidth = 2
+    for (let i = 0; i < 6; i += 1) {
+      const angle = (Math.PI * 2 * i) / 6
+      const inner = layout.size * (0.08 + 0.2 * t)
+      const outer = layout.size * (0.24 + 0.52 * t)
+      ctx.beginPath()
+      ctx.moveTo(center.x + Math.cos(angle) * inner, center.y + Math.sin(angle) * inner * BOARD_TILT)
+      ctx.lineTo(center.x + Math.cos(angle) * outer, center.y + Math.sin(angle) * outer * BOARD_TILT)
+      ctx.stroke()
+    }
+  }
+
+  ctx.restore()
+}
+
 function drawMeteorImpact(target: Hex, progress: number): void {
   const center = projectHex(target)
   const start = {
@@ -3619,6 +3709,14 @@ function drawBoard(): void {
     drawBurnDamageAnimation(currentAnimation.target, animationProgress)
   }
 
+  if (currentAnimation?.type === 'execute') {
+    drawExecuteAnimation(currentAnimation.target, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'trapTrigger') {
+    drawTrapTriggerAnimation(currentAnimation, animationProgress)
+  }
+
   if (currentAnimation?.type === 'meteor') {
     drawMeteorImpact(currentAnimation.target, animationProgress)
   }
@@ -3652,7 +3750,7 @@ function drawBoard(): void {
     if (currentAnimation?.type === 'death' && currentAnimation.unit.id === unit.id) return
     const alpha = deathAlphaOverrides.get(unit.id) ?? 1
     if (alpha <= 0) return
-    drawUnit(unit, projectHex(unit.pos), alpha)
+    drawUnit(unit, getAnimatedCenter(unit), alpha)
   })
 
   if (previewState && state.phase === 'planning') {
@@ -4391,6 +4489,9 @@ function renderOrderSummary(params: OrderParams): string {
   if (params.tile2) {
     parts.push(`Tile 2: ${params.tile2.q},${params.tile2.r}`)
   }
+  if (params.tile3) {
+    parts.push(`Tile 3: ${params.tile3.q},${params.tile3.r}`)
+  }
   if (params.direction !== undefined) {
     parts.push(`Direction: ${params.direction}`)
   }
@@ -4418,7 +4519,9 @@ function stepHint(step: SelectionStep): string {
     case 'tile':
       return 'Click a highlighted tile.'
     case 'tile2':
-      return 'Click a different highlighted tile for the second placement.'
+      return 'Click a highlighted tile for the second placement.'
+    case 'tile3':
+      return 'Click a highlighted tile for the third placement.'
     case 'direction':
       return 'Click an adjacent tile (arrow shown) to set direction.'
     case 'moveDirection':
@@ -5509,6 +5612,12 @@ function resolveUnitIdFromParams(
   return spawnedByOrder[plannedId] ?? null
 }
 
+function getOrderTileParam(params: OrderParams, key: 'tile' | 'tile2' | 'tile3'): Hex | undefined {
+  if (key === 'tile2') return params.tile2
+  if (key === 'tile3') return params.tile3
+  return params.tile
+}
+
 function findSnapshotUnitAt(before: Record<string, UnitSnapshot>, hex: Hex): UnitSnapshot | null {
   const entry = Object.values(before).find((unit) => unit.pos.q === hex.q && unit.pos.r === hex.r)
   return entry ?? null
@@ -5549,6 +5658,56 @@ function parseChainLightningPath(logEntries: string[]): string[] {
     .filter((value) => value.length > 0)
 }
 
+function parseUnitPositionUpdates(logEntries: string[]): Map<string, Hex> {
+  const updates = new Map<string, Hex>()
+  logEntries.forEach((entry) => {
+    const moveMatch = entry.match(/^Unit (.+) moves to (-?\d+),(-?\d+)\.$/)
+    if (moveMatch) {
+      updates.set(moveMatch[1], { q: Number(moveMatch[2]), r: Number(moveMatch[3]) })
+      return
+    }
+    const teleportMatch = entry.match(/^Unit (.+) teleports to (-?\d+),(-?\d+)\.$/)
+    if (teleportMatch) {
+      updates.set(teleportMatch[1], { q: Number(teleportMatch[2]), r: Number(teleportMatch[3]) })
+      return
+    }
+    const pushMatch = entry.match(/^Unit (.+) is pushed to (-?\d+),(-?\d+)\.$/)
+    if (pushMatch) {
+      updates.set(pushMatch[1], { q: Number(pushMatch[2]), r: Number(pushMatch[3]) })
+    }
+  })
+  return updates
+}
+
+function parseUnitMoveEvents(logEntries: string[]): Map<string, Hex[]> {
+  const events = new Map<string, Hex[]>()
+  logEntries.forEach((entry) => {
+    const match = entry.match(/^Unit (.+) moves to (-?\d+),(-?\d+)\.$/)
+    if (!match) return
+    const unitId = match[1]
+    const tile = { q: Number(match[2]), r: Number(match[3]) }
+    const queue = events.get(unitId) ?? []
+    queue.push(tile)
+    events.set(unitId, queue)
+  })
+  return events
+}
+
+function parseTrapTriggers(logEntries: string[]): { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] {
+  const triggers: { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] = []
+  logEntries.forEach((entry) => {
+    const match = entry.match(/^Unit (.+) triggers a (pitfall|explosive) trap(?: at (-?\d+),(-?\d+))?\.$/)
+    if (!match) return
+    const trapKind = match[2] as 'pitfall' | 'explosive'
+    const tile =
+      match[3] !== undefined && match[4] !== undefined
+        ? { q: Number(match[3]), r: Number(match[4]) }
+        : undefined
+    triggers.push({ unitId: match[1], trapKind, tile })
+  })
+  return triggers
+}
+
 function parseBurnDamageTargets(logEntries: string[]): string[] {
   const targets: string[] = []
   logEntries.forEach((entry) => {
@@ -5566,10 +5725,21 @@ function buildAnimations(
 ): BoardAnimation[] {
   const def = CARD_DEFS[order.defId]
   const animations: BoardAnimation[] = []
+  const loggedPositions = parseUnitPositionUpdates(logEntries)
+  const loggedMoveEvents = parseUnitMoveEvents(logEntries)
+  const trapTriggers = parseTrapTriggers(logEntries)
+  const animatedPositions = new Map<string, Hex>()
+
+  const consumeLoggedMove = (unitId: string): Hex | null => {
+    const queue = loggedMoveEvents.get(unitId)
+    if (!queue || queue.length === 0) return null
+    const [next] = queue.splice(0, 1)
+    return next
+  }
 
   for (const effect of def.effects) {
     if (effect.type === 'spawn') {
-      const tile = effect.tileParam === 'tile2' ? order.params.tile2 : order.params.tile
+      const tile = getOrderTileParam(order.params, effect.tileParam)
       if (!tile) continue
       let spawnedId: string | undefined = state.spawnedByOrder[order.id]
       if (!spawnedId) {
@@ -5592,28 +5762,51 @@ function buildAnimations(
       const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
       if (!resolvedId) continue
       const beforeUnit = before[resolvedId]
-      const afterUnit = state.units[resolvedId]
-      if (!beforeUnit || !afterUnit) continue
-      if (beforeUnit.pos.q !== afterUnit.pos.q || beforeUnit.pos.r !== afterUnit.pos.r) {
-        const duplicate = animations.some(
-          (animation) =>
-            animation.type === 'move' &&
-            animation.unitId === resolvedId &&
-            animation.from.q === beforeUnit.pos.q &&
-            animation.from.r === beforeUnit.pos.r &&
-            animation.to.q === afterUnit.pos.q &&
-            animation.to.r === afterUnit.pos.r
-        )
-        if (!duplicate) {
-          animations.push({
-            type: 'move',
-            unitId: resolvedId,
-            from: beforeUnit.pos,
-            to: afterUnit.pos,
-            duration: MOVE_DURATION_MS,
-          })
-        }
-      }
+      const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
+      const destination = consumeLoggedMove(resolvedId) ?? loggedPositions.get(resolvedId)
+      if (!from || !destination) continue
+      if (from.q === destination.q && from.r === destination.r) continue
+      animations.push({
+        type: 'move',
+        unitId: resolvedId,
+        from: { ...from },
+        to: { ...destination },
+        duration: MOVE_DURATION_MS,
+      })
+      animatedPositions.set(resolvedId, { ...destination })
+    }
+
+    if (effect.type === 'moveToTile') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const beforeUnit = before[resolvedId]
+      const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
+      const destination = consumeLoggedMove(resolvedId) ?? getOrderTileParam(order.params, effect.tileParam)
+      if (!from || !destination) continue
+      if (from.q === destination.q && from.r === destination.r) continue
+      animations.push({
+        type: 'move',
+        unitId: resolvedId,
+        from: { ...from },
+        to: { ...destination },
+        duration: MOVE_DURATION_MS,
+      })
+      animatedPositions.set(resolvedId, { ...destination })
+    }
+
+    if (effect.type === 'executeForward') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const acting = before[resolvedId]
+      if (!acting) continue
+      const targetTile = neighbor(acting.pos, acting.facing)
+      const target = findSnapshotUnitAt(before, targetTile)
+      if (!target) continue
+      animations.push({
+        type: 'execute',
+        target: { ...target.pos },
+        duration: EXECUTE_DURATION_MS,
+      })
     }
 
     if (effect.type === 'teleport') {
@@ -5639,6 +5832,7 @@ function buildAnimations(
         },
         duration: TELEPORT_DURATION_MS,
       })
+      animatedPositions.set(resolvedId, { ...afterUnit.pos })
     }
 
     if (effect.type === 'attack') {
@@ -5807,12 +6001,27 @@ function buildAnimations(
     }
   }
 
-  parseBurnDamageTargets(logEntries).forEach((unitId) => {
-    const target = before[unitId] ?? state.units[unitId]
+  trapTriggers.forEach((trigger) => {
+    const fallback =
+      loggedPositions.get(trigger.unitId) ??
+      state.units[trigger.unitId]?.pos ??
+      before[trigger.unitId]?.pos
+    const target = trigger.tile ?? fallback
     if (!target) return
     animations.push({
+      type: 'trapTrigger',
+      target: { ...target },
+      trapKind: trigger.trapKind,
+      duration: TRAP_TRIGGER_DURATION_MS,
+    })
+  })
+
+  parseBurnDamageTargets(logEntries).forEach((unitId) => {
+    const targetPos = loggedPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
+    if (!targetPos) return
+    animations.push({
       type: 'burn',
-      target: { ...target.pos },
+      target: { ...targetPos },
       duration: BURN_DURATION_MS,
     })
   })
@@ -5845,12 +6054,13 @@ function buildAnimations(
 
   Object.entries(before).forEach(([unitId, unit]) => {
     if (state.units[unitId]) return
+    const deathPos = loggedPositions.get(unitId) ?? unit.pos
     pendingDeathUnits.set(unitId, {
       id: unitId,
       owner: unit.owner,
       kind: unit.kind,
       strength: unit.strength,
-      pos: unit.pos,
+      pos: { ...deathPos },
       facing: unit.facing,
       modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     })
@@ -5916,13 +6126,15 @@ function resolveNextActionAnimated(): void {
   const currentOrder = state.actionQueue[state.actionIndex]
   resolveNextAction(state)
   if (!currentOrder) {
-    const burnAnimations = parseBurnDamageTargets(state.log.slice(logStart))
+    const turnEndLogs = state.log.slice(logStart)
+    const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
+    const burnAnimations = parseBurnDamageTargets(turnEndLogs)
       .map((unitId) => {
-        const target = before[unitId] ?? state.units[unitId]
-        if (!target) return null
+        const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
+        if (!targetPos) return null
         return {
           type: 'burn',
-          target: { ...target.pos },
+          target: { ...targetPos },
           duration: BURN_DURATION_MS,
         } as BoardAnimation
       })
@@ -6021,6 +6233,7 @@ type SelectionStep =
   | 'unit2'
   | 'tile'
   | 'tile2'
+  | 'tile3'
   | 'direction'
   | 'moveDirection'
   | 'faceDirection'
@@ -6142,6 +6355,7 @@ function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionSte
   }
   if (def.requires.tile && !params.tile) return 'tile'
   if (def.requires.tile2 && !params.tile2) return 'tile2'
+  if (def.requires.tile3 && !params.tile3) return 'tile3'
   if (defId === 'reinforce_barricade' && params.tile && params.tile2) {
     if (params.tile.q === params.tile2.q && params.tile.r === params.tile2.r) return 'tile2'
   }
@@ -6226,6 +6440,40 @@ function getTeleportSelectionTargets(
     })
 }
 
+function getBladeDanceSelectionTargets(
+  snapshot: GameState,
+  params: OrderParams,
+  player: PlayerId,
+  step: 'tile' | 'tile2' | 'tile3'
+): Hex[] {
+  const actorId = params.unitId
+  if (!actorId) return []
+  const actor = getUnitSnapshot(snapshot, actorId, player)
+  if (!actor) return []
+  const actorUnit = snapshot.units[actorId]
+  if (
+    actorUnit &&
+    actorUnit.modifiers.some(
+      (modifier) => modifier.type === 'cannotMove' && (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
+    )
+  ) {
+    return []
+  }
+
+  const base = step === 'tile' ? actor.pos : step === 'tile2' ? params.tile : params.tile2
+  if (!base) return []
+  const occupiedByOthers = new Set(
+    Object.values(snapshot.units)
+      .filter((unit) => unit.id !== actorId)
+      .map((unit) => `${unit.pos.q},${unit.pos.r}`)
+  )
+
+  return DIRECTIONS.map((_, index) => neighbor(base, index as Direction)).filter((hex) => {
+    if (!isTile(hex)) return false
+    return !occupiedByOthers.has(`${hex.q},${hex.r}`)
+  })
+}
+
 function getSelectableHexes(
   snapshot: GameState,
   defId: CardDefId,
@@ -6261,6 +6509,9 @@ function getSelectableHexes(
   }
 
   if (step === 'tile') {
+    if (defId === 'attack_blade_dance') {
+      return getBladeDanceSelectionTargets(snapshot, params, player, 'tile')
+    }
     if (CARD_DEFS[defId].requires.tile === 'any') {
       if (defId === 'move_teleport') {
         return getTeleportSelectionTargets(snapshot, params, player, 3)
@@ -6274,11 +6525,27 @@ function getSelectableHexes(
   }
 
   if (step === 'tile2') {
+    if (defId === 'attack_blade_dance') {
+      return getBladeDanceSelectionTargets(snapshot, params, player, 'tile2')
+    }
     if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
       const blocked = params.tile
       return getBarricadeSpawnTiles(snapshot, player).filter((hex) =>
         blocked ? hex.q !== blocked.q || hex.r !== blocked.r : true
       )
+    }
+    if (CARD_DEFS[defId].requires.tile2 === 'any') {
+      return snapshot.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+    }
+    return []
+  }
+
+  if (step === 'tile3') {
+    if (defId === 'attack_blade_dance') {
+      return getBladeDanceSelectionTargets(snapshot, params, player, 'tile3')
+    }
+    if (CARD_DEFS[defId].requires.tile3 === 'any') {
+      return snapshot.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
     }
     return []
   }
@@ -6514,41 +6781,92 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'tile') {
-    const tileRequirement = CARD_DEFS[defId].requires.tile
-    if (tileRequirement === 'any') {
-      const validTiles =
-        defId === 'move_teleport'
-          ? getTeleportSelectionTargets(selectionState, activeOrder.params, planningPlayer, 3)
-          : selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+    if (defId === 'attack_blade_dance') {
+      const validTiles = getBladeDanceSelectionTargets(selectionState, activeOrder.params, planningPlayer, 'tile')
       if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile = hex
-        statusEl.textContent = defId === 'move_teleport' ? 'Teleport destination selected.' : 'Tile selected.'
+        delete activeOrder.params.tile2
+        delete activeOrder.params.tile3
+        statusEl.textContent = 'First Blade Dance step selected.'
       } else {
-        statusEl.textContent = defId === 'move_teleport' ? 'Select a valid teleport destination.' : 'Select a tile.'
+        statusEl.textContent = 'Select an adjacent open tile.'
       }
     } else {
-      const validTiles =
-        tileRequirement === 'barricade'
-          ? getBarricadeSpawnTiles(selectionState, planningPlayer)
-          : getSpawnTiles(selectionState, planningPlayer)
-      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-        activeOrder.params.tile = hex
-        statusEl.textContent = tileRequirement === 'barricade' ? 'Barricade tile selected.' : 'Spawn tile selected.'
+      const tileRequirement = CARD_DEFS[defId].requires.tile
+      if (tileRequirement === 'any') {
+        const validTiles =
+          defId === 'move_teleport'
+            ? getTeleportSelectionTargets(selectionState, activeOrder.params, planningPlayer, 3)
+            : selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+        if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+          activeOrder.params.tile = hex
+          statusEl.textContent = defId === 'move_teleport' ? 'Teleport destination selected.' : 'Tile selected.'
+        } else {
+          statusEl.textContent = defId === 'move_teleport' ? 'Select a valid teleport destination.' : 'Select a tile.'
+        }
       } else {
-        statusEl.textContent = tileRequirement === 'barricade' ? 'Select a valid barricade tile.' : 'Select a spawn tile.'
+        const validTiles =
+          tileRequirement === 'barricade'
+            ? getBarricadeSpawnTiles(selectionState, planningPlayer)
+            : getSpawnTiles(selectionState, planningPlayer)
+        if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+          activeOrder.params.tile = hex
+          statusEl.textContent = tileRequirement === 'barricade' ? 'Barricade tile selected.' : 'Spawn tile selected.'
+        } else {
+          statusEl.textContent = tileRequirement === 'barricade' ? 'Select a valid barricade tile.' : 'Select a spawn tile.'
+        }
       }
     }
   }
 
   if (nextStep === 'tile2') {
-    const validTiles = getBarricadeSpawnTiles(selectionState, planningPlayer)
-    if (!validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-      statusEl.textContent = 'Select a valid second barricade tile.'
-    } else if (activeOrder.params.tile && activeOrder.params.tile.q === hex.q && activeOrder.params.tile.r === hex.r) {
-      statusEl.textContent = 'Second tile must be different.'
-    } else {
-      activeOrder.params.tile2 = hex
-      statusEl.textContent = 'Second barricade tile selected.'
+    if (defId === 'attack_blade_dance') {
+      const validTiles = getBladeDanceSelectionTargets(selectionState, activeOrder.params, planningPlayer, 'tile2')
+      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        activeOrder.params.tile2 = hex
+        delete activeOrder.params.tile3
+        statusEl.textContent = 'Second Blade Dance step selected.'
+      } else {
+        statusEl.textContent = 'Select an adjacent open tile for step 2.'
+      }
+    } else if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
+      const validTiles = getBarricadeSpawnTiles(selectionState, planningPlayer)
+      if (!validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        statusEl.textContent = 'Select a valid second barricade tile.'
+      } else if (activeOrder.params.tile && activeOrder.params.tile.q === hex.q && activeOrder.params.tile.r === hex.r) {
+        statusEl.textContent = 'Second tile must be different.'
+      } else {
+        activeOrder.params.tile2 = hex
+        statusEl.textContent = 'Second barricade tile selected.'
+      }
+    } else if (CARD_DEFS[defId].requires.tile2 === 'any') {
+      const validTiles = selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        activeOrder.params.tile2 = hex
+        statusEl.textContent = 'Second tile selected.'
+      } else {
+        statusEl.textContent = 'Select a valid second tile.'
+      }
+    }
+  }
+
+  if (nextStep === 'tile3') {
+    if (defId === 'attack_blade_dance') {
+      const validTiles = getBladeDanceSelectionTargets(selectionState, activeOrder.params, planningPlayer, 'tile3')
+      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        activeOrder.params.tile3 = hex
+        statusEl.textContent = 'Third Blade Dance step selected.'
+      } else {
+        statusEl.textContent = 'Select an adjacent open tile for step 3.'
+      }
+    } else if (CARD_DEFS[defId].requires.tile3 === 'any') {
+      const validTiles = selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        activeOrder.params.tile3 = hex
+        statusEl.textContent = 'Third tile selected.'
+      } else {
+        statusEl.textContent = 'Select a valid third tile.'
+      }
     }
   }
 
@@ -6608,7 +6926,6 @@ function handleBoardClick(hex: Hex): void {
   tryAutoAddOrder()
   render()
 }
-
 menuStartButton.addEventListener('click', () => {
   if (mode === 'online') {
     teardownOnlineSession(true)

@@ -79,11 +79,24 @@ function getTrapAt(state: GameState, hex: Hex, owner?: PlayerId): Trap | null {
   return state.traps[index]
 }
 
+function getOrderTileParam(params: OrderParams, key: 'tile' | 'tile2' | 'tile3'): Hex | undefined {
+  if (key === 'tile2') return params.tile2
+  if (key === 'tile3') return params.tile3
+  return params.tile
+}
+
 function isAdjacentHex(a: Hex, b: Hex): boolean {
   for (let dir = 0 as Direction; dir < 6; dir += 1) {
     if (sameHex(neighbor(a, dir), b)) return true
   }
   return false
+}
+
+function getDirectionToNeighbor(from: Hex, to: Hex): Direction | null {
+  for (let direction = 0 as Direction; direction < 6; direction += 1) {
+    if (sameHex(neighbor(from, direction), to)) return direction
+  }
+  return null
 }
 
 function projectAlongDirection(hex: Hex, direction: Direction): number {
@@ -156,6 +169,7 @@ function isActingUnitRequirement(defId: CardDefId): boolean {
   return def.effects.some(
       (effect) =>
       (effect.type === 'move' ||
+        effect.type === 'moveToTile' ||
         effect.type === 'teleport' ||
         effect.type === 'face' ||
         effect.type === 'attack' ||
@@ -392,7 +406,6 @@ export function getBarricadeSpawnTiles(state: GameState, player: PlayerId): Hex[
         const adjacent = neighbor(unit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, adjacent)) continue
         if (getUnitAt(state, adjacent)) continue
-        if (getTrapAt(state, adjacent)) continue
         candidates.set(`${adjacent.q},${adjacent.r}`, adjacent)
       }
     })
@@ -729,7 +742,7 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
     const def = CARD_DEFS[order.defId]
     const context: OrderResolutionContext = { movedUnitOrigins: {} }
     for (const effect of def.effects) {
-      if (effect.type === 'move') {
+      if (effect.type === 'move' || effect.type === 'moveToTile') {
         const params = order.params
         if (!params.unitId) continue
         const resolvedUnitId = resolveUnitId(sim, order.player, params.unitId)
@@ -739,17 +752,24 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
         if (!context.movedUnitOrigins[resolvedUnitId]) {
           context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
         }
-        const direction = resolveDirection(unit.facing, params, effect.direction)
-        if (direction === null) continue
-        const distance =
-          typeof effect.distance === 'number'
-            ? effect.distance
-            : params.distance !== undefined
-              ? params.distance
-              : null
-        if (!distance) continue
         const start = { ...unit.pos }
-        const end = moveUnitWithPath(sim, unit, direction, distance)
+        let end: Hex | null = null
+        if (effect.type === 'move') {
+          const direction = resolveDirection(unit.facing, params, effect.direction)
+          if (direction === null) continue
+          const distance =
+            typeof effect.distance === 'number'
+              ? effect.distance
+              : params.distance !== undefined
+                ? params.distance
+                : null
+          if (!distance) continue
+          end = moveUnitWithPath(sim, unit, direction, distance)
+        } else {
+          const destination = getOrderTileParam(params, effect.tileParam)
+          if (!destination) continue
+          end = moveUnitToTileWithPath(sim, unit, destination, effect.maxDistance)
+        }
         if (end && (end.q !== start.q || end.r !== start.r)) {
           segments.push({ from: start, to: end })
         }
@@ -918,6 +938,14 @@ function validateOrderParams(
     if (!isValidBarricadeSpawnTile(state, player, params.tile2)) return false
     if (!params.tile || sameHex(params.tile, params.tile2)) return false
   }
+  if (def.requires.tile2 === 'any') {
+    if (!params.tile2) return false
+    if (!inBounds(state.boardRows, state.boardCols, params.tile2)) return false
+  }
+  if (def.requires.tile3 === 'any') {
+    if (!params.tile3) return false
+    if (!inBounds(state.boardRows, state.boardCols, params.tile3)) return false
+  }
   if (def.requires.direction && params.direction === undefined) return false
   if (def.requires.moveDirection && params.moveDirection === undefined) return false
   if (def.requires.faceDirection && params.faceDirection === undefined) return false
@@ -959,7 +987,6 @@ function spawnUnit(
 ): UnitId | null {
   if (!inBounds(state.boardRows, state.boardCols, tile)) return null
   if (getUnitAt(state, tile)) return null
-  if (getTrapAt(state, tile)) return null
   const id = `u${player}-${state.nextUnitId++}`
   state.units[id] = {
     id,
@@ -975,6 +1002,7 @@ function spawnUnit(
   } else {
     state.log.push(`Player ${player + 1} spawns a unit at ${tile.q},${tile.r}.`)
   }
+  triggerTrapAtCurrentTile(state, state.units[id])
   return id
 }
 
@@ -1114,7 +1142,7 @@ function triggerTrapAtCurrentTile(state: GameState, unit: Unit): { stopMovement:
   if (trapIndex === -1) return { stopMovement: false }
 
   const [trap] = state.traps.splice(trapIndex, 1)
-  state.log.push(`Unit ${unit.id} triggers a ${trap.kind} trap.`)
+  state.log.push(`Unit ${unit.id} triggers a ${trap.kind} trap at ${unit.pos.q},${unit.pos.r}.`)
   if (trap.kind === 'pitfall') {
     applyDamage(state, unit, 2)
     const surviving = state.units[unit.id]
@@ -1140,6 +1168,7 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
   let current = { ...unit.pos }
   let movedUnit: Unit = unit
   let stoppedByTrap = false
+  let destroyedByTrap = false
   for (let step = 0; step < maxDistance; step += 1) {
     const next = neighbor(current, direction)
     if (!inBounds(state.boardRows, state.boardCols, next)) break
@@ -1150,7 +1179,9 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
     const trapResolution = triggerTrapAtCurrentTile(state, movedUnit)
     const surviving = state.units[movedUnit.id]
     if (!surviving) {
-      return
+      stoppedByTrap = trapResolution.stopMovement
+      destroyedByTrap = true
+      break
     }
     movedUnit = surviving
     if (trapResolution.stopMovement) {
@@ -1159,14 +1190,33 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
     }
   }
   if (movedDistance > 0) {
-    recordSlowMovement(movedUnit, movedDistance)
+    if (!destroyedByTrap) {
+      recordSlowMovement(movedUnit, movedDistance)
+    }
     state.log.push(`Unit ${unit.id} moves to ${current.q},${current.r}.`)
     if (stoppedByTrap) {
       state.log.push(`Unit ${unit.id} is stopped by a trap.`)
     }
+    if (destroyedByTrap) return
   } else {
     state.log.push(`Unit ${unit.id} cannot move.`)
   }
+}
+
+function moveUnitToTile(state: GameState, unit: Unit, destination: Hex, maxDistance: number): void {
+  if (!canActAsUnit(unit)) return
+  if (!inBounds(state.boardRows, state.boardCols, destination)) {
+    state.log.push(`Unit ${unit.id} cannot move.`)
+    return
+  }
+  const direction = getDirectionToNeighbor(unit.pos, destination)
+  const distance = hexDistance(unit.pos, destination)
+  const allowed = getAllowedMoveDistance(unit, maxDistance)
+  if (direction === null || distance <= 0 || distance > allowed) {
+    state.log.push(`Unit ${unit.id} cannot move.`)
+    return
+  }
+  moveUnit(state, unit, direction, 1)
 }
 
 function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, distance: number): Hex | null {
@@ -1193,6 +1243,16 @@ function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, di
   }
   recordSlowMovement(movedUnit, movedDistance)
   return current
+}
+
+function moveUnitToTileWithPath(state: GameState, unit: Unit, destination: Hex, maxDistance: number): Hex | null {
+  if (!canActAsUnit(unit)) return null
+  if (!inBounds(state.boardRows, state.boardCols, destination)) return { ...unit.pos }
+  const direction = getDirectionToNeighbor(unit.pos, destination)
+  const distance = hexDistance(unit.pos, destination)
+  const allowed = getAllowedMoveDistance(unit, maxDistance)
+  if (direction === null || distance <= 0 || distance > allowed) return { ...unit.pos }
+  return moveUnitWithPath(state, unit, direction, 1)
 }
 
 function teleportUnit(state: GameState, unit: Unit, target: Hex, maxDistance: number): boolean {
@@ -1325,13 +1385,22 @@ function applyOrderForPlanning(state: GameState, order: Order): void {
 function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState): boolean {
   const def = CARD_DEFS[order.defId]
   const params = order.params
+  const virtualPositions = new Map<UnitId, Hex>()
+
+  const getVirtualPosition = (unitId: UnitId): Hex | null => {
+    const virtual = virtualPositions.get(unitId)
+    if (virtual) return virtual
+    const unit = state.units[unitId]
+    if (!unit) return null
+    return unit.pos
+  }
+
   for (const effect of def.effects) {
     if (effect.type === 'spawn') {
-      const tile = effect.tileParam === 'tile2' ? params.tile2 : params.tile
+      const tile = getOrderTileParam(params, effect.tileParam)
       if (!tile) return false
       if (!inBounds(state.boardRows, state.boardCols, tile)) return false
       if (getUnitAt(state, tile)) return false
-      if (getTrapAt(state, tile)) return false
       if (effect.kind === 'barricade' && !isValidBarricadeSpawnTile(state, order.player, tile)) return false
       const facing = effect.facingParam ? params.direction : effect.facing
       if (facing === undefined) return false
@@ -1370,6 +1439,31 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
             ? params.distance
             : null
       if (!distance) return false
+      continue
+    }
+
+    if (effect.type === 'moveToTile') {
+      if (!params.unitId) return false
+      const destination = getOrderTileParam(params, effect.tileParam)
+      if (!destination) return false
+      if (!inBounds(state.boardRows, state.boardCols, destination)) return false
+      const resolved = resolveUnitId(state, order.player, params.unitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || !canActAsUnit(unit)) return false
+      const origin = getVirtualPosition(resolved)
+      if (!origin) return false
+      const direction = getDirectionToNeighbor(origin, destination)
+      const allowedRange = getAllowedMoveDistance(unit, effect.maxDistance)
+      const distance = hexDistance(origin, destination)
+      if (direction === null || distance <= 0 || distance > allowedRange) return false
+      const occupiedByOther = Object.values(state.units).some((candidate) => {
+        if (candidate.id === resolved) return false
+        const candidatePos = getVirtualPosition(candidate.id)
+        return Boolean(candidatePos && sameHex(candidatePos, destination))
+      })
+      if (occupiedByOther) return false
+      virtualPositions.set(resolved, { ...destination })
       continue
     }
 
@@ -1446,7 +1540,6 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       if (!inBounds(state.boardRows, state.boardCols, tile)) return false
       if (!isValidBarricadeSpawnTile(state, order.player, tile)) return false
       if (effect.facingParam && params.direction === undefined) return false
-      if (getTrapAt(state, tile)) return false
       if (getUnitAt(state, tile)) return false
       continue
     }
@@ -1562,7 +1655,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
   const params = order.params
   switch (effect.type) {
     case 'spawn': {
-      const tile = effect.tileParam === 'tile2' ? params.tile2 : params.tile
+      const tile = getOrderTileParam(params, effect.tileParam)
       const facing = effect.facingParam ? params.direction : effect.facing
       if (!tile || facing === undefined) return
       const kind = effect.kind ?? 'unit'
@@ -1610,9 +1703,21 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       moveUnit(state, unit, direction, distance)
       return
     }
+    case 'moveToTile': {
+      const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
+      const destination = getOrderTileParam(params, effect.tileParam)
+      if (!resolvedUnitId || !destination) return
+      const unit = state.units[resolvedUnitId]
+      if (!unit || !canActAsUnit(unit)) return
+      if (!context.movedUnitOrigins[resolvedUnitId]) {
+        context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
+      }
+      moveUnitToTile(state, unit, destination, effect.maxDistance)
+      return
+    }
     case 'teleport': {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
-      const destination = effect.tileParam === 'tile' ? params.tile : params.tile2
+      const destination = getOrderTileParam(params, effect.tileParam)
       if (!resolvedUnitId || !destination) return
       const unit = state.units[resolvedUnitId]
       if (!unit || !canActAsUnit(unit)) return
@@ -1958,6 +2063,14 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         if (!unit || !canActAsUnit(unit)) return
         moveUnit(state, unit, direction, distance)
       })
+
+      const refreshedActing = state.units[resolvedUnitId]
+      if (!refreshedActing || !canActAsUnit(refreshedActing)) return
+      if (!sameHex(refreshedActing.pos, anchor)) return
+      const immediateNext = neighbor(refreshedActing.pos, direction)
+      if (!inBounds(state.boardRows, state.boardCols, immediateNext)) return
+      if (getUnitAt(state, immediateNext)) return
+      moveUnit(state, refreshedActing, direction, distance)
       return
     }
     default:

@@ -202,6 +202,89 @@ test('explosive trap triggers on movement and does not stop movement', () => {
   assert.equal(state.traps.length, 0)
 })
 
+test('pitfall trap kill still records move destination in the log', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_pitfall_trap'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['kill-anchor'] = {
+    id: 'kill-anchor',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['kill-target'] = {
+    id: 'kill-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const trapTile = { q: 3, r: 2 }
+  const trapCardId = findCardId(state, 0, 'spell_pitfall_trap')
+  const moveCardId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, trapCardId, { tile: trapTile }))
+  assert.ok(planOrder(state, 1, moveCardId, { unitId: 'kill-target', direction: 0, distance: 3 }))
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['kill-target'], undefined)
+  assert.ok(state.log.some((entry) => entry === 'Unit kill-target moves to 3,2.'))
+  assert.ok(state.log.some((entry) => entry === 'Unit kill-target triggers a pitfall trap at 3,2.'))
+})
+
+test('spawning onto an enemy trap triggers the trap immediately', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_pitfall_trap'),
+    p2: Array.from({ length: settings.deckSize }, () => 'reinforce_battlefield_recruitment'),
+  })
+
+  clearNonCommanderUnits(state)
+  state.units['spawn-trap-anchor'] = {
+    id: 'spawn-trap-anchor',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['spawn-target-anchor'] = {
+    id: 'spawn-target-anchor',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 3 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const trapTile = { q: 3, r: 2 }
+  const trapCardId = findCardId(state, 0, 'spell_pitfall_trap')
+  const recruitCardId = findCardId(state, 1, 'reinforce_battlefield_recruitment')
+  assert.ok(planOrder(state, 0, trapCardId, { tile: trapTile }))
+  assert.ok(planOrder(state, 1, recruitCardId, { tile: trapTile, direction: 0 }))
+
+  readyAndResolve(state)
+
+  const spawned = Object.values(state.units).find(
+    (unit) => unit.owner === 1 && unit.kind === 'unit' && unit.pos.q === trapTile.q && unit.pos.r === trapTile.r
+  )
+  assert.equal(spawned, undefined)
+  assert.equal(state.traps.length, 0)
+  assert.ok(state.log.some((entry) => entry.includes('triggers a pitfall trap at 3,2.')))
+})
+
 test('teleport moves within range without triggering traps on intermediate tiles', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -446,6 +529,37 @@ test('tandem movement moves the selected unit and adjacent friendlies in one dir
   assert.deepEqual(state.units['tm-adjacent']?.pos, { q: 3, r: 2 })
   assert.equal(state.units['tm-main']?.facing, 0)
   assert.equal(state.units['tm-adjacent']?.facing, 1)
+})
+
+test('tandem movement lets commanders follow after adjacent allies move away', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_tandem'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonCommanderUnits(state)
+  const commander = state.units['stronghold-0']
+  assert.ok(commander)
+  commander.pos = { q: 2, r: 2 }
+  commander.facing = 0
+
+  state.units['tm-front'] = {
+    id: 'tm-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_tandem')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'stronghold-0', direction: 0, distance: 3 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['stronghold-0']?.pos, { q: 3, r: 2 })
+  assert.deepEqual(state.units['tm-front']?.pos, { q: 5, r: 2 })
 })
 
 test('trip prevents movement for two turns', () => {
@@ -1118,7 +1232,14 @@ test('blade dance chains three moves and damages adjacent units after each step'
   }
 
   const cardId = findCardId(state, 0, 'attack_blade_dance')
-  assert.ok(planOrder(state, 0, cardId, { unitId: 'bd-user', direction: 0, moveDirection: 1, faceDirection: 0 }))
+  assert.ok(
+    planOrder(state, 0, cardId, {
+      unitId: 'bd-user',
+      tile: { q: 2, r: 2 },
+      tile2: { q: 3, r: 1 },
+      tile3: { q: 4, r: 1 },
+    })
+  )
   readyAndResolve(state)
 
   assert.deepEqual(state.units['bd-user']?.pos, { q: 4, r: 1 })

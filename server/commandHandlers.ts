@@ -175,6 +175,18 @@ function sanitizeOrderParams(input: OrderParams): OrderParams {
       r: Math.floor(input.tile2.r),
     }
   }
+  if (
+    input.tile3 &&
+    typeof input.tile3.q === 'number' &&
+    typeof input.tile3.r === 'number' &&
+    Number.isFinite(input.tile3.q) &&
+    Number.isFinite(input.tile3.r)
+  ) {
+    out.tile3 = {
+      q: Math.floor(input.tile3.q),
+      r: Math.floor(input.tile3.r),
+    }
+  }
   return out
 }
 
@@ -248,6 +260,7 @@ function cloneOrders(orders: GameState['players'][number]['orders']): GameState[
       ...order.params,
       tile: order.params.tile ? { ...order.params.tile } : undefined,
       tile2: order.params.tile2 ? { ...order.params.tile2 } : undefined,
+      tile3: order.params.tile3 ? { ...order.params.tile3 } : undefined,
     },
   }))
 }

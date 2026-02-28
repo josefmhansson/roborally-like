@@ -4,7 +4,8 @@ import { DIRECTION_NAMES } from './hex'
 export type CardTargetRequirement = {
   unit?: 'friendly' | 'any'
   tile?: 'spawn' | 'any' | 'barricade'
-  tile2?: 'barricade'
+  tile2?: 'barricade' | 'any'
+  tile3?: 'any'
   direction?: boolean
   moveDirection?: boolean
   faceDirection?: boolean
@@ -488,13 +489,13 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     countsAs: ['movement'],
     classId: 'warleader',
     actionCost: 3,
-    requires: { unit: 'friendly', direction: true, moveDirection: true, faceDirection: true },
+    requires: { unit: 'friendly', tile: 'any', tile2: 'any', tile3: 'any' },
     effects: [
       {
-        type: 'move',
+        type: 'moveToTile',
         unitParam: 'unitId',
-        direction: { type: 'param', key: 'direction' },
-        distance: 1,
+        tileParam: 'tile',
+        maxDistance: 1,
       },
       {
         type: 'damageAdjacent',
@@ -502,10 +503,10 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         amount: 1,
       },
       {
-        type: 'move',
+        type: 'moveToTile',
         unitParam: 'unitId',
-        direction: { type: 'param', key: 'moveDirection' },
-        distance: 1,
+        tileParam: 'tile2',
+        maxDistance: 1,
       },
       {
         type: 'damageAdjacent',
@@ -513,10 +514,10 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         amount: 1,
       },
       {
-        type: 'move',
+        type: 'moveToTile',
         unitParam: 'unitId',
-        direction: { type: 'param', key: 'faceDirection' },
-        distance: 1,
+        tileParam: 'tile3',
+        maxDistance: 1,
       },
       {
         type: 'damageAdjacent',

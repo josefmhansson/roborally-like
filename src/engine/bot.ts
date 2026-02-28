@@ -388,20 +388,30 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   const params: OrderParams[] = []
   if (defId === 'attack_blade_dance') {
     refs.forEach((ref) => {
-      DIRECTIONS.forEach((direction) => {
-        const firstStep = neighbor(ref.snapshot.pos, direction)
-        if (!inBounds(projected, firstStep)) return
-        DIRECTIONS.forEach((moveDirection) => {
-          const secondStep = neighbor(firstStep, moveDirection)
-          if (!inBounds(projected, secondStep)) return
-          DIRECTIONS.forEach((faceDirection) => {
-            const thirdStep = neighbor(secondStep, faceDirection)
-            if (!inBounds(projected, thirdStep)) return
+      const keyOf = (hex: Hex): string => `${hex.q},${hex.r}`
+      const occupiedByOthers = new Set(
+        Object.values(projected.units)
+          .filter((unit) => unit.id !== ref.snapshot.id)
+          .map((unit) => keyOf(unit.pos))
+      )
+      const firstTargets = DIRECTIONS.map((direction) => neighbor(ref.snapshot.pos, direction)).filter(
+        (tile) => inBounds(projected, tile) && !occupiedByOthers.has(keyOf(tile))
+      )
+
+      firstTargets.forEach((first) => {
+        const secondTargets = DIRECTIONS.map((direction) => neighbor(first, direction)).filter(
+          (tile) => inBounds(projected, tile) && !occupiedByOthers.has(keyOf(tile))
+        )
+        secondTargets.forEach((second) => {
+          const thirdTargets = DIRECTIONS.map((direction) => neighbor(second, direction)).filter(
+            (tile) => inBounds(projected, tile) && !occupiedByOthers.has(keyOf(tile))
+          )
+          thirdTargets.forEach((third) => {
             params.push({
               unitId: ref.refId,
-              direction,
-              moveDirection,
-              faceDirection,
+              tile: { ...first },
+              tile2: { ...second },
+              tile3: { ...third },
             })
           })
         })
@@ -785,6 +795,7 @@ function serializeParams(params: OrderParams): string {
     params.unitId2 ?? '',
     params.tile ? `${params.tile.q},${params.tile.r}` : '',
     params.tile2 ? `${params.tile2.q},${params.tile2.r}` : '',
+    params.tile3 ? `${params.tile3.q},${params.tile3.r}` : '',
     params.direction === undefined ? '' : String(params.direction),
     params.moveDirection === undefined ? '' : String(params.moveDirection),
     params.faceDirection === undefined ? '' : String(params.faceDirection),
@@ -828,6 +839,8 @@ function buildFairPlanningSnapshot(source: GameState, player: PlayerId): GameSta
   snapshot.players[opponent].orders = []
   snapshot.players[opponent].hand = []
   snapshot.ready[opponent] = false
+  // Enemy traps are hidden information; bot planning should only see its own traps.
+  snapshot.traps = snapshot.traps.filter((trap) => trap.owner === player)
   return snapshot
 }
 
@@ -893,6 +906,7 @@ function cloneParams(params: OrderParams): OrderParams {
     ...params,
     tile: params.tile ? { ...params.tile } : undefined,
     tile2: params.tile2 ? { ...params.tile2 } : undefined,
+    tile3: params.tile3 ? { ...params.tile3 } : undefined,
   }
 }
 

@@ -99,7 +99,7 @@ export type CardDefId =
   | 'spell_burn'
   | 'move_pivot'
 
-export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2'
+export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2' | 'tile3'
 
 export type DirectionSource =
   | 'facing'
@@ -204,6 +204,12 @@ export type CardEffect =
       distance: number | { type: 'param'; key: 'distance' }
     }
   | {
+      type: 'moveToTile'
+      unitParam: 'unitId'
+      tileParam: 'tile' | 'tile2' | 'tile3'
+      maxDistance: number
+    }
+  | {
       type: 'teleport'
       unitParam: 'unitId'
       tileParam: 'tile'
@@ -259,6 +265,7 @@ export type OrderParams = {
   unitId2?: UnitId
   tile?: Hex
   tile2?: Hex
+  tile3?: Hex
   direction?: Direction
   moveDirection?: Direction
   faceDirection?: Direction
