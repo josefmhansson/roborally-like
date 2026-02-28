@@ -96,6 +96,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         strength: 1,
         tileParam: 'tile',
         facing: 0,
+        mapToOrder: true,
       },
       {
         type: 'spawn',
@@ -103,6 +104,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         strength: 1,
         tileParam: 'tile2',
         facing: 0,
+        mapToOrder: true,
       },
     ],
   },
@@ -175,6 +177,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         tileParam: 'tile',
         strength: 1,
         facingParam: 'direction',
+        mapToOrder: true,
       },
     ],
   },
@@ -468,7 +471,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   attack_execute: {
     id: 'attack_execute',
     name: 'Execute',
-    description: 'Destroy a non-commander unit in front. Commanders take 3 damage instead.',
+    description: 'Destroy a non-leader unit in front. Leaders take 3 damage instead.',
     type: 'attack',
     classId: 'warleader',
     actionCost: 2,

@@ -515,14 +515,14 @@ function getFriendlyUnitRefs(
     .filter(
       (unit) =>
         unit.owner === player &&
-        (unit.kind === 'unit' || unit.kind === 'commander' || (includeBarricades && unit.kind === 'barricade'))
+        (unit.kind === 'unit' || unit.kind === 'leader' || (includeBarricades && unit.kind === 'barricade'))
     )
     .forEach((unit) => {
       const projectedUnit = projected.units[unit.id]
       if (!projectedUnit) return
       if (
         projectedUnit.kind !== 'unit' &&
-        projectedUnit.kind !== 'commander' &&
+        projectedUnit.kind !== 'leader' &&
         !(includeBarricades && projectedUnit.kind === 'barricade')
       ) {
         return

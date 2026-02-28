@@ -13,8 +13,8 @@ export type PlayerClassDef = {
   unitName: string
   unitBaseAsset: string
   unitTeamAsset: string
-  commanderBaseAsset: string
-  commanderTeamAsset: string
+  leaderBaseAsset: string
+  leaderTeamAsset: string
 }
 
 export const PLAYER_CLASS_IDS: PlayerClassId[] = ['commander', 'warleader', 'archmage']
@@ -27,8 +27,8 @@ export const PLAYER_CLASS_DEFS: Record<PlayerClassId, PlayerClassDef> = {
     unitName: 'Soldier',
     unitBaseAsset: 'assets/units/unit_soldier_base.png',
     unitTeamAsset: 'assets/units/unit_soldier_team.png',
-    commanderBaseAsset: 'assets/units/unit_commander_base.png',
-    commanderTeamAsset: 'assets/units/unit_commander_team.png',
+    leaderBaseAsset: 'assets/units/unit_commander_base.png',
+    leaderTeamAsset: 'assets/units/unit_commander_team.png',
   },
   warleader: {
     id: 'warleader',
@@ -37,8 +37,8 @@ export const PLAYER_CLASS_DEFS: Record<PlayerClassId, PlayerClassDef> = {
     unitName: 'Warrior',
     unitBaseAsset: 'assets/units/unit_warrior_base.png',
     unitTeamAsset: 'assets/units/unit_warrior_team.png',
-    commanderBaseAsset: 'assets/units/unit_warleader_base.png',
-    commanderTeamAsset: 'assets/units/unit_warleader_team.png',
+    leaderBaseAsset: 'assets/units/unit_warleader_base.png',
+    leaderTeamAsset: 'assets/units/unit_warleader_team.png',
   },
   archmage: {
     id: 'archmage',
@@ -47,8 +47,8 @@ export const PLAYER_CLASS_DEFS: Record<PlayerClassId, PlayerClassDef> = {
     unitName: 'Mage',
     unitBaseAsset: 'assets/units/unit_mage_base.png',
     unitTeamAsset: 'assets/units/unit_mage_team.png',
-    commanderBaseAsset: 'assets/units/unit_archmage_base.png',
-    commanderTeamAsset: 'assets/units/unit_archmage_team.png',
+    leaderBaseAsset: 'assets/units/unit_archmage_base.png',
+    leaderTeamAsset: 'assets/units/unit_archmage_team.png',
   },
 }
 

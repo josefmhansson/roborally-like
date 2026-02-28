@@ -11,7 +11,7 @@ export type Direction = 0 | 1 | 2 | 3 | 4 | 5
 
 export type UnitId = string
 
-export type UnitKind = 'unit' | 'commander' | 'barricade'
+export type UnitKind = 'unit' | 'leader' | 'barricade'
 
 export type TrapKind = 'pitfall' | 'explosive'
 
@@ -24,7 +24,15 @@ export type Trap = {
   pos: Hex
 }
 
-export type UnitModifierType = 'cannotMove' | 'slow' | 'spellResistance' | 'burn' | 'disarmed' | 'vulnerable' | 'strong'
+export type UnitModifierType =
+  | 'cannotMove'
+  | 'slow'
+  | 'spellResistance'
+  | 'reinforcementPenalty'
+  | 'burn'
+  | 'disarmed'
+  | 'vulnerable'
+  | 'strong'
 
 export type ModifierDuration = number | 'indefinite'
 
@@ -152,6 +160,7 @@ export type CardEffect =
       tileParam: 'tile'
       strength: number
       facingParam?: 'direction'
+      mapToOrder?: boolean
     }
   | {
       type: 'boostAllFriendly'

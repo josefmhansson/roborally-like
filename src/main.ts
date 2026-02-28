@@ -189,7 +189,7 @@ app.innerHTML = `
             <input id="setting-cols" type="number" min="4" max="14" step="1" />
           </label>
           <label>
-            Commander strength
+            Leader strength
             <input id="setting-stronghold" type="number" min="1" max="20" step="1" />
           </label>
           <label>
@@ -465,6 +465,14 @@ type TeamMoveAnimation = {
   moves: { unitId: string; from: Hex; to: Hex }[]
   duration: number
 }
+type ShoveAnimation = {
+  type: 'shove'
+  targetUnitId: string
+  from: Hex
+  to: Hex
+  collision: boolean
+  duration: number
+}
 type LungeAnimation = { type: 'lunge'; unitId: string; from: Hex; dir: Direction; duration: number }
 type TeamLungeAnimation = {
   type: 'teamLunge'
@@ -476,7 +484,7 @@ type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
-type ExecuteAnimation = { type: 'execute'; target: Hex; facing: Direction; duration: number }
+type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
 type AdjacentStrikeAnimation = { type: 'adjacentStrike'; origin: Hex; duration: number }
 type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
@@ -507,6 +515,7 @@ type DeathRayAnimation = { type: 'deathRay'; from: Hex; targets: Hex[]; duration
 type BoardAnimation =
   | MoveAnimation
   | TeamMoveAnimation
+  | ShoveAnimation
   | LungeAnimation
   | TeamLungeAnimation
   | SpawnAnimation
@@ -525,6 +534,7 @@ type BoardAnimation =
   | DeathRayAnimation
 
 const MOVE_DURATION_MS = 300
+const SHOVE_DURATION_MS = 520
 const LUNGE_DURATION_MS = 200
 const SPAWN_DURATION_MS = 260
 const BOOST_DURATION_MS = 320
@@ -619,36 +629,36 @@ const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 type ClassSpriteSet = {
   unitBaseImage: ImageAsset
   unitTeamImage: ImageAsset
-  commanderBaseImage: ImageAsset
-  commanderTeamImage: ImageAsset
+  leaderBaseImage: ImageAsset
+  leaderTeamImage: ImageAsset
   unitTeamCache: Map<PlayerId, HTMLCanvasElement>
-  commanderTeamCache: Map<PlayerId, HTMLCanvasElement>
+  leaderTeamCache: Map<PlayerId, HTMLCanvasElement>
 }
 
 const classSpriteSets: Record<PlayerClassId, ClassSpriteSet> = {
   commander: {
     unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.unitBaseAsset)),
     unitTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.unitTeamAsset)),
-    commanderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.commanderBaseAsset)),
-    commanderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.commanderTeamAsset)),
+    leaderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.leaderBaseAsset)),
+    leaderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.leaderTeamAsset)),
     unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
-    commanderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    leaderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
   },
   warleader: {
     unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.unitBaseAsset)),
     unitTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.unitTeamAsset)),
-    commanderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.commanderBaseAsset)),
-    commanderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.commanderTeamAsset)),
+    leaderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.leaderBaseAsset)),
+    leaderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.leaderTeamAsset)),
     unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
-    commanderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    leaderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
   },
   archmage: {
     unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.unitBaseAsset)),
     unitTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.unitTeamAsset)),
-    commanderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.commanderBaseAsset)),
-    commanderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.commanderTeamAsset)),
+    leaderBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.leaderBaseAsset)),
+    leaderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.leaderTeamAsset)),
     unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
-    commanderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    leaderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
   },
 }
 
@@ -804,7 +814,7 @@ const BUILDING_ANCHOR_Y = 0.7
 const SPAWN_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.5
 const SPAWN_ANCHOR_Y = BUILDING_ANCHOR_Y - 0.08
 const UNIT_IMAGE_SCALE = 1.1
-const COMMANDER_IMAGE_SCALE = UNIT_IMAGE_SCALE
+const LEADER_IMAGE_SCALE = UNIT_IMAGE_SCALE
 const UNIT_ANCHOR_Y = 0.78
 const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
 const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
@@ -1018,7 +1028,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     }
     sanitizeLoadoutsForCurrentClasses()
     state = parsed.state as GameState
-    normalizeCommanderUnitsInState(state)
+    normalizeLeaderUnitsInState(state)
     suppressWinnerModalForRestoredOutcome = state.winner !== null
     planningPlayer = parsed.planningPlayer === 1 ? 1 : 0
     selectedCardId = typeof parsed.selectedCardId === 'string' ? parsed.selectedCardId : null
@@ -1716,11 +1726,11 @@ function mapViewToState(view: GameStateView): GameState {
     spawnedByOrder: { ...view.spawnedByOrder },
     settings: { ...view.settings },
   }
-  normalizeCommanderUnitsInState(mapped)
+  normalizeLeaderUnitsInState(mapped)
   return mapped
 }
 
-function normalizeCommanderUnitsInState(sourceState: GameState): void {
+function normalizeLeaderUnitsInState(sourceState: GameState): void {
   const normalizedTraps = Array.isArray((sourceState as { traps?: unknown }).traps)
     ? (sourceState as { traps: unknown[] }).traps
         .filter((entry): entry is { id?: unknown; owner?: unknown; kind?: unknown; pos?: { q?: unknown; r?: unknown } } => {
@@ -1745,17 +1755,21 @@ function normalizeCommanderUnitsInState(sourceState: GameState): void {
 
   Object.values(sourceState.units).forEach((unit) => {
     const rawKind = (unit as { kind: string }).kind
-    if (rawKind === 'stronghold') {
-      ;(unit as Unit).kind = 'commander'
+    if (rawKind === 'stronghold' || rawKind === 'commander') {
+      ;(unit as Unit).kind = 'leader'
     }
-    if (unit.kind !== 'commander') return
+    if (unit.kind !== 'leader') return
     const hasSlow = unit.modifiers.some((modifier) => modifier.type === 'slow')
     const hasSpellResistance = unit.modifiers.some((modifier) => modifier.type === 'spellResistance')
+    const hasReinforcementPenalty = unit.modifiers.some((modifier) => modifier.type === 'reinforcementPenalty')
     if (!hasSlow) {
       unit.modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
     }
     if (!hasSpellResistance) {
       unit.modifiers.unshift({ type: 'spellResistance', turnsRemaining: 'indefinite' })
+    }
+    if (!hasReinforcementPenalty) {
+      unit.modifiers.unshift({ type: 'reinforcementPenalty', turnsRemaining: 'indefinite' })
     }
   })
 }
@@ -2583,7 +2597,7 @@ function drawBoostGlow(center: { x: number; y: number }, progress: number): void
 }
 
 function getTeamTint(owner: PlayerId): string {
-  return owner === 0 ? '#2da9ff' : '#ff6666'
+  return owner === 0 ? '#2da9ff' : '#ff1f3d'
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -2609,11 +2623,13 @@ function mixColor(color: string, target: string, amount: number): string {
   return rgbToHex(r, g, bVal)
 }
 
-const TEAM_TINT_LIFT = 0.2
+const TEAM_TINT_LIFT_P1 = 0.2
+const TEAM_TINT_LIFT_P2 = 0.08
 const TEAM_RING_DARKEN = 0.3
 
 function getSpriteTint(owner: PlayerId): string {
-  return mixColor(getTeamTint(owner), '#ffffff', TEAM_TINT_LIFT)
+  const lift = owner === 0 ? TEAM_TINT_LIFT_P1 : TEAM_TINT_LIFT_P2
+  return mixColor(getTeamTint(owner), '#ffffff', lift)
 }
 
 function getRingTint(owner: PlayerId): string {
@@ -2630,7 +2646,7 @@ function getUnitDisplayName(owner: PlayerId): string {
   return PLAYER_CLASS_DEFS[classId].unitName
 }
 
-function getCommanderDisplayName(owner: PlayerId): string {
+function getLeaderDisplayName(owner: PlayerId): string {
   const classId = getLoadoutClass(owner)
   return PLAYER_CLASS_DEFS[classId].name
 }
@@ -2690,11 +2706,11 @@ function drawUnitSprite(center: { x: number; y: number }, owner: PlayerId, scale
   drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
 }
 
-function drawCommanderSprite(center: { x: number; y: number }, owner: PlayerId, scale = COMMANDER_IMAGE_SCALE): void {
+function drawLeaderSprite(center: { x: number; y: number }, owner: PlayerId, scale = LEADER_IMAGE_SCALE): void {
   const spriteSet = getSpriteSetForOwner(owner)
-  if (!spriteSet.commanderBaseImage.loaded) return
-  drawAnchoredImage(spriteSet.commanderBaseImage, center, scale, UNIT_ANCHOR_Y)
-  const tinted = getTintedTeamLayer(owner, spriteSet.commanderTeamImage, spriteSet.commanderTeamCache)
+  if (!spriteSet.leaderBaseImage.loaded) return
+  drawAnchoredImage(spriteSet.leaderBaseImage, center, scale, UNIT_ANCHOR_Y)
+  const tinted = getTintedTeamLayer(owner, spriteSet.leaderTeamImage, spriteSet.leaderTeamCache)
   if (!tinted) return
   drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
 }
@@ -2753,6 +2769,29 @@ function getAnimatedCenter(unit: Unit): { x: number; y: number } {
     }
   }
 
+  if (currentAnimation.type === 'shove' && currentAnimation.targetUnitId === unit.id) {
+    const from = projectHex(currentAnimation.from)
+    const to = projectHex(currentAnimation.to)
+    if (!currentAnimation.collision) {
+      return {
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t,
+      }
+    }
+    if (t <= 0.5) {
+      const p = t * 2
+      return {
+        x: from.x + (to.x - from.x) * p,
+        y: from.y + (to.y - from.y) * p,
+      }
+    }
+    const p = (t - 0.5) * 2
+    return {
+      x: to.x + (from.x - to.x) * p,
+      y: to.y + (from.y - to.y) * p,
+    }
+  }
+
   if (currentAnimation.type === 'lunge' && currentAnimation.unitId === unit.id) {
     const base = projectHex(currentAnimation.from)
     const neighborHex = neighbor(currentAnimation.from, currentAnimation.dir)
@@ -2796,37 +2835,106 @@ function drawStrengthDots(
   const strength = previewStrength !== null ? Math.max(baseStrength, previewStrength) : baseStrength
   if (strength <= 0) return
   const dotRadius = Math.max(2, layout.size * 0.07)
-  const spacing = dotRadius * 2.6
+  const orbHeight = dotRadius * 2
+  const cylinderHeight = dotRadius * 3
+  const gap = dotRadius * 0.9
   const baseX = center.x + layout.size * 0.48
   const baseY = center.y
   const delta = previewStrength !== null ? previewStrength - baseStrength : 0
 
+  type StrengthIcon = { kind: 'orb' | 'cylinder'; start: number; end: number }
+  const icons: StrengthIcon[] = []
+  const cylinderCount = Math.floor(strength / 5)
+  const orbCount = strength % 5
+  let hpCursor = 0
+  for (let i = 0; i < cylinderCount; i += 1) {
+    const start = hpCursor + 1
+    const end = hpCursor + 5
+    icons.push({ kind: 'cylinder', start, end })
+    hpCursor = end
+  }
+  for (let i = 0; i < orbCount; i += 1) {
+    const start = hpCursor + 1
+    icons.push({ kind: 'orb', start, end: start })
+    hpCursor = start
+  }
+
+  const centerYs: number[] = []
+  for (let i = 0; i < icons.length; i += 1) {
+    if (i === 0) {
+      centerYs.push(baseY)
+      continue
+    }
+    const prevHeight = icons[i - 1].kind === 'cylinder' ? cylinderHeight : orbHeight
+    const nextHeight = icons[i].kind === 'cylinder' ? cylinderHeight : orbHeight
+    const nextY = centerYs[i - 1] - ((prevHeight + nextHeight) * 0.5 + gap) * BOARD_TILT
+    centerYs.push(nextY)
+  }
+
   ctx.save()
-  for (let i = 0; i < strength; i += 1) {
-    const y = baseY - i * spacing * BOARD_TILT
+  for (let i = 0; i < icons.length; i += 1) {
+    const icon = icons[i]
+    const y = centerYs[i]
     let dotColor = baseColor
-    if (delta > 0 && i >= baseStrength) {
+    if (delta > 0 && icon.start > baseStrength) {
       dotColor = '#7CFF8A'
-    } else if (delta < 0 && previewStrength !== null && i >= previewStrength) {
+    } else if (delta < 0 && previewStrength !== null && icon.start > previewStrength) {
       dotColor = '#ff2b2b'
     }
-    const gradient = ctx.createRadialGradient(
-      baseX - dotRadius * 0.35,
-      y - dotRadius * 0.35,
-      dotRadius * 0.2,
-      baseX,
-      y,
-      dotRadius
-    )
+    if (icon.kind === 'orb') {
+      const gradient = ctx.createRadialGradient(
+        baseX - dotRadius * 0.35,
+        y - dotRadius * 0.35,
+        dotRadius * 0.2,
+        baseX,
+        y,
+        dotRadius
+      )
+      gradient.addColorStop(0, '#ffffff')
+      gradient.addColorStop(0.3, dotColor)
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+      ctx.beginPath()
+      ctx.arc(baseX, y, dotRadius, 0, Math.PI * 2)
+      ctx.fillStyle = gradient
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
+      ctx.lineWidth = 0.8
+      ctx.stroke()
+      continue
+    }
+
+    const halfHeight = cylinderHeight * 0.5
+    const radiusX = dotRadius * 1.05
+    const capRadiusY = dotRadius * 0.5
+    const topY = y - halfHeight + capRadiusY
+    const bottomY = y + halfHeight - capRadiusY
+    const bodyTop = topY
+    const bodyBottom = bottomY
+    const gradient = ctx.createLinearGradient(baseX, bodyTop - capRadiusY, baseX, bodyBottom + capRadiusY)
     gradient.addColorStop(0, '#ffffff')
-    gradient.addColorStop(0.3, dotColor)
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
-    ctx.beginPath()
-    ctx.arc(baseX, y, dotRadius, 0, Math.PI * 2)
+    gradient.addColorStop(0.2, dotColor)
+    gradient.addColorStop(0.8, dotColor)
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.55)')
+
     ctx.fillStyle = gradient
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)'
     ctx.lineWidth = 0.8
+
+    ctx.beginPath()
+    ctx.moveTo(baseX - radiusX, bodyTop)
+    ctx.lineTo(baseX - radiusX, bodyBottom)
+    ctx.ellipse(baseX, bodyBottom, radiusX, capRadiusY, 0, Math.PI, 0, true)
+    ctx.lineTo(baseX + radiusX, bodyTop)
+    ctx.ellipse(baseX, bodyTop, radiusX, capRadiusY, 0, 0, Math.PI, true)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.ellipse(baseX, bodyTop, radiusX, capRadiusY, 0, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'
     ctx.stroke()
   }
   ctx.restore()
@@ -2848,6 +2956,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   }
   if (modifier.type === 'spellResistance') {
     return { label: 'Spell resistance', kind: 'buff' }
+  }
+  if (modifier.type === 'reinforcementPenalty') {
+    return { label: 'Reinforcement penalty', kind: 'debuff' }
   }
   if (modifier.type === 'burn') {
     return { label: 'Burn', kind: 'debuff' }
@@ -2903,7 +3014,7 @@ function summarizeUnitModifiers(
 }
 
 function getUnitPopoverLabel(unit: Unit): string {
-  if (unit.kind === 'commander') return getCommanderDisplayName(unit.owner)
+  if (unit.kind === 'leader') return getLeaderDisplayName(unit.owner)
   if (unit.kind === 'barricade') return 'Barricade'
   return getUnitDisplayName(unit.owner)
 }
@@ -3208,13 +3319,8 @@ function drawBurnDamageAnimation(target: Hex, progress: number): void {
   ctx.restore()
 }
 
-function drawExecuteAnimation(target: Hex, facing: Direction, progress: number): void {
+function drawExecuteAnimation(target: Hex, progress: number): void {
   const center = projectHex(target)
-  const front = projectHex(neighbor(target, facing))
-  const focus = {
-    x: center.x + (front.x - center.x) * 0.28,
-    y: center.y + (front.y - center.y) * 0.28,
-  }
   const pulse = Math.sin(progress * Math.PI)
   const alpha = 0.35 + pulse * 0.65
   const size = layout.size * (0.3 + pulse * 0.2)
@@ -3228,20 +3334,20 @@ function drawExecuteAnimation(target: Hex, facing: Direction, progress: number):
   ctx.lineCap = 'round'
 
   ctx.beginPath()
-  ctx.moveTo(focus.x - size, focus.y - size * BOARD_TILT)
-  ctx.lineTo(focus.x + size, focus.y + size * BOARD_TILT)
-  ctx.moveTo(focus.x + size, focus.y - size * BOARD_TILT)
-  ctx.lineTo(focus.x - size, focus.y + size * BOARD_TILT)
+  ctx.moveTo(center.x - size, center.y - size * BOARD_TILT)
+  ctx.lineTo(center.x + size, center.y + size * BOARD_TILT)
+  ctx.moveTo(center.x + size, center.y - size * BOARD_TILT)
+  ctx.lineTo(center.x - size, center.y + size * BOARD_TILT)
   ctx.stroke()
 
   const glowRadius = size * 1.6
-  const glow = ctx.createRadialGradient(focus.x, focus.y, glowRadius * 0.2, focus.x, focus.y, glowRadius)
+  const glow = ctx.createRadialGradient(center.x, center.y, glowRadius * 0.2, center.x, center.y, glowRadius)
   glow.addColorStop(0, 'rgba(255, 220, 220, 0.9)')
   glow.addColorStop(0.55, 'rgba(255, 90, 90, 0.75)')
   glow.addColorStop(1, 'rgba(255, 0, 0, 0)')
   ctx.fillStyle = glow
   ctx.beginPath()
-  ctx.ellipse(focus.x, focus.y, glowRadius, glowRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.ellipse(center.x, center.y, glowRadius, glowRadius * BOARD_TILT, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 }
@@ -3781,10 +3887,6 @@ function drawBoard(): void {
     drawBurnDamageAnimation(currentAnimation.target, animationProgress)
   }
 
-  if (currentAnimation?.type === 'execute') {
-    drawExecuteAnimation(currentAnimation.target, currentAnimation.facing, animationProgress)
-  }
-
   if (currentAnimation?.type === 'adjacentStrike') {
     drawAdjacentStrikeAnimation(currentAnimation.origin, animationProgress)
   }
@@ -3828,6 +3930,10 @@ function drawBoard(): void {
     if (alpha <= 0) return
     drawUnit(unit, getAnimatedCenter(unit), alpha)
   })
+
+  if (currentAnimation?.type === 'execute') {
+    drawExecuteAnimation(currentAnimation.target, animationProgress)
+  }
 
   if (previewState && state.phase === 'planning') {
     drawGhostUnits(previewState)
@@ -3943,7 +4049,10 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   ctx.globalAlpha = animationAlpha * overrideAlpha
 
   const showModifierGlow = unit.modifiers.some(
-    (modifier) => modifier.type !== 'slow' && modifier.type !== 'spellResistance'
+    (modifier) =>
+      modifier.type !== 'slow' &&
+      modifier.type !== 'spellResistance' &&
+      modifier.type !== 'reinforcementPenalty'
   )
   if (showModifierGlow) {
     const glowRadius = unit.kind === 'barricade' ? layout.size * 0.72 : layout.size * 0.9
@@ -3976,7 +4085,7 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     drawBoostGlow(center, animationProgress)
   }
 
-  if (unit.kind === 'unit' || unit.kind === 'commander') {
+  if (unit.kind === 'unit' || unit.kind === 'leader') {
     const next = neighbor(unit.pos, unit.facing)
     const target = projectHex(next)
     const dir = {
@@ -4058,8 +4167,8 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
 
   if (unit.kind === 'unit') {
     drawUnitSprite(center, unit.owner)
-  } else if (unit.kind === 'commander') {
-    drawCommanderSprite(center, unit.owner, COMMANDER_IMAGE_SCALE)
+  } else if (unit.kind === 'leader') {
+    drawLeaderSprite(center, unit.owner, LEADER_IMAGE_SCALE)
   } else if (unit.kind === 'barricade' && barricadeBaseImage.loaded) {
     drawBarricadeSprite(center, unit.owner)
   }
@@ -4127,7 +4236,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
       ghostCtx.restore()
     }
   } else {
-    const unitSpriteScale = unit.kind === 'commander' ? COMMANDER_IMAGE_SCALE : UNIT_IMAGE_SCALE
+    const unitSpriteScale = unit.kind === 'leader' ? LEADER_IMAGE_SCALE : UNIT_IMAGE_SCALE
     const next = neighbor(unit.pos, unit.facing)
     const target = projectHex(next)
     const base = projectHex(unit.pos)
@@ -4169,7 +4278,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
     ghostCtx.restore()
 
     const spriteSet = getSpriteSetForOwner(unit.owner)
-    const troopBaseImage = unit.kind === 'commander' ? spriteSet.commanderBaseImage : spriteSet.unitBaseImage
+    const troopBaseImage = unit.kind === 'leader' ? spriteSet.leaderBaseImage : spriteSet.unitBaseImage
     if (troopBaseImage.loaded) {
       ghostCtx.save()
       ghostCtx.filter = 'grayscale(1) brightness(1.8)'
@@ -5682,7 +5791,12 @@ function resolveUnitIdFromParams(
   if (!unitId) return null
   if (!unitId.startsWith('planned:')) return unitId
   const plannedId = unitId.replace('planned:', '')
-  return spawnedByOrder[plannedId] ?? null
+  const mapped = spawnedByOrder[plannedId]
+  if (mapped) return mapped
+  const separator = plannedId.indexOf(':')
+  if (separator === -1) return null
+  const baseOrderId = plannedId.slice(0, separator)
+  return spawnedByOrder[baseOrderId] ?? null
 }
 
 function getOrderTileParam(params: OrderParams, key: 'tile' | 'tile2' | 'tile3'): Hex | undefined {
@@ -5829,6 +5943,41 @@ function parseDamageEvents(logEntries: string[]): { index: number; unitId: strin
   return events
 }
 
+function parseShoveCollisions(logEntries: string[]): { index: number; targetUnitId: string }[] {
+  const collisions: { index: number; targetUnitId: string }[] = []
+  logEntries.forEach((entry, index) => {
+    const match = entry.match(/^Unit (.+) collides with .+\.$/)
+    if (!match) return
+    collisions.push({
+      index,
+      targetUnitId: match[1],
+    })
+  })
+  return collisions
+}
+
+function resolveDirectionFromParams(
+  source: Extract<CardEffect, { type: 'shove' }>['direction'],
+  facing: Direction,
+  params: OrderParams
+): Direction | null {
+  if (source === 'facing') return facing
+  if (source.type === 'param') {
+    const value =
+      source.key === 'moveDirection'
+        ? params.moveDirection
+        : source.key === 'faceDirection'
+          ? params.faceDirection
+          : params.direction
+    return value ?? null
+  }
+  if (source.type === 'relative') {
+    if (source.offsets.length === 0) return null
+    return rotateDirection(facing, source.offsets[0])
+  }
+  return null
+}
+
 function buildAnimations(
   order: GameState['actionQueue'][number],
   before: Record<string, UnitSnapshot>,
@@ -5841,6 +5990,7 @@ function buildAnimations(
   const damageEvents = parseDamageEvents(logEntries)
   const destroyedEvents = parseDestroyedUnits(logEntries)
   const trapTriggers = parseTrapTriggers(logEntries)
+  const shoveCollisions = parseShoveCollisions(logEntries)
   const animatedPositions = new Map<string, Hex>()
   const destroyedAnimated = new Set<string>()
   let destroyedCursor = 0
@@ -5850,6 +6000,13 @@ function buildAnimations(
     const queue = loggedMoveEvents.get(unitId)
     if (!queue || queue.length === 0) return null
     const [next] = queue.splice(0, 1)
+    return next
+  }
+
+  const consumeShoveCollision = (targetUnitId: string): { index: number; targetUnitId: string } | null => {
+    const index = shoveCollisions.findIndex((entry) => entry.targetUnitId === targetUnitId)
+    if (index === -1) return null
+    const [next] = shoveCollisions.splice(index, 1)
     return next
   }
 
@@ -5885,7 +6042,8 @@ function buildAnimations(
     if (effect.type === 'spawn') {
       const tile = getOrderTileParam(order.params, effect.tileParam)
       if (!tile) continue
-      let spawnedId: string | undefined = state.spawnedByOrder[order.id]
+      const scopedKey = `${order.id}:${effect.tileParam}`
+      let spawnedId: string | undefined = state.spawnedByOrder[scopedKey] ?? state.spawnedByOrder[order.id]
       if (!spawnedId) {
         spawnedId = Object.values(state.units).find(
           (unit) =>
@@ -5971,7 +6129,6 @@ function buildAnimations(
       animations.push({
         type: 'execute',
         target: { ...target.pos },
-        facing: target.facing,
         duration: EXECUTE_DURATION_MS,
       })
     }
@@ -6166,9 +6323,54 @@ function buildAnimations(
       })
     }
 
+    if (effect.type === 'shove') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const beforeUnit = before[resolvedId]
+      const afterUnit = state.units[resolvedId] ?? before[resolvedId]
+      if (!beforeUnit || !afterUnit) continue
+
+      const direction = resolveDirectionFromParams(effect.direction, afterUnit.facing, order.params)
+      if (direction === null) continue
+      const targetTile = neighbor(beforeUnit.pos, direction)
+      const target = findSnapshotUnitAt(before, targetTile)
+      if (!target) continue
+
+      const attemptedTile = neighbor(target.pos, direction)
+      const collision = consumeShoveCollision(target.id)
+      if (collision) {
+        if (isTile(attemptedTile)) {
+          enqueueDestroyedUpTo(collision.index - 1)
+          lastConsumedLogIndex = Math.max(lastConsumedLogIndex, collision.index)
+          animations.push({
+            type: 'shove',
+            targetUnitId: target.id,
+            from: { ...target.pos },
+            to: { ...attemptedTile },
+            collision: true,
+            duration: SHOVE_DURATION_MS,
+          })
+        }
+        continue
+      }
+
+      const afterTargetPos = state.units[target.id]?.pos ?? loggedPositions.get(target.id)
+      if (!afterTargetPos) continue
+      if (afterTargetPos.q === target.pos.q && afterTargetPos.r === target.pos.r) continue
+      animations.push({
+        type: 'shove',
+        targetUnitId: target.id,
+        from: { ...target.pos },
+        to: { ...afterTargetPos },
+        collision: false,
+        duration: SHOVE_DURATION_MS,
+      })
+      animatedPositions.set(target.id, { ...afterTargetPos })
+    }
+
     if (effect.type === 'teamAttackForward') {
       const lunges = Object.values(state.units)
-        .filter((unit) => unit.owner === order.player && (unit.kind === 'unit' || unit.kind === 'commander'))
+        .filter((unit) => unit.owner === order.player && (unit.kind === 'unit' || unit.kind === 'leader'))
         .map((unit) => ({
           unitId: unit.id,
           from: { ...unit.pos },
@@ -6267,6 +6469,9 @@ function buildAnimations(
       animation.moves.forEach((move) => {
         animatedMoveIds.add(move.unitId)
       })
+    }
+    if (animation.type === 'shove') {
+      animatedMoveIds.add(animation.targetUnitId)
     }
     if (animation.type === 'teleport') {
       animatedMoveIds.add(animation.unitId)
@@ -6935,16 +7140,36 @@ function getUnitSnapshot(
 ): { pos: Hex; facing: Direction } | null {
   if (!unitId) return null
   if (unitId.startsWith('planned:')) {
-    const orderId = unitId.replace('planned:', '')
-    const resolved = snapshot.spawnedByOrder[orderId]
+    const orderRef = unitId.replace('planned:', '')
+    const resolved = snapshot.spawnedByOrder[orderRef]
     if (resolved && snapshot.units[resolved]) {
       const unit = snapshot.units[resolved]
       return { pos: unit.pos, facing: unit.facing }
     }
+    const separator = orderRef.indexOf(':')
+    const orderId = separator === -1 ? orderRef : orderRef.slice(0, separator)
+    const spawnKey = separator === -1 ? null : orderRef.slice(separator + 1)
+    const baseResolved = snapshot.spawnedByOrder[orderId]
+    if (baseResolved && snapshot.units[baseResolved]) {
+      const unit = snapshot.units[baseResolved]
+      return { pos: unit.pos, facing: unit.facing }
+    }
     const planned = state.players[player].orders.find((order) => order.id === orderId)
-    if (!planned || planned.defId !== 'reinforce_spawn') return null
-    if (!planned.params.tile || planned.params.direction === undefined) return null
-    return { pos: planned.params.tile, facing: planned.params.direction }
+    if (!planned) return null
+    for (const effect of CARD_DEFS[planned.defId].effects) {
+      if (effect.type !== 'spawn' && effect.type !== 'spawnAdjacentFriendly') continue
+      if (!effect.mapToOrder) continue
+      if (spawnKey && effect.tileParam !== spawnKey) continue
+      const tile = getOrderTileParam(planned.params, effect.tileParam)
+      if (!tile) continue
+      if (effect.type === 'spawn') {
+        const facing = effect.facingParam ? planned.params.direction : effect.facing
+        return { pos: tile, facing: (facing ?? 0) as Direction }
+      }
+      const facing = effect.facingParam ? planned.params.direction : undefined
+      return { pos: tile, facing: (facing ?? 0) as Direction }
+    }
+    return null
   }
   const unit = snapshot.units[unitId]
   if (!unit) return null
@@ -6952,9 +7177,20 @@ function getUnitSnapshot(
 }
 
 function getPlannedSpawnTiles(player: PlayerId): Hex[] {
-  return state.players[player].orders
-    .filter((order) => order.defId === 'reinforce_spawn' && order.params.tile)
-    .map((order) => order.params.tile as Hex)
+  const plannedTiles: Hex[] = []
+  state.players[player].orders.forEach((order) => {
+    CARD_DEFS[order.defId].effects.forEach((effect) => {
+      if (effect.type === 'spawn' && effect.mapToOrder) {
+        const tile = getOrderTileParam(order.params, effect.tileParam)
+        if (tile) plannedTiles.push({ ...tile })
+      }
+      if (effect.type === 'spawnAdjacentFriendly' && effect.mapToOrder) {
+        const tile = getOrderTileParam(order.params, effect.tileParam)
+        if (tile) plannedTiles.push({ ...tile })
+      }
+    })
+  })
+  return dedupeHexes(plannedTiles)
 }
 
 function findPlannedOrderId(snapshot: GameState, unitId: string): string | null {
@@ -7052,10 +7288,17 @@ function resolveSelectableUnitId(
     return plannedOrderId ? `planned:${plannedOrderId}` : null
   }
 
-  const planned = state.players[player].orders.find(
-    (order) => order.defId === 'reinforce_spawn' && order.params.tile?.q === hex.q && order.params.tile?.r === hex.r
-  )
-  return planned ? `planned:${planned.id}` : null
+  for (const order of state.players[player].orders) {
+    for (const effect of CARD_DEFS[order.defId].effects) {
+      if (effect.type !== 'spawn' && effect.type !== 'spawnAdjacentFriendly') continue
+      if (!effect.mapToOrder) continue
+      const tile = getOrderTileParam(order.params, effect.tileParam)
+      if (!tile) continue
+      if (tile.q !== hex.q || tile.r !== hex.r) continue
+      return `planned:${order.id}:${effect.tileParam}`
+    }
+  }
+  return null
 }
 
 function handleBoardClick(hex: Hex): void {

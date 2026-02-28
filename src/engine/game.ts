@@ -50,15 +50,15 @@ function sameHex(a: Hex, b: Hex): boolean {
 }
 
 function isDamageableUnit(unit: Unit): boolean {
-  return unit.kind === 'unit' || unit.kind === 'commander' || unit.kind === 'barricade'
+  return unit.kind === 'unit' || unit.kind === 'leader' || unit.kind === 'barricade'
 }
 
-function isCommanderUnit(unit: Unit): boolean {
-  return unit.kind === 'commander'
+function isLeaderUnit(unit: Unit): boolean {
+  return unit.kind === 'leader'
 }
 
 function canActAsUnit(unit: Unit): boolean {
-  return unit.kind === 'unit' || unit.kind === 'commander'
+  return unit.kind === 'unit' || unit.kind === 'leader'
 }
 
 function canTriggerTraps(unit: Unit): boolean {
@@ -273,17 +273,18 @@ function createDeckFromList(defIds: CardDefId[]): { id: string; defId: CardDefId
   return shuffle(defIds.map((defId, index) => ({ id: `c${index + 1}`, defId })))
 }
 
-function createCommander(owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
+function createLeader(owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
   return {
     id: `stronghold-${owner}`,
     owner,
-    kind: 'commander',
+    kind: 'leader',
     strength,
     pos,
     facing,
     modifiers: [
       { type: 'slow', turnsRemaining: 'indefinite' },
       { type: 'spellResistance', turnsRemaining: 'indefinite' },
+      { type: 'reinforcementPenalty', turnsRemaining: 'indefinite' },
     ],
   }
 }
@@ -319,8 +320,8 @@ export function createGameState(
   const units: Record<UnitId, Unit> = {}
   const topFacing: Direction = 5
   const bottomFacing: Direction = 2
-  units['stronghold-0'] = createCommander(0, bottomPos, settings.strongholdStrength, bottomFacing)
-  units['stronghold-1'] = createCommander(1, topPos, settings.strongholdStrength, topFacing)
+  units['stronghold-0'] = createLeader(0, bottomPos, settings.strongholdStrength, bottomFacing)
+  units['stronghold-1'] = createLeader(1, topPos, settings.strongholdStrength, topFacing)
   const p1Front = neighbor(units['stronghold-0'].pos, units['stronghold-0'].facing)
   const p2Front = neighbor(units['stronghold-1'].pos, units['stronghold-1'].facing)
   if (inBounds(rows, cols, p1Front)) {
@@ -392,7 +393,7 @@ export function getBarricadeSpawnTiles(state: GameState, player: PlayerId): Hex[
   const candidates = new Map<string, Hex>()
 
   Object.values(state.units)
-    .filter((unit) => unit.owner === player && (unit.kind === 'commander' || unit.kind === 'unit'))
+    .filter((unit) => unit.owner === player && (unit.kind === 'leader' || unit.kind === 'unit'))
     .forEach((unit) => {
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const adjacent = neighbor(unit.pos, dir)
@@ -959,12 +960,57 @@ function validateOrderParams(
   return true
 }
 
+type PlannedUnitReference = {
+  orderId: string
+  spawnKey: 'tile' | 'tile2' | null
+}
+
+function parsePlannedUnitReference(unitId: string): PlannedUnitReference | null {
+  if (!unitId.startsWith('planned:')) return null
+  const raw = unitId.replace('planned:', '')
+  if (!raw) return null
+  const separator = raw.indexOf(':')
+  if (separator === -1) return { orderId: raw, spawnKey: null }
+  const orderId = raw.slice(0, separator)
+  const spawnKey = raw.slice(separator + 1)
+  if (!orderId || (spawnKey !== 'tile' && spawnKey !== 'tile2')) return null
+  return { orderId, spawnKey }
+}
+
+function isMappedPlannedSpawnEffect(
+  effect: CardEffect
+): effect is Extract<CardEffect, { type: 'spawn' | 'spawnAdjacentFriendly' }> {
+  if (effect.type === 'spawn') return !!effect.mapToOrder
+  if (effect.type === 'spawnAdjacentFriendly') return !!effect.mapToOrder
+  return false
+}
+
+function getSpawnMapKey(orderId: string, tileParam: 'tile' | 'tile2'): string {
+  return `${orderId}:${tileParam}`
+}
+
+function registerSpawnedByOrder(
+  state: GameState,
+  orderId: string,
+  tileParam: 'tile' | 'tile2',
+  spawnedId: UnitId
+): void {
+  state.spawnedByOrder[getSpawnMapKey(orderId, tileParam)] = spawnedId
+  if (!state.spawnedByOrder[orderId]) {
+    state.spawnedByOrder[orderId] = spawnedId
+  }
+}
+
 function isPlannedUnitReference(state: GameState, player: PlayerId, unitId: string): boolean {
-  if (!unitId.startsWith('planned:')) return false
-  const orderId = unitId.replace('planned:', '')
-  const planned = state.players[player].orders.find((order) => order.id === orderId)
+  const plannedRef = parsePlannedUnitReference(unitId)
+  if (!plannedRef) return false
+  const planned = state.players[player].orders.find((order) => order.id === plannedRef.orderId)
   if (!planned) return false
-  return planned.defId === 'reinforce_spawn'
+  return CARD_DEFS[planned.defId].effects.some((effect) => {
+    if (!isMappedPlannedSpawnEffect(effect)) return false
+    if (!plannedRef.spawnKey) return true
+    return effect.tileParam === plannedRef.spawnKey
+  })
 }
 
 function getUnitAt(state: GameState, hex: Hex): Unit | null {
@@ -1010,9 +1056,9 @@ function spawnUnit(
 }
 
 function getDefaultSpawnFacing(state: GameState, player: PlayerId): Direction {
-  const commander = state.units[`stronghold-${player}`]
-  if (commander && commander.kind === 'commander') {
-    return commander.facing
+  const leader = state.units[`stronghold-${player}`]
+  if (leader && leader.kind === 'leader') {
+    return leader.facing
   }
   return (player === 0 ? 2 : 5) as Direction
 }
@@ -1039,8 +1085,13 @@ function placeTrap(
 }
 
 function boostUnit(state: GameState, unit: Unit, amount: number): void {
-  unit.strength += amount
-  state.log.push(`Unit ${unit.id} gains ${amount} strength.`)
+  const resolvedAmount = hasUnitModifier(unit, 'reinforcementPenalty') ? Math.floor(amount / 2) : amount
+  if (resolvedAmount <= 0) {
+    state.log.push(`Unit ${unit.id} gains no strength.`)
+    return
+  }
+  unit.strength += resolvedAmount
+  state.log.push(`Unit ${unit.id} gains ${resolvedAmount} strength.`)
 }
 
 function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers'][number]['type'], turns: ModifierDuration): void {
@@ -1067,13 +1118,17 @@ function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers
 
 function clearUnitModifiers(state: GameState, unit: Unit): void {
   if (unit.modifiers.length === 0) return
-  if (isCommanderUnit(unit)) {
+  if (isLeaderUnit(unit)) {
     const hadRemovable = unit.modifiers.some(
-      (modifier) => modifier.type !== 'slow' && modifier.type !== 'spellResistance'
+      (modifier) =>
+        modifier.type !== 'slow' &&
+        modifier.type !== 'spellResistance' &&
+        modifier.type !== 'reinforcementPenalty'
     )
     unit.modifiers = [
       { type: 'slow', turnsRemaining: 'indefinite' },
       { type: 'spellResistance', turnsRemaining: 'indefinite' },
+      { type: 'reinforcementPenalty', turnsRemaining: 'indefinite' },
     ]
     if (hadRemovable) {
       state.log.push(`Unit ${unit.id} has removable modifiers removed.`)
@@ -1124,7 +1179,7 @@ function applyDamage(
   const takenDelta = getDamageTakenDelta(unit)
   let resolvedDamage = Math.max(0, amount + dealtDelta + takenDelta)
   const isSpellDamage = sourceDefId ? cardCountsAsType(sourceDefId, 'spell') : false
-  if (isSpellDamage && isCommanderUnit(unit) && hasUnitModifier(unit, 'spellResistance')) {
+  if (isSpellDamage && isLeaderUnit(unit) && hasUnitModifier(unit, 'spellResistance')) {
     resolvedDamage = Math.floor(resolvedDamage / 2)
   }
   unit.strength -= resolvedDamage
@@ -1132,9 +1187,9 @@ function applyDamage(
   if (unit.strength <= 0) {
     delete state.units[unit.id]
     state.log.push(`Unit ${unit.id} is destroyed.`)
-    if (isCommanderUnit(unit)) {
+    if (isLeaderUnit(unit)) {
       state.winner = unit.owner === 0 ? 1 : 0
-      state.log.push(`Player ${state.winner + 1} wins by defeating the enemy commander.`)
+      state.log.push(`Player ${state.winner + 1} wins by defeating the enemy leader.`)
     }
   }
 }
@@ -1712,13 +1767,24 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
 }
 
 function resolveUnitId(state: GameState, player: PlayerId, unitId: string): UnitId | null {
-  if (!unitId.startsWith('planned:')) return unitId
-  const orderId = unitId.replace('planned:', '')
-  const mapped = state.spawnedByOrder[orderId]
+  const plannedRef = parsePlannedUnitReference(unitId)
+  if (!plannedRef) return unitId.startsWith('planned:') ? null : unitId
+  const scopedKey = plannedRef.spawnKey ? getSpawnMapKey(plannedRef.orderId, plannedRef.spawnKey) : plannedRef.orderId
+  const mapped = state.spawnedByOrder[scopedKey]
   if (mapped) return mapped
-  const planned = state.players[player].orders.find((order) => order.id === orderId)
-  if (planned?.defId === 'reinforce_spawn' && planned.params.tile) {
-    const candidate = getUnitAt(state, planned.params.tile)
+  if (plannedRef.spawnKey) {
+    const fallbackMapped = state.spawnedByOrder[plannedRef.orderId]
+    if (fallbackMapped) return fallbackMapped
+  }
+  const planned = state.players[player].orders.find((order) => order.id === plannedRef.orderId)
+  if (!planned) return null
+  const allowedParams: Array<'tile' | 'tile2'> = plannedRef.spawnKey ? [plannedRef.spawnKey] : ['tile', 'tile2']
+  for (const effect of CARD_DEFS[planned.defId].effects) {
+    if (!isMappedPlannedSpawnEffect(effect)) continue
+    if (!allowedParams.includes(effect.tileParam)) continue
+    const tile = getOrderTileParam(planned.params, effect.tileParam)
+    if (!tile) continue
+    const candidate = getUnitAt(state, tile)
     if (candidate && candidate.owner === player) return candidate.id
   }
   return null
@@ -1738,7 +1804,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       }
       const spawnedId = spawnUnit(state, order.player, tile, facing, kind, effect.strength)
       if (spawnedId && effect.mapToOrder) {
-        state.spawnedByOrder[order.id] = spawnedId
+        registerSpawnedByOrder(state, order.id, effect.tileParam, spawnedId)
       }
       if (!spawnedId) {
         state.log.push(`${CARD_DEFS[order.defId].name} fails (tile occupied or out of bounds).`)
@@ -1843,6 +1909,9 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const facing = effect.facingParam ? params.direction : getDefaultSpawnFacing(state, order.player)
       if (facing === undefined) return
       const spawnedId = spawnUnit(state, order.player, tile, facing, 'unit', effect.strength)
+      if (spawnedId && effect.mapToOrder) {
+        registerSpawnedByOrder(state, order.id, effect.tileParam, spawnedId)
+      }
       if (!spawnedId) {
         state.log.push(`${CARD_DEFS[order.defId].name} fails (tile occupied or blocked).`)
       }
@@ -1977,7 +2046,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const target = getUnitAt(state, targetTile)
       if (!target || !canCardTargetUnit(order.defId, target)) return
 
-      if (target.kind === 'commander') {
+      if (target.kind === 'leader') {
         applyDamage(state, target, effect.leaderDamage, actingUnit, order.defId)
         return
       }
