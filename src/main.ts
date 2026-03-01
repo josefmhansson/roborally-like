@@ -571,6 +571,8 @@ let touchOrderDrag:
       card: HTMLDivElement
       startX: number
       startY: number
+      startScrollLeft: number
+      startScrollTop: number
       didMove: boolean
     }
   | null = null
@@ -4432,6 +4434,63 @@ function reorderQueuedOrder(fromId: string, toId: string): void {
   render()
 }
 
+function updateTouchOrderDragVisual(
+  card: HTMLDivElement,
+  drag: { startX: number; startY: number; startScrollLeft: number; startScrollTop: number },
+  clientX: number,
+  clientY: number
+): void {
+  const scrollDx = ordersEl.scrollLeft - drag.startScrollLeft
+  const scrollDy = ordersEl.scrollTop - drag.startScrollTop
+  const dx = clientX - drag.startX + scrollDx
+  const dy = clientY - drag.startY + scrollDy
+  card.style.setProperty('--drag-translate-x', `${dx}px`)
+  card.style.setProperty('--drag-translate-y', `${dy}px`)
+}
+
+function clearTouchOrderDragVisual(card: HTMLDivElement): void {
+  card.classList.remove('dragging')
+  card.style.removeProperty('--drag-translate-x')
+  card.style.removeProperty('--drag-translate-y')
+}
+
+function autoScrollOrdersForPointer(clientX: number, clientY: number): void {
+  const rect = ordersEl.getBoundingClientRect()
+  const canScrollX = ordersEl.scrollWidth > ordersEl.clientWidth
+  const canScrollY = ordersEl.scrollHeight > ordersEl.clientHeight
+  const edge = 48
+  const maxSpeed = 22
+  let scrollX = 0
+  let scrollY = 0
+
+  if (canScrollX) {
+    if (clientX < rect.left + edge) {
+      const distance = rect.left + edge - clientX
+      scrollX = -Math.ceil((distance / edge) * maxSpeed)
+    } else if (clientX > rect.right - edge) {
+      const distance = clientX - (rect.right - edge)
+      scrollX = Math.ceil((distance / edge) * maxSpeed)
+    }
+  }
+
+  if (canScrollY) {
+    if (clientY < rect.top + edge) {
+      const distance = rect.top + edge - clientY
+      scrollY = -Math.ceil((distance / edge) * maxSpeed)
+    } else if (clientY > rect.bottom - edge) {
+      const distance = clientY - (rect.bottom - edge)
+      scrollY = Math.ceil((distance / edge) * maxSpeed)
+    }
+  }
+
+  if (scrollX !== 0) {
+    ordersEl.scrollLeft += scrollX
+  }
+  if (scrollY !== 0) {
+    ordersEl.scrollTop += scrollY
+  }
+}
+
 function renderOrders(): void {
   const inPlanning = state.phase === 'planning'
   const playerOrders = state.players[planningPlayer].orders
@@ -4507,7 +4566,7 @@ function renderOrders(): void {
       })
 
       card.addEventListener('pointerdown', (event) => {
-        if (event.pointerType !== 'touch') return
+        if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
         if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
         const fromOrderId = card.dataset.orderId
         if (!fromOrderId) return
@@ -4518,6 +4577,8 @@ function renderOrders(): void {
           card,
           startX: event.clientX,
           startY: event.clientY,
+          startScrollLeft: ordersEl.scrollLeft,
+          startScrollTop: ordersEl.scrollTop,
           didMove: false,
         }
         suppressNextOrderClick = false
@@ -4526,6 +4587,7 @@ function renderOrders(): void {
 
       card.addEventListener('pointermove', (event) => {
         if (!touchOrderDrag || touchOrderDrag.pointerId !== event.pointerId) return
+        event.preventDefault()
         if (!touchOrderDrag.didMove) {
           const dx = event.clientX - touchOrderDrag.startX
           const dy = event.clientY - touchOrderDrag.startY
@@ -4534,6 +4596,8 @@ function renderOrders(): void {
           isDraggingOrder = true
           touchOrderDrag.card.classList.add('dragging')
         }
+        updateTouchOrderDragVisual(touchOrderDrag.card, touchOrderDrag, event.clientX, event.clientY)
+        autoScrollOrdersForPointer(event.clientX, event.clientY)
         const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
         const target = element?.closest<HTMLDivElement>('.order-card')
         cards.forEach((item) => item.classList.remove('drag-over'))
@@ -4553,7 +4617,7 @@ function renderOrders(): void {
         const didMove = touchOrderDrag.didMove
         touchOrderDrag = null
         isDraggingOrder = false
-        draggedCard.classList.remove('dragging')
+        clearTouchOrderDragVisual(draggedCard)
         cards.forEach((item) => item.classList.remove('drag-over'))
         if (!didMove) return
         if (!targetOrderId || targetOrderId === fromOrderId) return
@@ -4566,6 +4630,10 @@ function renderOrders(): void {
       })
 
       card.addEventListener('pointercancel', (event) => {
+        finishTouchReorder(event.pointerId)
+      })
+
+      card.addEventListener('lostpointercapture', (event) => {
         finishTouchReorder(event.pointerId)
       })
 

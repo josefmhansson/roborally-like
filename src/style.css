@@ -1250,6 +1250,12 @@ body.in-match #winner-modal .btn.ready {
   position: relative;
   min-height: var(--card-height);
   cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  --drag-translate-x: 0px;
+  --drag-translate-y: 0px;
 }
 
 .order-card .card {
@@ -1268,9 +1274,12 @@ body.in-match #winner-modal .btn.ready {
 }
 
 .order-card.dragging {
-  opacity: 0.6;
+  opacity: 0.82;
   cursor: grabbing;
-  transform: none !important;
+  transform: translate3d(var(--drag-translate-x), var(--drag-translate-y), 0) scale(1.03);
+  transition: none !important;
+  z-index: 12;
+  pointer-events: none;
 }
 
 .order-card.drag-over {
