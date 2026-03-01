@@ -1246,16 +1246,21 @@ body.in-match #winner-modal .btn.ready {
   transform: none;
 }
 
+.order-card,
+.hand-card {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .order-card {
   position: relative;
   min-height: var(--card-height);
   cursor: grab;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
-  --drag-translate-x: 0px;
-  --drag-translate-y: 0px;
+}
+
+.hand-card {
+  cursor: grab;
 }
 
 .order-card .card {
@@ -1273,16 +1278,16 @@ body.in-match #winner-modal .btn.ready {
   filter: grayscale(0.7);
 }
 
-.order-card.dragging {
+.card.card-reorder-dragging {
   opacity: 0.82;
   cursor: grabbing;
-  transform: translate3d(var(--drag-translate-x), var(--drag-translate-y), 0) scale(1.03);
+  transform: translate3d(var(--drag-translate-x, 0px), var(--drag-translate-y, 0px), 0) scale(1.03);
   transition: none !important;
   z-index: 12;
   pointer-events: none;
 }
 
-.order-card.drag-over {
+.card.card-reorder-over {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px rgba(123, 216, 255, 0.3);
 }
@@ -1389,7 +1394,7 @@ body.theme-ember .card {
   background-color: transparent;
 }
 body.theme-ember .card.selected,
-body.theme-ember .order-card.drag-over {
+body.theme-ember .card.card-reorder-over {
   border-color: transparent;
   box-shadow: none;
 }

@@ -561,21 +561,28 @@ let autoResolve = false
 const pendingDeathUnits = new Map<string, Unit>()
 const unitAlphaOverrides = new Map<string, number>()
 const deathAlphaOverrides = new Map<string, number>()
-let isDraggingOrder = false
+let isDraggingCardReorder = false
 let suppressNextOrderClick = false
-let touchOrderDrag:
-  | {
-      pointerId: number
-      fromOrderId: string
-      targetOrderId: string
-      card: HTMLDivElement
-      startX: number
-      startY: number
-      startScrollLeft: number
-      startScrollTop: number
-      didMove: boolean
-    }
-  | null = null
+let suppressNextHandClick = false
+type CardReorderDragState = {
+  pointerId: number
+  pointerType: string
+  container: HTMLElement
+  cards: HTMLElement[]
+  card: HTMLElement
+  fromId: string
+  targetId: string
+  startX: number
+  startY: number
+  startScrollLeft: number
+  startScrollTop: number
+  isDragging: boolean
+  holdTimer: number | null
+}
+let cardReorderDrag: CardReorderDragState | null = null
+const TOUCH_REORDER_HOLD_MS = 180
+const TOUCH_REORDER_CANCEL_MOVE_PX = 10
+const CARD_REORDER_START_DISTANCE_PX = 8
 let pendingCardTransfer:
   | {
       cardId: string
@@ -699,6 +706,7 @@ let lastInputWasTouch = false
 let touchTapCandidate = false
 let suppressWinnerModalForRestoredOutcome = false
 const hiddenCardIds = new Set<string>()
+const handVisualOrder: Record<PlayerId, string[]> = { 0: [], 1: [] }
 
 let mode: PlayMode = 'local'
 let onlineClient: OnlineClient | null = null
@@ -730,12 +738,11 @@ const BOT_PLAYER: PlayerId = 1
 const ROGUELIKE_STARTING_STRONGHOLD_HP = 20
 const ROGUELIKE_OPPONENT_DECK_SIZE = 20
 const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
-  draft: 2,
-  remove: 1,
-  extraDraw: 0.5,
-  extraAp: 0.2,
-  extraStartingUnit: 0.5,
-  unitStrength: 0.5,
+  strongholdHp: 34,
+  extraDraw: 5,
+  extraAp: 2,
+  extraStartingUnit: 5,
+  unitStrength: 5,
 } as const
 const ROGUELIKE_STARTING_DECK: CardDefId[] = [
   'reinforce_spawn',
@@ -750,7 +757,7 @@ const ROGUELIKE_STARTING_DECK: CardDefId[] = [
 ]
 
 type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
-type RoguelikeUiStage = 'reward_choice' | 'draft_pick' | 'remove_pick' | 'reward_notice' | 'run_over'
+type RoguelikeUiStage = 'reward_choice' | 'reward_notice' | 'run_over'
 
 type RoguelikeDifficulty = {
   botStrongholdHp: number
@@ -772,6 +779,7 @@ type RoguelikeRunState = {
   resultHandled: boolean
   uiStage: RoguelikeUiStage
   draftOptions: CardDefId[]
+  pendingRandomReward: RoguelikeRandomReward | null
   rewardNoticeMessage: string | null
 }
 
@@ -937,6 +945,7 @@ function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClass
     resultHandled: false,
     uiStage: 'reward_choice',
     draftOptions: [],
+    pendingRandomReward: null,
     rewardNoticeMessage: null,
   }
 }
@@ -948,12 +957,14 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   const deck = sanitizeDeckForCurrentClass(normalizeDeckInput(source.deck), playerClass)
   const uiStage =
     source.uiStage === 'reward_choice' ||
-    source.uiStage === 'draft_pick' ||
-    source.uiStage === 'remove_pick' ||
     source.uiStage === 'reward_notice' ||
     source.uiStage === 'run_over'
       ? source.uiStage
       : 'reward_choice'
+  const pendingRandomReward =
+    typeof source.pendingRandomReward === 'string' && source.pendingRandomReward in ROGUELIKE_RANDOM_REWARD_WEIGHTS
+      ? (source.pendingRandomReward as RoguelikeRandomReward)
+      : null
 
   return {
     wins: Math.max(0, Math.floor(Number(source.wins) || 0)),
@@ -970,6 +981,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     resultHandled: Boolean(source.resultHandled),
     uiStage,
     draftOptions: sanitizeDeckForCurrentClass(normalizeDeckInput(source.draftOptions), playerClass, true).slice(0, 3),
+    pendingRandomReward,
     rewardNoticeMessage: typeof source.rewardNoticeMessage === 'string' ? source.rewardNoticeMessage : null,
   }
 }
@@ -2838,21 +2850,20 @@ function drawStrengthDots(
   if (strength <= 0) return
   const dotRadius = Math.max(2, layout.size * 0.07)
   const orbHeight = dotRadius * 2
-  const cylinderHeight = dotRadius * 3
+  const capsuleHeight = dotRadius * 3
   const gap = dotRadius * 0.9
   const baseX = center.x + layout.size * 0.48
   const baseY = center.y
-  const delta = previewStrength !== null ? previewStrength - baseStrength : 0
 
-  type StrengthIcon = { kind: 'orb' | 'cylinder'; start: number; end: number }
+  type StrengthIcon = { kind: 'orb' | 'capsule'; start: number; end: number }
   const icons: StrengthIcon[] = []
-  const cylinderCount = Math.floor(strength / 5)
+  const capsuleCount = Math.floor(strength / 5)
   const orbCount = strength % 5
   let hpCursor = 0
-  for (let i = 0; i < cylinderCount; i += 1) {
+  for (let i = 0; i < capsuleCount; i += 1) {
     const start = hpCursor + 1
     const end = hpCursor + 5
-    icons.push({ kind: 'cylinder', start, end })
+    icons.push({ kind: 'capsule', start, end })
     hpCursor = end
   }
   for (let i = 0; i < orbCount; i += 1) {
@@ -2867,23 +2878,54 @@ function drawStrengthDots(
       centerYs.push(baseY)
       continue
     }
-    const prevHeight = icons[i - 1].kind === 'cylinder' ? cylinderHeight : orbHeight
-    const nextHeight = icons[i].kind === 'cylinder' ? cylinderHeight : orbHeight
+    const prevHeight = icons[i - 1].kind === 'capsule' ? capsuleHeight : orbHeight
+    const nextHeight = icons[i].kind === 'capsule' ? capsuleHeight : orbHeight
     const nextY = centerYs[i - 1] - ((prevHeight + nextHeight) * 0.5 + gap) * BOARD_TILT
     centerYs.push(nextY)
+  }
+
+  const getRemovedFraction = (icon: StrengthIcon): number => {
+    if (previewStrength === null) return 0
+    if (previewStrength >= icon.end) return 0
+    const iconHp = icon.end - icon.start + 1
+    const removed = icon.end - Math.max(previewStrength, icon.start - 1)
+    return Math.max(0, Math.min(1, removed / iconHp))
+  }
+
+  const getAddedFraction = (icon: StrengthIcon): number => {
+    if (previewStrength === null) return 0
+    if (previewStrength <= baseStrength) return 0
+    const iconHp = icon.end - icon.start + 1
+    const addedTop = Math.min(icon.end, previewStrength)
+    const addedBottomExclusive = Math.max(icon.start - 1, baseStrength)
+    const added = addedTop - addedBottomExclusive
+    return Math.max(0, Math.min(1, added / iconHp))
+  }
+
+  const drawCapsulePath = (x: number, y: number, radiusX: number, capRadiusY: number, height: number): void => {
+    const halfHeight = height * 0.5
+    const topCenterY = y - halfHeight + capRadiusY
+    const bottomCenterY = y + halfHeight - capRadiusY
+    ctx.beginPath()
+    ctx.moveTo(x - radiusX, topCenterY)
+    ctx.lineTo(x - radiusX, bottomCenterY)
+    ctx.ellipse(x, bottomCenterY, radiusX, capRadiusY, 0, Math.PI, 0, true)
+    ctx.lineTo(x + radiusX, topCenterY)
+    ctx.ellipse(x, topCenterY, radiusX, capRadiusY, 0, 0, Math.PI, true)
+    ctx.closePath()
   }
 
   ctx.save()
   for (let i = 0; i < icons.length; i += 1) {
     const icon = icons[i]
     const y = centerYs[i]
-    let dotColor = baseColor
-    if (delta > 0 && icon.start > baseStrength) {
-      dotColor = '#7CFF8A'
-    } else if (delta < 0 && previewStrength !== null && icon.start > previewStrength) {
-      dotColor = '#ff2b2b'
-    }
+    const damageFraction = getRemovedFraction(icon)
+    const healFraction = getAddedFraction(icon)
+    const overlayFraction = damageFraction > 0 ? damageFraction : healFraction
+    const overlayColor = damageFraction > 0 ? '#ff2b2b' : '#7CFF8A'
+
     if (icon.kind === 'orb') {
+      const orbColor = overlayFraction >= 1 ? overlayColor : baseColor
       const gradient = ctx.createRadialGradient(
         baseX - dotRadius * 0.35,
         y - dotRadius * 0.35,
@@ -2893,7 +2935,7 @@ function drawStrengthDots(
         dotRadius
       )
       gradient.addColorStop(0, '#ffffff')
-      gradient.addColorStop(0.3, dotColor)
+      gradient.addColorStop(0.3, orbColor)
       gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
       ctx.beginPath()
       ctx.arc(baseX, y, dotRadius, 0, Math.PI * 2)
@@ -2905,38 +2947,50 @@ function drawStrengthDots(
       continue
     }
 
-    const halfHeight = cylinderHeight * 0.5
-    const radiusX = dotRadius * 1.05
-    const capRadiusY = dotRadius * 0.5
-    const topY = y - halfHeight + capRadiusY
-    const bottomY = y + halfHeight - capRadiusY
-    const bodyTop = topY
-    const bodyBottom = bottomY
-    const gradient = ctx.createLinearGradient(baseX, bodyTop - capRadiusY, baseX, bodyBottom + capRadiusY)
-    gradient.addColorStop(0, '#ffffff')
-    gradient.addColorStop(0.2, dotColor)
-    gradient.addColorStop(0.8, dotColor)
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.55)')
+    const radiusX = dotRadius * 1.02
+    const capRadiusY = dotRadius * 0.8
+    const topY = y - capsuleHeight * 0.5
+    const baseGradient = ctx.createRadialGradient(
+      baseX - radiusX * 0.35,
+      y - capsuleHeight * 0.2,
+      dotRadius * 0.2,
+      baseX,
+      y,
+      capsuleHeight * 0.72
+    )
+    baseGradient.addColorStop(0, '#ffffff')
+    baseGradient.addColorStop(0.32, baseColor)
+    baseGradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
 
-    ctx.fillStyle = gradient
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)'
+    drawCapsulePath(baseX, y, radiusX, capRadiusY, capsuleHeight)
+    ctx.fillStyle = baseGradient
+    ctx.fill()
+
+    if (overlayFraction > 0) {
+      const overlayHeight = capsuleHeight * Math.min(1, overlayFraction)
+      const overlayGradient = ctx.createRadialGradient(
+        baseX - radiusX * 0.35,
+        topY + overlayHeight * 0.25,
+        dotRadius * 0.2,
+        baseX,
+        topY + overlayHeight * 0.6,
+        Math.max(dotRadius, overlayHeight)
+      )
+      overlayGradient.addColorStop(0, '#ffffff')
+      overlayGradient.addColorStop(0.32, overlayColor)
+      overlayGradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+
+      ctx.save()
+      drawCapsulePath(baseX, y, radiusX, capRadiusY, capsuleHeight)
+      ctx.clip()
+      ctx.fillStyle = overlayGradient
+      ctx.fillRect(baseX - radiusX - 2, topY, radiusX * 2 + 4, overlayHeight + 1)
+      ctx.restore()
+    }
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
     ctx.lineWidth = 0.8
-
-    ctx.beginPath()
-    ctx.moveTo(baseX - radiusX, bodyTop)
-    ctx.lineTo(baseX - radiusX, bodyBottom)
-    ctx.ellipse(baseX, bodyBottom, radiusX, capRadiusY, 0, Math.PI, 0, true)
-    ctx.lineTo(baseX + radiusX, bodyTop)
-    ctx.ellipse(baseX, bodyTop, radiusX, capRadiusY, 0, 0, Math.PI, true)
-    ctx.closePath()
-    ctx.fill()
-    ctx.stroke()
-
-    ctx.beginPath()
-    ctx.ellipse(baseX, bodyTop, radiusX, capRadiusY, 0, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)'
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'
+    drawCapsulePath(baseX, y, radiusX, capRadiusY, capsuleHeight)
     ctx.stroke()
   }
   ctx.restore()
@@ -3928,7 +3982,7 @@ function drawBoard(): void {
 
   pendingDeathUnits.forEach((unit) => {
     if (currentAnimation?.type === 'death' && currentAnimation.unit.id === unit.id) return
-    const alpha = deathAlphaOverrides.get(unit.id) ?? 1
+    const alpha = unitAlphaOverrides.get(unit.id) ?? deathAlphaOverrides.get(unit.id) ?? 1
     if (alpha <= 0) return
     drawUnit(unit, getAnimatedCenter(unit), alpha)
   })
@@ -4351,63 +4405,50 @@ function drawGhostUnits(snapshot: GameState): void {
   ctx.restore()
 }
 
-function renderHand(): void {
-  const playerHand = state.players[planningPlayer].hand
-  if (playerHand.length === 0) {
-    handEl.innerHTML = '<div class="empty">No cards in hand.</div>'
-    return
-  }
+type CardStripReorderOptions = {
+  container: HTMLElement
+  cards: HTMLElement[]
+  cardSelector: string
+  canReorder: () => boolean
+  getCardId: (card: HTMLElement) => string | null
+  onReorder: (fromId: string, toId: string) => void
+  suppressNextClick: () => void
+}
 
-  handEl.innerHTML = playerHand
-    .map((card) => {
-      const def = CARD_DEFS[card.defId]
-      const cardTypeClassNames = getCardTypeClassNames(def)
-      const cardClassName = getCardClassName(def.id)
-      const isSelected = selectedCardId === card.id
-      const isHidden = hiddenCardIds.has(card.id)
-      const isPendingTransfer = pendingCardTransfer?.cardId === card.id && pendingCardTransfer?.target === 'hand'
-      if (isPendingTransfer) {
-        return `
-          <button class="card ${cardTypeClassNames} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def)}></button>
-        `
-      }
-      return `
-        <button class="card ${cardTypeClassNames} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def, isHidden)}>
-          ${renderCardFace(def)}
-        </button>
-      `
-    })
-    .join('')
+type HandCard = GameState['players'][number]['hand'][number]
 
-  const cardButtons = handEl.querySelectorAll<HTMLButtonElement>('.card')
-  cardButtons.forEach((button) => {
-    button.addEventListener('click', () => {
-      if (state.phase !== 'planning') return
-      if (isBotPlanningLocked()) return
-      if (state.ready[planningPlayer]) return
-      const cardId = button.dataset.cardId ?? null
-      if (!cardId) return
-      const buttonKey = getCardVisualKey(button)
-      if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
-        overlayLocked = false
-        clearOverlayClone()
-      }
-      if (overlayClone && buttonKey && getOverlaySourceKey() === buttonKey && overlayClone.style.display !== 'none') {
-        overlayLocked = true
-        overlaySourceEl = button
-        overlaySourceVisibility = button.style.opacity
-        overlaySourceTransition = button.style.transition
-      } else {
-        showOverlayClone(button, true, true)
-      }
-      hoverCardKey = buttonKey
-      selectedCardId = cardId
-      pendingOrder = selectedCardId ? { cardId: selectedCardId, params: {} } : null
-      statusEl.textContent = selectedCardId ? 'Pick a unit/tile on the board.' : 'Select a card to start planning.'
-      tryAutoAddOrder()
-      render()
-    })
+function syncHandVisualOrder(player: PlayerId): void {
+  const cardIds = state.players[player].hand.map((card) => card.id)
+  const idSet = new Set(cardIds)
+  const nextOrder = handVisualOrder[player].filter((cardId) => idSet.has(cardId))
+  const seen = new Set(nextOrder)
+  cardIds.forEach((cardId) => {
+    if (seen.has(cardId)) return
+    nextOrder.push(cardId)
+    seen.add(cardId)
   })
+  handVisualOrder[player] = nextOrder
+}
+
+function getOrderedHandCards(player: PlayerId): HandCard[] {
+  syncHandVisualOrder(player)
+  const byId = new Map<string, HandCard>(state.players[player].hand.map((card) => [card.id, card]))
+  return handVisualOrder[player]
+    .map((cardId) => byId.get(cardId))
+    .filter((card): card is HandCard => Boolean(card))
+}
+
+function reorderHandCards(fromId: string, toId: string): void {
+  if (!fromId || !toId || fromId === toId) return
+  if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
+  syncHandVisualOrder(planningPlayer)
+  const order = handVisualOrder[planningPlayer]
+  const fromIndex = order.indexOf(fromId)
+  const toIndex = order.indexOf(toId)
+  if (fromIndex === -1 || toIndex === -1) return
+  const [moved] = order.splice(fromIndex, 1)
+  order.splice(toIndex, 0, moved)
+  render()
 }
 
 function reorderQueuedOrder(fromId: string, toId: string): void {
@@ -4434,30 +4475,35 @@ function reorderQueuedOrder(fromId: string, toId: string): void {
   render()
 }
 
-function updateTouchOrderDragVisual(
-  card: HTMLDivElement,
-  drag: { startX: number; startY: number; startScrollLeft: number; startScrollTop: number },
-  clientX: number,
-  clientY: number
-): void {
-  const scrollDx = ordersEl.scrollLeft - drag.startScrollLeft
-  const scrollDy = ordersEl.scrollTop - drag.startScrollTop
+function updateCardReorderDragVisual(card: HTMLElement, drag: CardReorderDragState, clientX: number, clientY: number): void {
+  const scrollDx = drag.container.scrollLeft - drag.startScrollLeft
+  const scrollDy = drag.container.scrollTop - drag.startScrollTop
   const dx = clientX - drag.startX + scrollDx
   const dy = clientY - drag.startY + scrollDy
   card.style.setProperty('--drag-translate-x', `${dx}px`)
   card.style.setProperty('--drag-translate-y', `${dy}px`)
 }
 
-function clearTouchOrderDragVisual(card: HTMLDivElement): void {
-  card.classList.remove('dragging')
+function clearCardReorderDragVisual(card: HTMLElement): void {
+  card.classList.remove('card-reorder-dragging')
   card.style.removeProperty('--drag-translate-x')
   card.style.removeProperty('--drag-translate-y')
 }
 
-function autoScrollOrdersForPointer(clientX: number, clientY: number): void {
-  const rect = ordersEl.getBoundingClientRect()
-  const canScrollX = ordersEl.scrollWidth > ordersEl.clientWidth
-  const canScrollY = ordersEl.scrollHeight > ordersEl.clientHeight
+function clearCardStripDragOver(cards: HTMLElement[]): void {
+  cards.forEach((card) => card.classList.remove('card-reorder-over'))
+}
+
+function clearCardReorderHoldTimer(drag: CardReorderDragState): void {
+  if (drag.holdTimer === null) return
+  window.clearTimeout(drag.holdTimer)
+  drag.holdTimer = null
+}
+
+function autoScrollContainerForPointer(container: HTMLElement, clientX: number, clientY: number): void {
+  const rect = container.getBoundingClientRect()
+  const canScrollX = container.scrollWidth > container.clientWidth
+  const canScrollY = container.scrollHeight > container.clientHeight
   const edge = 48
   const maxSpeed = 22
   let scrollX = 0
@@ -4484,11 +4530,207 @@ function autoScrollOrdersForPointer(clientX: number, clientY: number): void {
   }
 
   if (scrollX !== 0) {
-    ordersEl.scrollLeft += scrollX
+    container.scrollLeft += scrollX
   }
   if (scrollY !== 0) {
-    ordersEl.scrollTop += scrollY
+    container.scrollTop += scrollY
   }
+}
+
+function beginCardReorderDrag(drag: CardReorderDragState): void {
+  if (drag.isDragging) return
+  clearCardReorderHoldTimer(drag)
+  drag.isDragging = true
+  isDraggingCardReorder = true
+  drag.card.classList.add('card-reorder-dragging')
+  if (!drag.card.hasPointerCapture(drag.pointerId)) {
+    try {
+      drag.card.setPointerCapture(drag.pointerId)
+    } catch {
+      // Ignore failures when the pointer is no longer active.
+    }
+  }
+}
+
+function finishCardReorderDrag(pointerId: number, options: CardStripReorderOptions): void {
+  if (!cardReorderDrag || cardReorderDrag.pointerId !== pointerId) return
+  const drag = cardReorderDrag
+  clearCardReorderHoldTimer(drag)
+  cardReorderDrag = null
+  const didDrag = drag.isDragging
+  if (didDrag && drag.card.hasPointerCapture(pointerId)) {
+    try {
+      drag.card.releasePointerCapture(pointerId)
+    } catch {
+      // Pointer may already be released.
+    }
+  }
+  clearCardReorderDragVisual(drag.card)
+  clearCardStripDragOver(drag.cards)
+  isDraggingCardReorder = false
+  if (!didDrag) return
+  options.suppressNextClick()
+  if (!drag.targetId || drag.targetId === drag.fromId) return
+  options.onReorder(drag.fromId, drag.targetId)
+}
+
+function bindCardStripReorder(options: CardStripReorderOptions): void {
+  const { cards } = options
+  cards.forEach((card) => {
+    card.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return
+      if (!options.canReorder()) return
+      if (cardReorderDrag) return
+      const fromId = options.getCardId(card)
+      if (!fromId) return
+      cardReorderDrag = {
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        container: options.container,
+        cards,
+        card,
+        fromId,
+        targetId: fromId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startScrollLeft: options.container.scrollLeft,
+        startScrollTop: options.container.scrollTop,
+        isDragging: false,
+        holdTimer: null,
+      }
+      if (event.pointerType === 'touch') {
+        cardReorderDrag.holdTimer = window.setTimeout(() => {
+          if (!cardReorderDrag || cardReorderDrag.pointerId !== event.pointerId) return
+          beginCardReorderDrag(cardReorderDrag)
+        }, TOUCH_REORDER_HOLD_MS)
+      }
+    })
+
+    card.addEventListener('pointermove', (event) => {
+      if (!cardReorderDrag || cardReorderDrag.pointerId !== event.pointerId) return
+      if (!options.canReorder()) {
+        finishCardReorderDrag(event.pointerId, options)
+        return
+      }
+      const drag = cardReorderDrag
+      const dx = event.clientX - drag.startX
+      const dy = event.clientY - drag.startY
+      const movedDistance = Math.abs(dx) + Math.abs(dy)
+      if (!drag.isDragging) {
+        if (drag.pointerType === 'touch') {
+          if (movedDistance > TOUCH_REORDER_CANCEL_MOVE_PX) {
+            clearCardReorderHoldTimer(drag)
+            cardReorderDrag = null
+          }
+          return
+        }
+        if (movedDistance < CARD_REORDER_START_DISTANCE_PX) return
+        beginCardReorderDrag(drag)
+      }
+      event.preventDefault()
+      autoScrollContainerForPointer(drag.container, event.clientX, event.clientY)
+      updateCardReorderDragVisual(drag.card, drag, event.clientX, event.clientY)
+      const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
+      const target = element?.closest<HTMLElement>(options.cardSelector)
+      clearCardStripDragOver(drag.cards)
+      const validTarget = target && drag.container.contains(target) && drag.cards.includes(target) ? target : null
+      const targetId = validTarget ? options.getCardId(validTarget) : null
+      if (validTarget && targetId && targetId !== drag.fromId) {
+        validTarget.classList.add('card-reorder-over')
+        drag.targetId = targetId
+      } else {
+        drag.targetId = drag.fromId
+      }
+    })
+
+    card.addEventListener('pointerup', (event) => {
+      finishCardReorderDrag(event.pointerId, options)
+    })
+
+    card.addEventListener('pointercancel', (event) => {
+      finishCardReorderDrag(event.pointerId, options)
+    })
+
+    card.addEventListener('lostpointercapture', (event) => {
+      finishCardReorderDrag(event.pointerId, options)
+    })
+  })
+}
+
+function renderHand(): void {
+  const playerHand = getOrderedHandCards(planningPlayer)
+  if (playerHand.length === 0) {
+    handEl.innerHTML = '<div class="empty">No cards in hand.</div>'
+    return
+  }
+
+  handEl.innerHTML = playerHand
+    .map((card) => {
+      const def = CARD_DEFS[card.defId]
+      const cardTypeClassNames = getCardTypeClassNames(def)
+      const cardClassName = getCardClassName(def.id)
+      const isSelected = selectedCardId === card.id
+      const isHidden = hiddenCardIds.has(card.id)
+      const isPendingTransfer = pendingCardTransfer?.cardId === card.id && pendingCardTransfer?.target === 'hand'
+      if (isPendingTransfer) {
+        return `
+          <button class="card hand-card ${cardTypeClassNames} ${cardClassName} card-placeholder" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def)}></button>
+        `
+      }
+      return `
+        <button class="card hand-card ${cardTypeClassNames} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def, isHidden)}>
+          ${renderCardFace(def)}
+        </button>
+      `
+    })
+    .join('')
+
+  const cardButtons = Array.from(handEl.querySelectorAll<HTMLButtonElement>('.hand-card'))
+  cardButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      if (suppressNextHandClick) {
+        suppressNextHandClick = false
+        return
+      }
+      if (isDraggingCardReorder) return
+      if (state.phase !== 'planning') return
+      if (isBotPlanningLocked()) return
+      if (state.ready[planningPlayer]) return
+      const cardId = button.dataset.cardId ?? null
+      if (!cardId) return
+      const buttonKey = getCardVisualKey(button)
+      if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
+        overlayLocked = false
+        clearOverlayClone()
+      }
+      if (overlayClone && buttonKey && getOverlaySourceKey() === buttonKey && overlayClone.style.display !== 'none') {
+        overlayLocked = true
+        overlaySourceEl = button
+        overlaySourceVisibility = button.style.opacity
+        overlaySourceTransition = button.style.transition
+      } else {
+        showOverlayClone(button, true, true)
+      }
+      hoverCardKey = buttonKey
+      selectedCardId = cardId
+      pendingOrder = selectedCardId ? { cardId: selectedCardId, params: {} } : null
+      statusEl.textContent = selectedCardId ? 'Pick a unit/tile on the board.' : 'Select a card to start planning.'
+      tryAutoAddOrder()
+      render()
+    })
+  })
+
+  bindCardStripReorder({
+    container: handEl,
+    cards: cardButtons,
+    cardSelector: '.hand-card',
+    canReorder: () => state.phase === 'planning' && !state.ready[planningPlayer] && !isBotPlanningLocked(),
+    getCardId: (card) => card.dataset.cardId ?? null,
+    onReorder: reorderHandCards,
+    suppressNextClick: () => {
+      suppressNextHandClick = true
+    },
+  })
 }
 
 function renderOrders(): void {
@@ -4518,7 +4760,7 @@ function renderOrders(): void {
         `
       }
       return `
-        <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-def-id="${def.id}" data-card-layer="queue" draggable="${inPlanning && !state.ready[planningPlayer]}" ${getCardStyleAttr(def, isHidden)}>
+        <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-def-id="${def.id}" data-card-layer="queue" ${getCardStyleAttr(def, isHidden)}>
           ${renderCardFace(def, { orderIndex: index + 1 })}
         </div>
       `
@@ -4527,122 +4769,26 @@ function renderOrders(): void {
 
   if (inPlanning) {
     const cards = Array.from(ordersEl.querySelectorAll<HTMLDivElement>('.order-card'))
-    cards.forEach((card) => {
-      card.addEventListener('dragstart', (event) => {
-        if (state.ready[planningPlayer] || isBotPlanningLocked()) {
-          event.preventDefault()
-          return
-        }
-        const target = event.currentTarget as HTMLDivElement
-        const orderId = target.dataset.orderId ?? ''
-        event.dataTransfer?.setData('text/plain', orderId)
-        event.dataTransfer?.setDragImage(target, 20, 20)
-        target.classList.add('dragging')
-        isDraggingOrder = true
-      })
 
-      card.addEventListener('dragend', (event) => {
-        ;(event.currentTarget as HTMLDivElement).classList.remove('dragging')
-        cards.forEach((item) => item.classList.remove('drag-over'))
-        isDraggingOrder = false
-      })
-
-      card.addEventListener('dragover', (event) => {
-        event.preventDefault()
-        ;(event.currentTarget as HTMLDivElement).classList.add('drag-over')
-      })
-
-      card.addEventListener('dragleave', (event) => {
-        ;(event.currentTarget as HTMLDivElement).classList.remove('drag-over')
-      })
-
-      card.addEventListener('drop', (event) => {
-        event.preventDefault()
-        const target = event.currentTarget as HTMLDivElement
-        const fromId = event.dataTransfer?.getData('text/plain')
-        const toId = target.dataset.orderId
-        if (!fromId || !toId || fromId === toId) return
-        reorderQueuedOrder(fromId, toId)
-      })
-
-      card.addEventListener('pointerdown', (event) => {
-        if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
-        if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
-        const fromOrderId = card.dataset.orderId
-        if (!fromOrderId) return
-        touchOrderDrag = {
-          pointerId: event.pointerId,
-          fromOrderId,
-          targetOrderId: fromOrderId,
-          card,
-          startX: event.clientX,
-          startY: event.clientY,
-          startScrollLeft: ordersEl.scrollLeft,
-          startScrollTop: ordersEl.scrollTop,
-          didMove: false,
-        }
-        suppressNextOrderClick = false
-        card.setPointerCapture(event.pointerId)
-      })
-
-      card.addEventListener('pointermove', (event) => {
-        if (!touchOrderDrag || touchOrderDrag.pointerId !== event.pointerId) return
-        event.preventDefault()
-        if (!touchOrderDrag.didMove) {
-          const dx = event.clientX - touchOrderDrag.startX
-          const dy = event.clientY - touchOrderDrag.startY
-          if (Math.abs(dx) + Math.abs(dy) < 8) return
-          touchOrderDrag.didMove = true
-          isDraggingOrder = true
-          touchOrderDrag.card.classList.add('dragging')
-        }
-        updateTouchOrderDragVisual(touchOrderDrag.card, touchOrderDrag, event.clientX, event.clientY)
-        autoScrollOrdersForPointer(event.clientX, event.clientY)
-        const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
-        const target = element?.closest<HTMLDivElement>('.order-card')
-        cards.forEach((item) => item.classList.remove('drag-over'))
-        const targetOrderId = target?.dataset.orderId
-        if (targetOrderId && targetOrderId !== touchOrderDrag.fromOrderId) {
-          target.classList.add('drag-over')
-          touchOrderDrag.targetOrderId = targetOrderId
-        } else {
-          touchOrderDrag.targetOrderId = touchOrderDrag.fromOrderId
-        }
-        event.preventDefault()
-      })
-
-      const finishTouchReorder = (pointerId: number) => {
-        if (!touchOrderDrag || touchOrderDrag.pointerId !== pointerId) return
-        const { fromOrderId, targetOrderId, card: draggedCard } = touchOrderDrag
-        const didMove = touchOrderDrag.didMove
-        touchOrderDrag = null
-        isDraggingOrder = false
-        clearTouchOrderDragVisual(draggedCard)
-        cards.forEach((item) => item.classList.remove('drag-over'))
-        if (!didMove) return
-        if (!targetOrderId || targetOrderId === fromOrderId) return
+    bindCardStripReorder({
+      container: ordersEl,
+      cards,
+      cardSelector: '.order-card',
+      canReorder: () => state.phase === 'planning' && !state.ready[planningPlayer] && !isBotPlanningLocked(),
+      getCardId: (card) => card.dataset.orderId ?? null,
+      onReorder: reorderQueuedOrder,
+      suppressNextClick: () => {
         suppressNextOrderClick = true
-        reorderQueuedOrder(fromOrderId, targetOrderId)
-      }
+      },
+    })
 
-      card.addEventListener('pointerup', (event) => {
-        finishTouchReorder(event.pointerId)
-      })
-
-      card.addEventListener('pointercancel', (event) => {
-        finishTouchReorder(event.pointerId)
-      })
-
-      card.addEventListener('lostpointercapture', (event) => {
-        finishTouchReorder(event.pointerId)
-      })
-
+    cards.forEach((card) => {
       card.addEventListener('click', () => {
         if (suppressNextOrderClick) {
           suppressNextOrderClick = false
           return
         }
-        if (isDraggingOrder || state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
+        if (isDraggingCardReorder || state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
         const orderId = card.dataset.orderId
         if (!orderId) return
         if (mode === 'online') {
@@ -5471,26 +5617,31 @@ function startNextRoguelikeMatch(statusMessage: string): void {
     ...gameSettings,
     strongholdStrength: ROGUELIKE_STARTING_STRONGHOLD_HP,
   }
-  playerClasses.p1 = roguelikeRun.playerClass
-  loadouts.p1 = sanitizeDeckForCurrentClass([...roguelikeRun.deck], roguelikeRun.playerClass, true)
-  if (loadouts.p1.length === 0) {
-    loadouts.p1 = sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], roguelikeRun.playerClass, true)
+  const playerClass = roguelikeRun.playerClass
+  const playerDeck = sanitizeDeckForCurrentClass([...roguelikeRun.deck], playerClass, true)
+  if (playerDeck.length === 0) {
+    playerDeck.push(...sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true))
   }
-  roguelikeRun.deck = [...loadouts.p1]
+  roguelikeRun.deck = [...playerDeck]
+  playerClasses.p1 = playerClass
   const botClass = pickRandomPlayerClass()
   playerClasses.p2 = botClass
-  loadouts.p2 = generateClusteredBotDeck({
+  const botDeck = generateClusteredBotDeck({
     deckSize: ROGUELIKE_OPPONENT_DECK_SIZE,
     maxCopies: settings.maxCopies,
   }, { classId: botClass })
 
-  state = createGameState(settings, loadouts)
+  state = createGameState(settings, {
+    p1: playerDeck,
+    p2: botDeck,
+  })
   applyRoguelikeMatchModifiers(state, roguelikeRun)
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false
   roguelikeRun.resultHandled = false
   roguelikeRun.uiStage = 'reward_choice'
   roguelikeRun.draftOptions = []
+  roguelikeRun.pendingRandomReward = null
   roguelikeRun.rewardNoticeMessage = null
   planningPlayer = BOT_HUMAN_PLAYER
   selectedCardId = null
@@ -5528,6 +5679,53 @@ function pickRandomCardOptions(count: number, classId: PlayerClassId): CardDefId
   return pool.slice(0, count)
 }
 
+function getRoguelikeRandomRewardLabel(reward: RoguelikeRandomReward): string {
+  if (!roguelikeRun) return 'Reward'
+  if (reward === 'strongholdHp') {
+    return `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
+  }
+  if (reward === 'extraDraw') return '+1 extra card each hand'
+  if (reward === 'extraAp') return '+1 action budget'
+  if (reward === 'extraStartingUnit') return '+1 starting unit'
+  return '+1 starting unit strength'
+}
+
+function prepareRoguelikeRewardChoiceOptions(): void {
+  if (!roguelikeRun) return
+  if (roguelikeRun.draftOptions.length < 3) {
+    roguelikeRun.draftOptions = pickRandomCardOptions(3, roguelikeRun.playerClass)
+  }
+  if (!roguelikeRun.pendingRandomReward) {
+    roguelikeRun.pendingRandomReward = pickWeightedRoguelikeReward()
+  }
+}
+
+function applyRoguelikeRandomReward(reward: RoguelikeRandomReward): void {
+  if (!roguelikeRun) return
+  if (reward === 'strongholdHp') {
+    roguelikeRun.strongholdHp += 10
+    showRoguelikeRewardNotice(`Reward gained: +10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP.`)
+    return
+  }
+  if (reward === 'extraDraw') {
+    roguelikeRun.bonusDrawPerTurn += 1
+    showRoguelikeRewardNotice('Reward gained: +1 extra card each hand.')
+    return
+  }
+  if (reward === 'extraAp') {
+    roguelikeRun.bonusActionBudget += 1
+    showRoguelikeRewardNotice('Reward gained: +1 action budget.')
+    return
+  }
+  if (reward === 'extraStartingUnit') {
+    roguelikeRun.bonusStartingUnits += 1
+    showRoguelikeRewardNotice('Reward gained: +1 starting unit.')
+    return
+  }
+  roguelikeRun.bonusStartingUnitStrength += 1
+  showRoguelikeRewardNotice('Reward gained: +1 starting unit strength.')
+}
+
 function startRoguelikeMatchAfterReward(statusMessage: string): void {
   if (!roguelikeRun) return
   const matchNumber = roguelikeRun.wins + 1
@@ -5551,45 +5749,9 @@ function continueAfterRoguelikeRewardNotice(): void {
 
 function chooseRoguelikeRandomReward(): void {
   if (!roguelikeRun || state.winner !== BOT_HUMAN_PLAYER) return
-
-  let reward = pickWeightedRoguelikeReward()
-  if (reward === 'remove' && roguelikeRun.deck.length <= 1) {
-    reward = 'draft'
-  }
-
-  if (reward === 'draft') {
-    roguelikeRun.draftOptions = pickRandomCardOptions(3, roguelikeRun.playerClass)
-    roguelikeRun.uiStage = 'draft_pick'
-    render()
-    return
-  }
-
-  if (reward === 'remove') {
-    roguelikeRun.uiStage = 'remove_pick'
-    render()
-    return
-  }
-
-  if (reward === 'extraDraw') {
-    roguelikeRun.bonusDrawPerTurn += 1
-    showRoguelikeRewardNotice('Reward gained: +1 extra card each hand.')
-    return
-  }
-
-  if (reward === 'extraAp') {
-    roguelikeRun.bonusActionBudget += 1
-    showRoguelikeRewardNotice('Reward gained: +1 action budget.')
-    return
-  }
-
-  if (reward === 'extraStartingUnit') {
-    roguelikeRun.bonusStartingUnits += 1
-    showRoguelikeRewardNotice('Reward gained: +1 starting unit.')
-    return
-  }
-
-  roguelikeRun.bonusStartingUnitStrength += 1
-  showRoguelikeRewardNotice('Reward gained: +1 starting unit strength.')
+  const reward = roguelikeRun.pendingRandomReward ?? pickWeightedRoguelikeReward()
+  roguelikeRun.pendingRandomReward = null
+  applyRoguelikeRandomReward(reward)
 }
 
 function handleRoguelikeMatchResultIfNeeded(): void {
@@ -5599,12 +5761,14 @@ function handleRoguelikeMatchResultIfNeeded(): void {
 
   roguelikeRun.resultHandled = true
   roguelikeRun.draftOptions = []
+  roguelikeRun.pendingRandomReward = null
 
   if (state.winner === BOT_HUMAN_PLAYER) {
     const stronghold = state.units[`stronghold-${BOT_HUMAN_PLAYER}`]
     roguelikeRun.strongholdHp = Math.max(1, stronghold?.strength ?? roguelikeRun.strongholdHp)
     roguelikeRun.wins += 1
     roguelikeRun.uiStage = 'reward_choice'
+    prepareRoguelikeRewardChoiceOptions()
     return
   }
 
@@ -5634,51 +5798,24 @@ function renderRoguelikeWinnerModal(): void {
       winnerModal.classList.remove('hidden')
       return
     }
-    if (roguelikeRun.uiStage === 'draft_pick' && roguelikeRun.draftOptions.length < 3) {
-      roguelikeRun.draftOptions = pickRandomCardOptions(3, roguelikeRun.playerClass)
-    }
-    if (roguelikeRun.uiStage === 'remove_pick' && roguelikeRun.deck.length <= 1) {
-      roguelikeRun.uiStage = 'reward_choice'
-    }
-    if (roguelikeRun.uiStage === 'draft_pick') {
-      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Draft 1 card.`
-      winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP: ${roguelikeRun.strongholdHp}. Pick one card to add before match ${nextMatch}.`
-      winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.classList.add('hidden')
-      winnerRematchButton.classList.add('hidden')
-      winnerExtraEl.innerHTML = roguelikeRun.draftOptions
-        .map((cardId) => {
-          const def = CARD_DEFS[cardId]
-          return `<button class="btn ghost winner-option" data-roguelike-action="draft" data-card-id="${cardId}" type="button">${def.name}</button>`
-        })
-        .join('')
-    } else if (roguelikeRun.uiStage === 'remove_pick') {
-      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Remove 1 card.`
-      winnerNoteEl.textContent = `Choose one card to remove before match ${nextMatch}.`
-      winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.classList.add('hidden')
-      winnerRematchButton.classList.add('hidden')
-      const counts = roguelikeRun.deck.reduce((acc, cardId) => {
-        acc[cardId] = (acc[cardId] ?? 0) + 1
-        return acc
-      }, {} as Partial<Record<CardDefId, number>>)
-      winnerExtraEl.innerHTML = Object.entries(counts)
-        .sort((a, b) => CARD_DEFS[a[0] as CardDefId].name.localeCompare(CARD_DEFS[b[0] as CardDefId].name))
-        .map(([cardId, count]) => {
-          const def = CARD_DEFS[cardId as CardDefId]
-          return `<button class="btn ghost winner-option" data-roguelike-action="remove" data-card-id="${cardId}" type="button">Remove ${def.name} (x${count ?? 0})</button>`
-        })
-        .join('')
-    } else {
-      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
-      winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
-      winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.textContent = `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
-      winnerRematchButton.classList.remove('hidden')
-      winnerRematchButton.textContent = 'Random Reward'
-      winnerResetButton.disabled = false
-      winnerRematchButton.disabled = false
-    }
+    prepareRoguelikeRewardChoiceOptions()
+    winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
+    winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
+    winnerMenuButton.textContent = 'End Run'
+    winnerResetButton.classList.remove('hidden')
+    winnerResetButton.textContent = `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
+    winnerRematchButton.classList.remove('hidden')
+    const randomReward = roguelikeRun.pendingRandomReward ?? pickWeightedRoguelikeReward()
+    roguelikeRun.pendingRandomReward = randomReward
+    winnerRematchButton.textContent = `Random: ${getRoguelikeRandomRewardLabel(randomReward)}`
+    winnerResetButton.disabled = false
+    winnerRematchButton.disabled = false
+    winnerExtraEl.innerHTML = roguelikeRun.draftOptions
+      .map((cardId) => {
+        const def = CARD_DEFS[cardId]
+        return `<button class="btn ghost winner-option" data-roguelike-action="draft" data-card-id="${cardId}" type="button">${def.name}</button>`
+      })
+      .join('')
   } else {
     winnerTextEl.textContent = 'Roguelike run ended.'
     winnerNoteEl.textContent = `Matches won before loss: ${roguelikeRun.wins}.`
@@ -6057,9 +6194,11 @@ function buildAnimations(
   const loggedMoveEvents = parseUnitMoveEvents(logEntries)
   const damageEvents = parseDamageEvents(logEntries)
   const destroyedEvents = parseDestroyedUnits(logEntries)
+  const destroyedUnitIds = new Set(destroyedEvents.map((event) => event.unitId))
   const trapTriggers = parseTrapTriggers(logEntries)
   const shoveCollisions = parseShoveCollisions(logEntries)
   const animatedPositions = new Map<string, Hex>()
+  const spawnedFallbackSnapshots = new Map<string, UnitSnapshot>()
   const destroyedAnimated = new Set<string>()
   let destroyedCursor = 0
   let lastConsumedLogIndex = -1
@@ -6084,7 +6223,7 @@ function buildAnimations(
       destroyedCursor += 1
       if (destroyedAnimated.has(event.unitId)) continue
       if (state.units[event.unitId]) continue
-      const snapshot = before[event.unitId]
+      const snapshot = before[event.unitId] ?? spawnedFallbackSnapshots.get(event.unitId)
       if (!snapshot) continue
       const deathPos = animatedPositions.get(event.unitId) ?? loggedPositions.get(event.unitId) ?? snapshot.pos
       pendingDeathUnits.set(event.unitId, {
@@ -6107,7 +6246,7 @@ function buildAnimations(
   }
 
   for (const effect of def.effects) {
-    if (effect.type === 'spawn') {
+    if (effect.type === 'spawn' || effect.type === 'spawnAdjacentFriendly') {
       const tile = getOrderTileParam(order.params, effect.tileParam)
       if (!tile) continue
       const scopedKey = `${order.id}:${effect.tileParam}`
@@ -6119,6 +6258,36 @@ function buildAnimations(
         )?.id
       }
       if (typeof spawnedId === 'string') {
+        if (!before[spawnedId] && !spawnedFallbackSnapshots.has(spawnedId)) {
+          const spawnFacing =
+            effect.facingParam
+              ? order.params.direction
+              : effect.type === 'spawn'
+                ? effect.facing
+                : undefined
+          const spawnSnapshot: UnitSnapshot = {
+            id: spawnedId,
+            owner: order.player,
+            kind: effect.type === 'spawn' ? (effect.kind ?? 'unit') : 'unit',
+            strength: effect.strength,
+            pos: { ...tile },
+            facing: (spawnFacing ?? 0) as Direction,
+            modifiers: [],
+          }
+          spawnedFallbackSnapshots.set(spawnedId, spawnSnapshot)
+          if (!state.units[spawnedId] && destroyedUnitIds.has(spawnedId)) {
+            pendingDeathUnits.set(spawnedId, {
+              id: spawnSnapshot.id,
+              owner: spawnSnapshot.owner,
+              kind: spawnSnapshot.kind,
+              strength: spawnSnapshot.strength,
+              pos: { ...spawnSnapshot.pos },
+              facing: spawnSnapshot.facing,
+              modifiers: [],
+            })
+            deathAlphaOverrides.set(spawnedId, 1)
+          }
+        }
         unitAlphaOverrides.set(spawnedId, 0)
         animations.push({
           type: 'spawn',
@@ -7912,19 +8081,12 @@ winnerExtraEl.addEventListener('click', (event) => {
   if (!cardId) return
   if (!(cardId in CARD_DEFS)) return
 
-  if (action === 'draft' && roguelikeRun.uiStage === 'draft_pick') {
+  if (action === 'draft' && roguelikeRun.uiStage === 'reward_choice') {
     if (!roguelikeRun.draftOptions.includes(cardId)) return
     if (!isCardAllowedForClass(cardId, roguelikeRun.playerClass)) return
     roguelikeRun.deck.push(cardId)
     startRoguelikeMatchAfterReward(`Reward gained: added ${CARD_DEFS[cardId].name}.`)
     return
-  }
-
-  if (action === 'remove' && roguelikeRun.uiStage === 'remove_pick') {
-    const index = roguelikeRun.deck.findIndex((id) => id === cardId)
-    if (index === -1) return
-    roguelikeRun.deck.splice(index, 1)
-    startRoguelikeMatchAfterReward(`Reward gained: removed ${CARD_DEFS[cardId].name}.`)
   }
 })
 
