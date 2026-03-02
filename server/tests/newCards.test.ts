@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DEFAULT_SETTINGS, createGameState, getBarricadeSpawnTiles, planOrder, resolveAllActions, startActionPhase } from '../../src/engine/game'
+import {
+  DEFAULT_SETTINGS,
+  createGameState,
+  getBarricadeSpawnTiles,
+  getPlannedOrderValidity,
+  planOrder,
+  resolveAllActions,
+  startActionPhase,
+} from '../../src/engine/game'
 import { neighbor } from '../../src/engine/hex'
 import type { CardDefId, Direction, GameState, PlayerId } from '../../src/engine/types'
 
@@ -71,6 +79,123 @@ test('leader has Slow and cannot move more than one tile per turn', () => {
   assert.deepEqual(leaderAfter.pos, expectedPos)
   assert.ok(leaderAfter.modifiers.some((modifier) => modifier.type === 'slow'))
   assert.equal(leaderAfter.modifiers.some((modifier) => modifier.type === 'cannotMove'), false)
+})
+
+test('commander leader grants adjacent friendly units +1 attack damage', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(
+    settings,
+    {
+      p1: Array.from({ length: settings.deckSize }, () => 'attack_jab'),
+      p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    },
+    { p1: 'commander', p2: null }
+  )
+
+  clearNonLeaderUnits(state)
+  const leader = state.units['stronghold-0']
+  assert.ok(leader && leader.kind === 'leader')
+  leader.pos = { q: 2, r: 2 }
+  leader.facing = 0
+  state.units['cmd-attacker'] = {
+    id: 'cmd-attacker',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['cmd-target'] = {
+    id: 'cmd-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_jab')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'cmd-attacker', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['cmd-target']?.strength, 1)
+})
+
+test('warleader leader can move full distance without Slow restriction', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
+  const state = createGameState(
+    settings,
+    {
+      p1: Array.from({ length: settings.deckSize }, () => 'move_forward'),
+      p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    },
+    { p1: 'warleader', p2: null }
+  )
+
+  clearNonLeaderUnits(state)
+  const leader = state.units['stronghold-0']
+  assert.ok(leader && leader.kind === 'leader')
+  assert.equal(leader.modifiers.some((modifier) => modifier.type === 'slow'), false)
+  const leaderStart = { ...leader.pos }
+
+  const moveDirection = ([0, 1, 2, 3, 4, 5] as Direction[]).find((direction) => {
+    let cursor = { ...leaderStart }
+    for (let step = 0; step < 3; step += 1) {
+      cursor = neighbor(cursor, direction)
+      if (cursor.q < 0 || cursor.q >= state.boardCols || cursor.r < 0 || cursor.r >= state.boardRows) return false
+      const occupied = Object.values(state.units).some((unit) => unit.pos.q === cursor.q && unit.pos.r === cursor.r)
+      if (occupied) return false
+    }
+    return true
+  })
+  assert.ok(moveDirection !== undefined)
+  const direction = moveDirection as Direction
+
+  let expected = { ...leaderStart }
+  for (let step = 0; step < 3; step += 1) {
+    expected = neighbor(expected, direction)
+  }
+
+  const cardId = findCardId(state, 0, 'move_forward')
+  assert.ok(planOrder(state, 0, cardId, { unitId: leader.id, direction, distance: 3 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['stronghold-0']?.pos, expected)
+})
+
+test('archmage leader gains +1 AP next turn when it stayed still last turn', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8, actionBudgetP1: 3 }
+  const state = createGameState(
+    settings,
+    {
+      p1: Array.from({ length: settings.deckSize }, () => 'move_forward'),
+      p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    },
+    { p1: 'archmage', p2: null }
+  )
+
+  assert.equal(state.actionBudgets[0], 3)
+
+  readyAndResolve(state)
+  assert.equal(state.turn, 2)
+  assert.equal(state.actionBudgets[0], 4)
+
+  const leader = state.units['stronghold-0']
+  assert.ok(leader && leader.kind === 'leader')
+  const moveDirection = ([0, 1, 2, 3, 4, 5] as Direction[]).find((direction) => {
+    const target = neighbor(leader.pos, direction)
+    if (target.q < 0 || target.q >= state.boardCols || target.r < 0 || target.r >= state.boardRows) return false
+    return !Object.values(state.units).some((unit) => unit.pos.q === target.q && unit.pos.r === target.r)
+  })
+  assert.ok(moveDirection !== undefined)
+  const cardId = findCardId(state, 0, 'move_forward')
+  assert.ok(planOrder(state, 0, cardId, { unitId: leader.id, direction: moveDirection as Direction, distance: 1 }))
+
+  readyAndResolve(state)
+  assert.equal(state.turn, 3)
+  assert.equal(state.actionBudgets[0], 3)
 })
 
 test('leader spell resistance halves spell damage rounded down', () => {
@@ -160,6 +285,51 @@ test('pitfall trap triggers on movement, deals 2 damage, snares, and stops movem
   assert.ok(snared)
   assert.equal(snared.turnsRemaining, 1)
   assert.equal(state.traps.length, 0)
+})
+
+test('planning ignores hidden enemy trap effects for follow-up orders', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['move_forward', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['planning-trap-user'] = {
+    id: 'planning-trap-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['planning-trap-target'] = {
+    id: 'planning-trap-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.traps.push({
+    id: 'planning-hidden-pitfall',
+    owner: 1,
+    kind: 'pitfall',
+    pos: { q: 2, r: 2 },
+  })
+
+  const moveCardId = findCardId(state, 0, 'move_forward')
+  assert.ok(planOrder(state, 0, moveCardId, { unitId: 'planning-trap-user', direction: 0, distance: 1 }))
+  const jabCardId = findCardId(state, 0, 'attack_jab')
+  assert.ok(planOrder(state, 0, jabCardId, { unitId: 'planning-trap-user', direction: 0 }))
+  assert.deepEqual(getPlannedOrderValidity(state, 0), [true, true])
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['planning-trap-user'], undefined)
+  assert.equal(state.units['planning-trap-target']?.strength, 4)
 })
 
 test('explosive trap triggers on movement and does not stop movement', () => {

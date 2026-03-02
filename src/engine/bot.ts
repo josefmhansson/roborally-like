@@ -1,7 +1,7 @@
 import { CARD_DEFS } from './cards'
 import { canCardTargetUnit, getBarricadeSpawnTiles, getSpawnTiles, planOrder, simulatePlannedState } from './game'
 import { neighbor, offsetToAxial } from './hex'
-import type { CardDefId, Direction, GameState, Hex, Order, OrderParams, PlayerId, Unit } from './types'
+import type { CardDefId, Direction, GameState, Hex, Order, OrderParams, PlayerClassId, PlayerId, Unit } from './types'
 
 export type BotPlannerOptions = {
   thinkTimeMs: number
@@ -1047,6 +1047,14 @@ function cloneGameState(source: GameState): GameState {
     winner: source.winner,
     spawnedByOrder: { ...source.spawnedByOrder },
     settings: { ...source.settings },
+    playerClasses: source.playerClasses
+      ? [...source.playerClasses] as [PlayerClassId | null, PlayerClassId | null]
+      : undefined,
+    leaderMovedLastTurn: source.leaderMovedLastTurn ? [...source.leaderMovedLastTurn] as [boolean, boolean] : undefined,
+    turnStartLeaderPositions: source.turnStartLeaderPositions
+      ? [{ ...source.turnStartLeaderPositions[0] }, { ...source.turnStartLeaderPositions[1] }]
+      : undefined,
+    archmageBonusApplied: source.archmageBonusApplied ? [...source.archmageBonusApplied] as [number, number] : undefined,
   }
 }
 

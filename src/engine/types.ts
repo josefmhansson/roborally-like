@@ -319,6 +319,10 @@ export type GameState = {
   winner: PlayerId | null
   spawnedByOrder: Record<string, UnitId>
   settings: GameSettings
+  playerClasses?: [PlayerClassId | null, PlayerClassId | null]
+  leaderMovedLastTurn?: [boolean, boolean]
+  turnStartLeaderPositions?: [Hex, Hex]
+  archmageBonusApplied?: [number, number]
 }
 
 export type GameSettings = {

@@ -680,7 +680,7 @@ let loadouts: { p1: CardDefId[]; p2: CardDefId[] } = {
   p2: STARTING_DECK.slice(0, gameSettings.deckSize),
 }
 let playerClasses: PlayerClasses = { ...DEFAULT_PLAYER_CLASSES }
-let state = createGameState(gameSettings, loadouts)
+let state = createGameState(gameSettings, loadouts, playerClasses)
 let planningPlayer: PlayerId = 0
 let selectedCardId: string | null = null
 let pendingOrder: { cardId: string; params: OrderParams } | null = null
@@ -1769,6 +1769,21 @@ function normalizeLeaderUnitsInState(sourceState: GameState): void {
         }))
     : []
   sourceState.traps = normalizedTraps
+  if (!sourceState.playerClasses) {
+    sourceState.playerClasses = [null, null]
+  }
+  if (!sourceState.leaderMovedLastTurn) {
+    sourceState.leaderMovedLastTurn = [true, true]
+  }
+  if (!sourceState.archmageBonusApplied) {
+    sourceState.archmageBonusApplied = [0, 0]
+  }
+  if (!sourceState.turnStartLeaderPositions) {
+    sourceState.turnStartLeaderPositions = [
+      { ...(sourceState.units['stronghold-0']?.pos ?? { q: -1, r: -1 }) },
+      { ...(sourceState.units['stronghold-1']?.pos ?? { q: -1, r: -1 }) },
+    ]
+  }
 
   Object.values(sourceState.units).forEach((unit) => {
     const rawKind = (unit as { kind: string }).kind
@@ -1776,10 +1791,13 @@ function normalizeLeaderUnitsInState(sourceState: GameState): void {
       ;(unit as Unit).kind = 'leader'
     }
     if (unit.kind !== 'leader') return
+    const leaderClass = sourceState.playerClasses?.[unit.owner] ?? null
     const hasSlow = unit.modifiers.some((modifier) => modifier.type === 'slow')
     const hasSpellResistance = unit.modifiers.some((modifier) => modifier.type === 'spellResistance')
     const hasReinforcementPenalty = unit.modifiers.some((modifier) => modifier.type === 'reinforcementPenalty')
-    if (!hasSlow) {
+    if (leaderClass === 'warleader') {
+      unit.modifiers = unit.modifiers.filter((modifier) => modifier.type !== 'slow')
+    } else if (!hasSlow) {
       unit.modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
     }
     if (!hasSpellResistance) {
@@ -2110,7 +2128,7 @@ function resetGameState(statusMessage: string): void {
   resetCardVisualState()
   clearActionAnimationState()
   sanitizeLoadoutsForCurrentClasses()
-  state = createGameState(gameSettings, loadouts)
+  state = createGameState(gameSettings, loadouts, playerClasses)
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false
   planningPlayer = isBotControlledMode() ? BOT_HUMAN_PLAYER : 0
@@ -5424,7 +5442,7 @@ function applySeed(seed: string): void {
     p2: [...(payload.loadouts?.p2 ?? [])],
   }
   sanitizeLoadoutsForCurrentClasses()
-  state = createGameState(gameSettings, loadouts)
+  state = createGameState(gameSettings, loadouts, playerClasses)
   resetLocalTelemetryForCurrentMatch()
   if (isBotControlledMode()) {
     planningPlayer = BOT_HUMAN_PLAYER
@@ -5674,7 +5692,7 @@ function startNextRoguelikeMatch(statusMessage: string): void {
   state = createGameState(settings, {
     p1: playerDeck,
     p2: botDeck,
-  })
+  }, { p1: playerClass, p2: botClass })
   applyRoguelikeMatchModifiers(state, roguelikeRun)
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false

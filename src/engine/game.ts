@@ -8,6 +8,7 @@ import type {
   ModifierDuration,
   Order,
   OrderParams,
+  PlayerClassId,
   PlayerId,
   Trap,
   TrapKind,
@@ -147,9 +148,38 @@ function countUnitModifierStacks(unit: Unit, modifierType: Unit['modifiers'][num
   ).length
 }
 
-function getDamageDealtDelta(unit: Unit | null): number {
+function getPlayerLeaderClass(
+  state: Pick<GameState, 'playerClasses'>,
+  player: PlayerId
+): PlayerClassId | null {
+  return state.playerClasses?.[player] ?? null
+}
+
+function getLeaderBaseModifiers(state: Pick<GameState, 'playerClasses'>, player: PlayerId): Unit['modifiers'] {
+  const classId = getPlayerLeaderClass(state, player)
+  const modifiers: Unit['modifiers'] = [
+    { type: 'spellResistance', turnsRemaining: 'indefinite' },
+    { type: 'reinforcementPenalty', turnsRemaining: 'indefinite' },
+  ]
+  if (classId !== 'warleader') {
+    modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
+  }
+  return modifiers
+}
+
+function hasCommanderLeaderAdjacencyStrong(state: GameState, unit: Unit): boolean {
+  if (unit.kind !== 'unit') return false
+  if (getPlayerLeaderClass(state, unit.owner) !== 'commander') return false
+  const leader = state.units[`stronghold-${unit.owner}`]
+  if (!leader || leader.kind !== 'leader') return false
+  return isAdjacentHex(unit.pos, leader.pos)
+}
+
+function getDamageDealtDelta(state: GameState, unit: Unit | null): number {
   if (!unit) return 0
-  return countUnitModifierStacks(unit, 'strong') - countUnitModifierStacks(unit, 'disarmed')
+  const modifierDelta = countUnitModifierStacks(unit, 'strong') - countUnitModifierStacks(unit, 'disarmed')
+  const commanderAuraDelta = hasCommanderLeaderAdjacencyStrong(state, unit) ? 1 : 0
+  return modifierDelta + commanderAuraDelta
 }
 
 function getDamageTakenDelta(unit: Unit): number {
@@ -273,7 +303,7 @@ function createDeckFromList(defIds: CardDefId[]): { id: string; defId: CardDefId
   return shuffle(defIds.map((defId, index) => ({ id: `c${index + 1}`, defId })))
 }
 
-function createLeader(owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
+function createLeader(state: Pick<GameState, 'playerClasses'>, owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
   return {
     id: `stronghold-${owner}`,
     owner,
@@ -281,11 +311,7 @@ function createLeader(owner: PlayerId, pos: Hex, strength: number, facing: Direc
     strength,
     pos,
     facing,
-    modifiers: [
-      { type: 'slow', turnsRemaining: 'indefinite' },
-      { type: 'spellResistance', turnsRemaining: 'indefinite' },
-      { type: 'reinforcementPenalty', turnsRemaining: 'indefinite' },
-    ],
+    modifiers: getLeaderBaseModifiers(state, owner),
   }
 }
 
@@ -311,17 +337,23 @@ function createUnit(owner: PlayerId, pos: Hex, facing: Direction, strength: numb
 
 export function createGameState(
   settings: GameState['settings'] = DEFAULT_SETTINGS,
-  decks?: { p1: CardDefId[]; p2: CardDefId[] }
+  decks?: { p1: CardDefId[]; p2: CardDefId[] },
+  playerClasses?: { p1?: PlayerClassId | null; p2?: PlayerClassId | null }
 ): GameState {
   const rows = settings.boardRows
   const cols = settings.boardCols
   const tiles = createTiles(rows, cols)
   const [topPos, bottomPos] = getStrongholdPositions(rows, cols)
+  const resolvedPlayerClasses: [PlayerClassId | null, PlayerClassId | null] = [
+    playerClasses?.p1 ?? null,
+    playerClasses?.p2 ?? null,
+  ]
   const units: Record<UnitId, Unit> = {}
   const topFacing: Direction = 5
   const bottomFacing: Direction = 2
-  units['stronghold-0'] = createLeader(0, bottomPos, settings.strongholdStrength, bottomFacing)
-  units['stronghold-1'] = createLeader(1, topPos, settings.strongholdStrength, topFacing)
+  const classContext: Pick<GameState, 'playerClasses'> = { playerClasses: resolvedPlayerClasses }
+  units['stronghold-0'] = createLeader(classContext, 0, bottomPos, settings.strongholdStrength, bottomFacing)
+  units['stronghold-1'] = createLeader(classContext, 1, topPos, settings.strongholdStrength, topFacing)
   const p1Front = neighbor(units['stronghold-0'].pos, units['stronghold-0'].facing)
   const p2Front = neighbor(units['stronghold-1'].pos, units['stronghold-1'].facing)
   if (inBounds(rows, cols, p1Front)) {
@@ -361,6 +393,13 @@ export function createGameState(
     winner: null,
     spawnedByOrder: {},
     settings,
+    playerClasses: resolvedPlayerClasses,
+    leaderMovedLastTurn: [true, true],
+    turnStartLeaderPositions: [
+      { ...units['stronghold-0'].pos },
+      { ...units['stronghold-1'].pos },
+    ],
+    archmageBonusApplied: [0, 0],
   }
 
   drawPhase(state)
@@ -414,7 +453,57 @@ export function isSpawnTile(state: GameState, player: PlayerId, hex: Hex): boole
   return getSpawnTiles(state, player).some((tile) => tile.q === hex.q && tile.r === hex.r)
 }
 
+function getCurrentLeaderPosition(state: GameState, player: PlayerId): Hex {
+  const leader = state.units[`stronghold-${player}`]
+  if (!leader || leader.kind !== 'leader') return { q: -1, r: -1 }
+  return { ...leader.pos }
+}
+
+function getTurnStartLeaderPosition(state: GameState, player: PlayerId): Hex {
+  const tracked = state.turnStartLeaderPositions?.[player]
+  if (tracked) return { ...tracked }
+  return getCurrentLeaderPosition(state, player)
+}
+
+function updateLeaderMovementTrackingForTurnEnd(state: GameState): void {
+  const leaderMoved: [boolean, boolean] = [false, false]
+  ;([0, 1] as PlayerId[]).forEach((player) => {
+    const start = getTurnStartLeaderPosition(state, player)
+    const end = getCurrentLeaderPosition(state, player)
+    leaderMoved[player] = !sameHex(start, end)
+  })
+  state.leaderMovedLastTurn = leaderMoved
+}
+
+function applyArchmageTurnStartActionBudgetBonus(state: GameState): void {
+  const applied: [number, number] = [
+    state.archmageBonusApplied?.[0] ?? 0,
+    state.archmageBonusApplied?.[1] ?? 0,
+  ]
+  ;([0, 1] as PlayerId[]).forEach((player) => {
+    const currentApplied = applied[player] ?? 0
+    if (currentApplied <= 0) return
+    state.actionBudgets[player] = Math.max(0, (state.actionBudgets[player] ?? 0) - currentApplied)
+    applied[player] = 0
+  })
+
+  const movedLastTurn: [boolean, boolean] = [
+    state.leaderMovedLastTurn?.[0] ?? true,
+    state.leaderMovedLastTurn?.[1] ?? true,
+  ]
+  ;([0, 1] as PlayerId[]).forEach((player) => {
+    if (getPlayerLeaderClass(state, player) !== 'archmage') return
+    if (movedLastTurn[player]) return
+    state.actionBudgets[player] = Math.max(0, (state.actionBudgets[player] ?? 0) + 1)
+    applied[player] = 1
+    state.log.push(`Player ${player + 1} gains +1 action budget (Archmage leader held position).`)
+  })
+
+  state.archmageBonusApplied = applied
+}
+
 export function drawPhase(state: GameState): void {
+  applyArchmageTurnStartActionBudgetBonus(state)
   for (const player of [0, 1] as PlayerId[]) {
     const bonusDraw = consumePlayerDrawModifiers(state, player)
     const drawCount = Math.max(0, state.settings.drawPerTurn + bonusDraw)
@@ -844,6 +933,7 @@ export function getPlannedOrderValidity(state: GameState, player: PlayerId): boo
 }
 
 function finishTurn(state: GameState): void {
+  updateLeaderMovementTrackingForTurnEnd(state)
   slowMoveUsage = new WeakMap<Unit, number>()
   tickUnitModifiers(state)
   state.players[0].orders = []
@@ -855,6 +945,7 @@ function finishTurn(state: GameState): void {
   state.activePlayer = state.activePlayer === 0 ? 1 : 0
   state.ready = [false, false]
   drawPhase(state)
+  state.turnStartLeaderPositions = [getCurrentLeaderPosition(state, 0), getCurrentLeaderPosition(state, 1)]
 }
 
 function tickUnitModifiers(state: GameState): void {
@@ -1119,17 +1210,10 @@ function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers
 function clearUnitModifiers(state: GameState, unit: Unit): void {
   if (unit.modifiers.length === 0) return
   if (isLeaderUnit(unit)) {
-    const hadRemovable = unit.modifiers.some(
-      (modifier) =>
-        modifier.type !== 'slow' &&
-        modifier.type !== 'spellResistance' &&
-        modifier.type !== 'reinforcementPenalty'
-    )
-    unit.modifiers = [
-      { type: 'slow', turnsRemaining: 'indefinite' },
-      { type: 'spellResistance', turnsRemaining: 'indefinite' },
-      { type: 'reinforcementPenalty', turnsRemaining: 'indefinite' },
-    ]
+    const baseModifiers = getLeaderBaseModifiers(state, unit.owner)
+    const baseTypes = new Set(baseModifiers.map((modifier) => modifier.type))
+    const hadRemovable = unit.modifiers.some((modifier) => !baseTypes.has(modifier.type))
+    unit.modifiers = baseModifiers
     if (hadRemovable) {
       state.log.push(`Unit ${unit.id} has removable modifiers removed.`)
     }
@@ -1175,7 +1259,7 @@ function applyDamage(
   sourceUnit?: Unit | null,
   sourceDefId?: CardDefId
 ): void {
-  const dealtDelta = getDamageDealtDelta(sourceUnit ?? null)
+  const dealtDelta = getDamageDealtDelta(state, sourceUnit ?? null)
   const takenDelta = getDamageTakenDelta(unit)
   let resolvedDamage = Math.max(0, amount + dealtDelta + takenDelta)
   const isSpellDamage = sourceDefId ? cardCountsAsType(sourceDefId, 'spell') : false
@@ -1195,6 +1279,7 @@ function applyDamage(
 }
 
 function triggerTrapAtCurrentTile(state: GameState, unit: Unit): { stopMovement: boolean } {
+  if (state.phase !== 'action') return { stopMovement: false }
   if (!canTriggerTraps(unit)) return { stopMovement: false }
   const trapIndex = state.traps.findIndex((trap) => sameHex(trap.pos, unit.pos) && trap.owner !== unit.owner)
   if (trapIndex === -1) return { stopMovement: false }
