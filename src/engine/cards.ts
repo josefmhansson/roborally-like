@@ -537,7 +537,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     countsAs: ['movement'],
     classId: 'warleader',
     actionCost: 2,
-    requires: { unit: 'friendly', distanceOptions: [1, 2, 3, 4, 5] },
+    requires: { unit: 'friendly', direction: true },
     effects: [
       {
         type: 'face',
@@ -548,7 +548,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'move',
         unitParam: 'unitId',
         direction: { type: 'param', key: 'direction' },
-        distance: { type: 'param', key: 'distance' },
+        distance: 5,
       },
       {
         type: 'attack',

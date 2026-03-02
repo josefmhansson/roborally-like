@@ -52,6 +52,7 @@ export const BOT_HEURISTICS = {
     pressureDeltaWeight: 8,
     tacticalDeltaWeight: 10,
     opponentHistoryRiskWeight: -14,
+    chainLightningOpportunityWeight: 12,
   },
   pressure: {
     distancePressureWindow: 10,
@@ -75,6 +76,18 @@ export const BOT_HEURISTICS = {
     lightningFragileScale: 0.35,
     meteorClusterScale: 0.32,
     meteorStrongholdRayScale: 0.18,
+  },
+  chainLightning: {
+    basePlayChance: 0.22,
+    adjacentTargetChance: 0.08,
+    reachableTargetChance: 0.14,
+    fragileTargetChance: 0.18,
+    leaderTargetChance: 0.12,
+    minPlayChance: 0.05,
+    maxPlayChance: 0.95,
+    guaranteedReachableTargets: 4,
+    guaranteedFragileTargets: 2,
+    isolatedDurableChanceScale: 0.35,
   },
 } as const
 
@@ -429,12 +442,9 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   }
 
   if (defId === 'attack_charge') {
-    const distances = CARD_DEFS[defId].requires.distanceOptions ?? [1, 2, 3, 4, 5]
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
-        distances.forEach((distance) => {
-          params.push({ unitId: ref.refId, direction, distance })
-        })
+        params.push({ unitId: ref.refId, direction })
       })
     })
     return params
@@ -577,6 +587,7 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
   const pressureDelta = computePressureDelta(projected, player, ownUnits, enemyUnits)
   const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownUnits, enemyUnits)
   const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownUnits, enemyUnits)
+  const chainLightningOpportunity = computeChainLightningPlanningBonus(state, projected, player)
 
   const score =
     strongholdDelta * BOT_HEURISTICS.scoring.strongholdDeltaWeight +
@@ -585,6 +596,7 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
     pressureDelta * BOT_HEURISTICS.scoring.pressureDeltaWeight +
     tacticalDelta * BOT_HEURISTICS.scoring.tacticalDeltaWeight +
     opponentHistoryRisk * BOT_HEURISTICS.scoring.opponentHistoryRiskWeight +
+    chainLightningOpportunity * BOT_HEURISTICS.scoring.chainLightningOpportunityWeight +
     deterministicJitter(state, player)
 
   evaluationCache?.set(cacheKey, score)
@@ -716,6 +728,146 @@ function computeOpponentHistoryRisk(
     meteorLikelihood *
       (clusterExposure * BOT_HEURISTICS.history.meteorClusterScale +
         strongholdRayExposure * BOT_HEURISTICS.history.meteorStrongholdRayScale)
+  )
+}
+
+type ChainLightningOpportunity = {
+  adjacentTargets: number
+  reachableTargets: number
+  fragileTargets: number
+  leaderTargets: number
+}
+
+function computeChainLightningPlanningBonus(
+  planningState: GameState,
+  projected: GameState,
+  player: PlayerId
+): number {
+  let bonus = 0
+  planningState.players[player].orders.forEach((order) => {
+    if (order.defId !== 'attack_chain_lightning') return
+    const caster = resolveFriendlyUnitByRef(projected, player, order.params.unitId)
+    if (!caster) return
+    const opportunity = evaluateChainLightningOpportunity(projected, player, caster)
+    if (opportunity.reachableTargets <= 0) return
+    const playChance = computeChainLightningPlayChance(opportunity)
+    const roll = deterministicChainLightningRoll(planningState, player, order)
+    if (roll > playChance) return
+    bonus += computeChainLightningOpportunityValue(opportunity)
+  })
+  return bonus
+}
+
+function resolveFriendlyUnitByRef(
+  state: GameState,
+  player: PlayerId,
+  unitRef: string | undefined
+): Unit | null {
+  if (!unitRef) return null
+  if (!unitRef.startsWith('planned:')) {
+    const unit = state.units[unitRef]
+    if (!unit || unit.owner !== player) return null
+    if (unit.kind !== 'unit' && unit.kind !== 'leader') return null
+    return unit
+  }
+
+  const rawRef = unitRef.replace('planned:', '')
+  const separator = rawRef.indexOf(':')
+  const orderId = separator === -1 ? rawRef : rawRef.slice(0, separator)
+  const mappedId = state.spawnedByOrder[rawRef] ?? state.spawnedByOrder[orderId]
+  if (!mappedId) return null
+  const unit = state.units[mappedId]
+  if (!unit || unit.owner !== player) return null
+  if (unit.kind !== 'unit' && unit.kind !== 'leader') return null
+  return unit
+}
+
+function evaluateChainLightningOpportunity(
+  state: GameState,
+  player: PlayerId,
+  caster: Unit
+): ChainLightningOpportunity {
+  const visited = new Set<string>()
+  const queue: Unit[] = []
+  let queueIndex = 0
+  let adjacentTargets = 0
+
+  DIRECTIONS.forEach((direction) => {
+    const target = getUnitAt(state, neighbor(caster.pos, direction))
+    if (!target || target.owner === player) return
+    if (!canCardTargetUnit('attack_chain_lightning', target)) return
+    if (visited.has(target.id)) return
+    visited.add(target.id)
+    queue.push(target)
+    adjacentTargets += 1
+  })
+
+  while (queueIndex < queue.length) {
+    const current = queue[queueIndex]
+    queueIndex += 1
+    DIRECTIONS.forEach((direction) => {
+      const target = getUnitAt(state, neighbor(current.pos, direction))
+      if (!target || target.owner === player) return
+      if (!canCardTargetUnit('attack_chain_lightning', target)) return
+      if (visited.has(target.id)) return
+      visited.add(target.id)
+      queue.push(target)
+    })
+  }
+
+  let fragileTargets = 0
+  let leaderTargets = 0
+  visited.forEach((targetId) => {
+    const target = state.units[targetId]
+    if (!target) return
+    if (target.strength <= 1) fragileTargets += 1
+    if (target.kind === 'leader') leaderTargets += 1
+  })
+
+  return {
+    adjacentTargets,
+    reachableTargets: visited.size,
+    fragileTargets,
+    leaderTargets,
+  }
+}
+
+function computeChainLightningPlayChance(opportunity: ChainLightningOpportunity): number {
+  const heuristics = BOT_HEURISTICS.chainLightning
+  if (opportunity.reachableTargets <= 0) return 0
+  if (
+    opportunity.reachableTargets >= heuristics.guaranteedReachableTargets ||
+    opportunity.fragileTargets >= heuristics.guaranteedFragileTargets
+  ) {
+    return 1
+  }
+
+  let chance =
+    heuristics.basePlayChance +
+    Math.max(0, opportunity.adjacentTargets - 1) * heuristics.adjacentTargetChance +
+    Math.max(0, opportunity.reachableTargets - 1) * heuristics.reachableTargetChance +
+    opportunity.fragileTargets * heuristics.fragileTargetChance +
+    opportunity.leaderTargets * heuristics.leaderTargetChance
+
+  if (opportunity.reachableTargets === 1 && opportunity.fragileTargets === 0 && opportunity.leaderTargets === 0) {
+    chance *= heuristics.isolatedDurableChanceScale
+  }
+
+  return clamp(chance, heuristics.minPlayChance, heuristics.maxPlayChance)
+}
+
+function deterministicChainLightningRoll(state: GameState, player: PlayerId, order: Order): number {
+  const seed = `${state.turn}|${player}|${order.id}|${order.cardId}|${serializeParams(order.params)}|${buildOrderSignature(state, player)}`
+  return (hashString(seed) % 10_000) / 10_000
+}
+
+function computeChainLightningOpportunityValue(opportunity: ChainLightningOpportunity): number {
+  const extraReach = Math.max(0, opportunity.reachableTargets - 1)
+  return (
+    opportunity.reachableTargets * 0.7 +
+    extraReach * 0.45 +
+    opportunity.fragileTargets * 0.9 +
+    opportunity.leaderTargets * 1.4
   )
 }
 

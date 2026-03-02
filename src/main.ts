@@ -485,6 +485,7 @@ type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
 type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
+type WhirlwindAnimation = { type: 'whirlwind'; origin: Hex; duration: number }
 type AdjacentStrikeAnimation = { type: 'adjacentStrike'; origin: Hex; duration: number }
 type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
@@ -524,6 +525,7 @@ type BoardAnimation =
   | LightningAnimation
   | BurnAnimation
   | ExecuteAnimation
+  | WhirlwindAnimation
   | AdjacentStrikeAnimation
   | TrapTriggerAnimation
   | MeteorAnimation
@@ -542,6 +544,7 @@ const DEATH_DURATION_MS = 260
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
 const EXECUTE_DURATION_MS = 360
+const WHIRLWIND_DURATION_MS = 340
 const ADJACENT_STRIKE_DURATION_MS = 220
 const TRAP_TRIGGER_DURATION_MS = 320
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
@@ -3408,6 +3411,39 @@ function drawExecuteAnimation(target: Hex, progress: number): void {
   ctx.restore()
 }
 
+function drawWhirlwindAnimation(origin: Hex, progress: number): void {
+  const center = projectHex(origin)
+  const pulse = Math.sin(progress * Math.PI)
+  const spin = progress * Math.PI * 4
+  const spread = layout.size * (0.42 + pulse * 0.32)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.35 + pulse * 0.55
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)'
+  ctx.lineCap = 'round'
+
+  for (let i = 0; i < 3; i += 1) {
+    const radius = spread + i * layout.size * 0.17
+    const start = spin + (i * Math.PI * 2) / 3
+    const end = start + Math.PI * (0.84 + i * 0.07)
+    ctx.lineWidth = Math.max(2, layout.size * (0.14 - i * 0.03))
+    ctx.beginPath()
+    ctx.ellipse(center.x, center.y, radius, radius * BOARD_TILT, 0, start, end)
+    ctx.stroke()
+  }
+
+  const glow = ctx.createRadialGradient(center.x, center.y, spread * 0.15, center.x, center.y, spread * 1.25)
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.6)')
+  glow.addColorStop(0.7, 'rgba(255, 255, 255, 0.2)')
+  glow.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, spread * 1.2, spread * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
 function drawAdjacentStrikeAnimation(origin: Hex, progress: number): void {
   const center = projectHex(origin)
   const pulse = Math.sin(progress * Math.PI)
@@ -3945,6 +3981,10 @@ function drawBoard(): void {
 
   if (currentAnimation?.type === 'adjacentStrike') {
     drawAdjacentStrikeAnimation(currentAnimation.origin, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'whirlwind') {
+    drawWhirlwindAnimation(currentAnimation.origin, animationProgress)
   }
 
   if (currentAnimation?.type === 'trapTrigger') {
@@ -5802,13 +5842,11 @@ function renderRoguelikeWinnerModal(): void {
     winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
     winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
     winnerMenuButton.textContent = 'End Run'
-    winnerResetButton.classList.remove('hidden')
-    winnerResetButton.textContent = `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
+    winnerResetButton.classList.add('hidden')
     winnerRematchButton.classList.remove('hidden')
     const randomReward = roguelikeRun.pendingRandomReward ?? pickWeightedRoguelikeReward()
     roguelikeRun.pendingRandomReward = randomReward
     winnerRematchButton.textContent = `Random: ${getRoguelikeRandomRewardLabel(randomReward)}`
-    winnerResetButton.disabled = false
     winnerRematchButton.disabled = false
     winnerExtraEl.innerHTML = roguelikeRun.draftOptions
       .map((cardId) => {
@@ -6093,6 +6131,35 @@ function parseUnitMoveEvents(logEntries: string[]): Map<string, { index: number;
   return events
 }
 
+function parseUnitMoveAttempts(logEntries: string[]): Map<string, { index: number; moved: boolean; pos?: Hex }[]> {
+  const attempts = new Map<string, { index: number; moved: boolean; pos?: Hex }[]>()
+  logEntries.forEach((entry, index) => {
+    const moveMatch = entry.match(/^Unit (.+) moves to (-?\d+),(-?\d+)\.$/)
+    if (moveMatch) {
+      const unitId = moveMatch[1]
+      const queue = attempts.get(unitId) ?? []
+      queue.push({
+        index,
+        moved: true,
+        pos: { q: Number(moveMatch[2]), r: Number(moveMatch[3]) },
+      })
+      attempts.set(unitId, queue)
+      return
+    }
+
+    const blockedMatch = entry.match(/^Unit (.+) cannot move(?: this turn)?\.$/)
+    if (!blockedMatch) return
+    const unitId = blockedMatch[1]
+    const queue = attempts.get(unitId) ?? []
+    queue.push({
+      index,
+      moved: false,
+    })
+    attempts.set(unitId, queue)
+  })
+  return attempts
+}
+
 function parseDestroyedUnits(logEntries: string[]): { index: number; unitId: string }[] {
   const destroyed: { index: number; unitId: string }[] = []
   logEntries.forEach((entry, index) => {
@@ -6192,6 +6259,7 @@ function buildAnimations(
   const animations: BoardAnimation[] = []
   const loggedPositions = parseUnitPositionUpdates(logEntries)
   const loggedMoveEvents = parseUnitMoveEvents(logEntries)
+  const loggedMoveAttempts = parseUnitMoveAttempts(logEntries)
   const damageEvents = parseDamageEvents(logEntries)
   const destroyedEvents = parseDestroyedUnits(logEntries)
   const destroyedUnitIds = new Set(destroyedEvents.map((event) => event.unitId))
@@ -6205,6 +6273,13 @@ function buildAnimations(
 
   const consumeLoggedMove = (unitId: string): { index: number; pos: Hex } | null => {
     const queue = loggedMoveEvents.get(unitId)
+    if (!queue || queue.length === 0) return null
+    const [next] = queue.splice(0, 1)
+    return next
+  }
+
+  const consumeLoggedMoveAttempt = (unitId: string): { index: number; moved: boolean; pos?: Hex } | null => {
+    const queue = loggedMoveAttempts.get(unitId)
     if (!queue || queue.length === 0) return null
     const [next] = queue.splice(0, 1)
     return next
@@ -6305,12 +6380,20 @@ function buildAnimations(
       }
       const beforeUnit = before[resolvedId]
       const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
-      const consumedMove = consumeLoggedMove(resolvedId)
-      if (consumedMove) {
+      const consumedMoveAttempt = consumeLoggedMoveAttempt(resolvedId)
+      if (consumedMoveAttempt) {
+        enqueueDestroyedUpTo(consumedMoveAttempt.index - 1)
+        lastConsumedLogIndex = Math.max(lastConsumedLogIndex, consumedMoveAttempt.index)
+      }
+      if (consumedMoveAttempt && !consumedMoveAttempt.moved) {
+        continue
+      }
+      const consumedMove = consumedMoveAttempt?.moved ? consumeLoggedMove(resolvedId) : null
+      if (!consumedMoveAttempt && consumedMove) {
         enqueueDestroyedUpTo(consumedMove.index - 1)
         lastConsumedLogIndex = Math.max(lastConsumedLogIndex, consumedMove.index)
       }
-      const destination = consumedMove?.pos ?? loggedPositions.get(resolvedId)
+      const destination = consumedMove?.pos ?? consumedMoveAttempt?.pos
       if (!from || !destination) continue
       if (from.q === destination.q && from.r === destination.r) continue
       animations.push({
@@ -6360,6 +6443,14 @@ function buildAnimations(
       if (!resolvedId) continue
       const acting = before[resolvedId]
       if (!acting) continue
+      const executeOrigin = animatedPositions.get(resolvedId) ?? acting.pos
+      animations.push({
+        type: 'lunge',
+        unitId: resolvedId,
+        from: { ...executeOrigin },
+        dir: acting.facing,
+        duration: LUNGE_DURATION_MS,
+      })
       const targetTile = neighbor(acting.pos, acting.facing)
       const target = findSnapshotUnitAt(before, targetTile)
       if (!target) continue
@@ -6418,6 +6509,18 @@ function buildAnimations(
         type: 'adjacentStrike',
         origin: { ...origin },
         duration: ADJACENT_STRIKE_DURATION_MS,
+      })
+    }
+
+    if (effect.type === 'whirlwind') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const origin = animatedPositions.get(resolvedId) ?? before[resolvedId]?.pos ?? state.units[resolvedId]?.pos
+      if (!origin) continue
+      animations.push({
+        type: 'whirlwind',
+        origin: { ...origin },
+        duration: WHIRLWIND_DURATION_MS,
       })
     }
 
@@ -8040,12 +8143,7 @@ winnerMenuButton.addEventListener('click', () => {
 winnerResetButton.addEventListener('click', () => {
   if (mode === 'roguelike') {
     if (!roguelikeRun) return
-    if (state.winner === BOT_HUMAN_PLAYER) {
-      if (roguelikeRun.uiStage !== 'reward_choice') return
-      roguelikeRun.strongholdHp += 10
-      showRoguelikeRewardNotice(`Reward gained: +10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP.`)
-      return
-    }
+    if (state.winner === BOT_HUMAN_PLAYER) return
     startRoguelikeRun()
     return
   }

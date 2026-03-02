@@ -21,6 +21,14 @@ function setupBotPlanningState(): GameState {
   return state
 }
 
+function clearNonLeaderUnits(state: GameState): void {
+  Object.keys(state.units).forEach((unitId) => {
+    if (!unitId.startsWith('stronghold-')) {
+      delete state.units[unitId]
+    }
+  })
+}
+
 function countApUsed(state: GameState, player: 0 | 1): number {
   return state.players[player].orders.reduce((sum, order) => sum + (CARD_DEFS[order.defId].actionCost ?? 1), 0)
 }
@@ -159,4 +167,69 @@ test('bot avoids spending AP on no-impact orders', () => {
 
   const result = buildBotPlan(state, 1, { thinkTimeMs: 200 })
   assert.equal(result.orders.length, 0)
+})
+
+test('bot can skip low-opportunity chain lightning', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-chain-low', defId: 'attack_chain_lightning' }]
+  clearNonLeaderUnits(state)
+  state.units['bot-caster-low'] = {
+    id: 'bot-caster-low',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-durable-low'] = {
+    id: 'enemy-durable-low',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 250 })
+  assert.equal(result.orders.length, 0)
+})
+
+test('bot uses chain lightning when clustered fragile targets make it high value', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-chain-high', defId: 'attack_chain_lightning' }]
+  clearNonLeaderUnits(state)
+  state.units['bot-caster-high'] = {
+    id: 'bot-caster-high',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-fragile-a'] = {
+    id: 'enemy-fragile-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 1,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['enemy-fragile-b'] = {
+    id: 'enemy-fragile-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 1,
+    pos: { q: 3, r: 1 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 250 })
+  assert.deepEqual(result.orders.map((order) => order.cardId), ['bot-chain-high'])
 })

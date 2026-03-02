@@ -733,7 +733,7 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
 
   for (const order of state.players[player].orders) {
     const def = CARD_DEFS[order.defId]
-    const context: OrderResolutionContext = { movedUnitOrigins: {} }
+    const context: OrderResolutionContext = { movedUnitOrigins: {}, lastMoveSucceededByUnit: {} }
     for (const effect of def.effects) {
       if (effect.type === 'move') {
         const params = order.params
@@ -1523,12 +1523,13 @@ function pushUnit(state: GameState, unit: Unit, direction: Direction, distance: 
 
 type OrderResolutionContext = {
   movedUnitOrigins: Record<string, Hex>
+  lastMoveSucceededByUnit: Record<string, boolean>
 }
 
 function applyOrder(state: GameState, order: Order): void {
   const def = CARD_DEFS[order.defId]
   if (state.winner !== null) return
-  const context: OrderResolutionContext = { movedUnitOrigins: {} }
+  const context: OrderResolutionContext = { movedUnitOrigins: {}, lastMoveSucceededByUnit: {} }
   for (const effect of def.effects) {
     applyEffect(state, order, effect, context)
     if (state.winner !== null) return
@@ -1537,7 +1538,7 @@ function applyOrder(state: GameState, order: Order): void {
 
 function applyOrderForPlanning(state: GameState, order: Order): void {
   const def = CARD_DEFS[order.defId]
-  const context: OrderResolutionContext = { movedUnitOrigins: {} }
+  const context: OrderResolutionContext = { movedUnitOrigins: {}, lastMoveSucceededByUnit: {} }
   for (const effect of def.effects) {
     if (effect.type === 'budget' || effect.type === 'chainLightning') continue
     applyEffect(state, order, effect, context)
@@ -1827,6 +1828,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
       if (!unit) return
+      const startPos = { ...unit.pos }
       if (!context.movedUnitOrigins[resolvedUnitId]) {
         context.movedUnitOrigins[resolvedUnitId] = { ...unit.pos }
       }
@@ -1834,15 +1836,25 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         return
       }
       const direction = resolveDirection(unit.facing, params, effect.direction)
-      if (direction === null) return
+      if (direction === null) {
+        context.lastMoveSucceededByUnit[resolvedUnitId] = false
+        return
+      }
       const distance =
         typeof effect.distance === 'number'
           ? effect.distance
           : params.distance !== undefined
             ? params.distance
             : null
-      if (!distance) return
+      if (!distance) {
+        context.lastMoveSucceededByUnit[resolvedUnitId] = false
+        return
+      }
       moveUnit(state, unit, direction, distance)
+      const movedUnit = state.units[resolvedUnitId]
+      context.lastMoveSucceededByUnit[resolvedUnitId] = Boolean(
+        movedUnit && !sameHex(startPos, movedUnit.pos)
+      )
       return
     }
     case 'teleport': {
@@ -2058,6 +2070,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
     case 'damageAdjacent': {
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId) return
+      if (order.defId === 'attack_blade_dance' && !context.lastMoveSucceededByUnit[resolvedUnitId]) return
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
 

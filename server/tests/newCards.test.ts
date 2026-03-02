@@ -1314,6 +1314,41 @@ test('execute deals 3 damage to leaders in front', () => {
   assert.equal(leaderAfter.strength, startStrength - 3)
 })
 
+test('charge only needs a direction and moves until blocked before attacking', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_charge'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['charge-user'] = {
+    id: 'charge-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['charge-blocker'] = {
+    id: 'charge-blocker',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_charge')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'charge-user', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['charge-user']?.pos, { q: 3, r: 2 })
+  assert.equal(state.units['charge-blocker']?.strength, 3)
+})
+
 test('blade dance chains three moves and damages adjacent units after each step', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 3 }
   const state = createGameState(settings, {
@@ -1387,6 +1422,71 @@ test('blade dance chains three moves and damages adjacent units after each step'
   assert.equal(state.units['bd-step-2-3']?.strength, 1)
   assert.equal(state.units['bd-step-3']?.strength, 2)
   assert.equal(state.units['bd-all-steps']?.strength, 1)
+})
+
+test('blade dance only damages after a successful movement step', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 3 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_blade_dance'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['bd-user'] = {
+    id: 'bd-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['bd-blocker'] = {
+    id: 'bd-blocker',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['bd-step-1-only'] = {
+    id: 'bd-step-1-only',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 1 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['bd-step-3-only'] = {
+    id: 'bd-step-3-only',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 3 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_blade_dance')
+  assert.ok(
+    planOrder(state, 0, cardId, {
+      unitId: 'bd-user',
+      tile: { q: 2, r: 2 },
+      tile2: { q: 3, r: 2 },
+      tile3: { q: 4, r: 3 },
+      direction: 0,
+      moveDirection: 0,
+      faceDirection: 5,
+    })
+  )
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['bd-user']?.pos, { q: 3, r: 3 })
+  assert.equal(state.units['bd-blocker']?.strength, 3)
+  assert.equal(state.units['bd-step-1-only']?.strength, 2)
+  assert.equal(state.units['bd-step-3-only']?.strength, 2)
 })
 
 test('whirlwind damages adjacent units and pushes when space is open', () => {
