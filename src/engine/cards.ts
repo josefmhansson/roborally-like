@@ -2,7 +2,7 @@ import type { CardDefId, CardEffect, CardType, Direction, PlayerClassId } from '
 import { DIRECTION_NAMES } from './hex'
 
 export type CardTargetRequirement = {
-  unit?: 'friendly' | 'any'
+  unit?: 'friendly' | 'enemy' | 'any'
   tile?: 'spawn' | 'any' | 'barricade'
   tile2?: 'barricade' | 'any'
   tile3?: 'any'
@@ -19,6 +19,7 @@ export type CardDef = {
   type: CardType
   countsAs?: CardType[]
   classId?: PlayerClassId
+  roguelikeOnly?: boolean
   requires: CardTargetRequirement
   keywords?: CardKeyword[]
   canTargetBarricades?: boolean
@@ -26,7 +27,7 @@ export type CardDef = {
   effects: CardEffect[]
 }
 
-export type CardKeyword = 'Priority'
+export type CardKeyword = 'Priority' | 'Slow'
 
 export type { CardEffect }
 type CardTypeSource = CardDefId | Pick<CardDef, 'type' | 'countsAs'>
@@ -631,6 +632,110 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       {
         type: 'teamAttackForward',
         damage: 2,
+      },
+    ],
+  },
+  attack_roguelike_basic: {
+    id: 'attack_roguelike_basic',
+    name: 'Attack',
+    description: 'Face a direction, then deal damage to an adjacent unit.',
+    type: 'attack',
+    roguelikeOnly: true,
+    actionCost: 1,
+    requires: { unit: 'friendly', direction: true },
+    effects: [
+      {
+        type: 'face',
+        unitParam: 'unitId',
+        directionParam: 'direction',
+      },
+      {
+        type: 'attack',
+        unitParam: 'unitId',
+        mode: 'nearest',
+        directions: 'facing',
+        damage: 1,
+      },
+    ],
+  },
+  attack_roguelike_slow: {
+    id: 'attack_roguelike_slow',
+    name: 'Slow Attack',
+    description: 'Face a direction, then deal heavy damage to an adjacent unit.',
+    type: 'attack',
+    roguelikeOnly: true,
+    actionCost: 1,
+    keywords: ['Slow'],
+    requires: { unit: 'friendly', direction: true },
+    effects: [
+      {
+        type: 'face',
+        unitParam: 'unitId',
+        directionParam: 'direction',
+      },
+      {
+        type: 'attack',
+        unitParam: 'unitId',
+        mode: 'nearest',
+        directions: 'facing',
+        damage: 5,
+      },
+    ],
+  },
+  attack_roguelike_stomp: {
+    id: 'attack_roguelike_stomp',
+    name: 'Stomp',
+    description: 'Deal 1 damage and Stun all adjacent units for the rest of the turn.',
+    type: 'attack',
+    roguelikeOnly: true,
+    actionCost: 1,
+    requires: { unit: 'friendly' },
+    effects: [
+      {
+        type: 'damageAdjacent',
+        unitParam: 'unitId',
+        amount: 1,
+      },
+      {
+        type: 'stunAdjacent',
+        unitParam: 'unitId',
+        turns: 1,
+      },
+    ],
+  },
+  attack_roguelike_pack_hunt: {
+    id: 'attack_roguelike_pack_hunt',
+    name: 'Pack Hunt',
+    description:
+      'Move 1 tile in any direction, then attack the tile in front for each allied unit adjacent to that tile.',
+    type: 'attack',
+    countsAs: ['movement'],
+    roguelikeOnly: true,
+    actionCost: 1,
+    requires: { unit: 'friendly', direction: true },
+    effects: [
+      {
+        type: 'packHunt',
+        unitParam: 'unitId',
+        moveDistance: 1,
+        damagePerAdjacent: 2,
+      },
+    ],
+  },
+  spell_roguelike_mark: {
+    id: 'spell_roguelike_mark',
+    name: 'Mark',
+    description: 'Target an enemy unit. All allied units move 1 tile toward it.',
+    type: 'spell',
+    countsAs: ['movement'],
+    roguelikeOnly: true,
+    actionCost: 1,
+    requires: { unit: 'enemy' },
+    effects: [
+      {
+        type: 'markAdvanceToward',
+        targetUnitParam: 'unitId',
+        distance: 1,
       },
     ],
   },

@@ -13,6 +13,18 @@ export type UnitId = string
 
 export type UnitKind = 'unit' | 'leader' | 'barricade'
 
+export type RoguelikeUnitRole =
+  | 'slime_grand'
+  | 'slime_mid'
+  | 'slime_small'
+  | 'troll'
+  | 'alpha_wolf'
+  | 'wolf'
+
+export type RoguelikeEncounterId = 'slimes' | 'trolls' | 'wolf_pack'
+
+export type VictoryCondition = 'leader' | 'eliminate_units'
+
 export type TrapKind = 'pitfall' | 'explosive'
 
 export type TrapId = string
@@ -26,19 +38,24 @@ export type Trap = {
 
 export type UnitModifierType =
   | 'cannotMove'
+  | 'stunned'
   | 'slow'
   | 'spellResistance'
   | 'reinforcementPenalty'
   | 'burn'
+  | 'regeneration'
   | 'disarmed'
   | 'vulnerable'
   | 'strong'
+
+export type UnitModifierSource = 'commanderAura'
 
 export type ModifierDuration = number | 'indefinite'
 
 export type UnitModifier = {
   type: UnitModifierType
   turnsRemaining: ModifierDuration
+  source?: UnitModifierSource
 }
 
 export type Unit = {
@@ -49,6 +66,7 @@ export type Unit = {
   pos: Hex
   facing: Direction
   modifiers: UnitModifier[]
+  roguelikeRole?: RoguelikeUnitRole
 }
 
 export type TileKind = 'grass' | 'forest' | 'mountain' | 'pond' | 'rocky' | 'rough' | 'shrub'
@@ -93,6 +111,10 @@ export type CardDefId =
   | 'attack_jab'
   | 'attack_shove'
   | 'attack_whirlwind'
+  | 'attack_roguelike_basic'
+  | 'attack_roguelike_slow'
+  | 'attack_roguelike_stomp'
+  | 'attack_roguelike_pack_hunt'
   | 'reinforce_rage'
   | 'reinforce_bolster'
   | 'spell_lightning'
@@ -105,6 +127,7 @@ export type CardDefId =
   | 'spell_explosive_trap'
   | 'spell_divination'
   | 'spell_burn'
+  | 'spell_roguelike_mark'
   | 'move_pivot'
 
 export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2' | 'tile3'
@@ -186,6 +209,11 @@ export type CardEffect =
       amount: number
     }
   | {
+      type: 'stunAdjacent'
+      unitParam: 'unitId'
+      turns: ModifierDuration
+    }
+  | {
       type: 'chainLightning'
       unitParam: 'unitId'
       damage: number
@@ -256,6 +284,17 @@ export type CardEffect =
       unitParam: 'unitId'
       direction: DirectionSource
       distance: number | { type: 'param'; key: 'distance' }
+    }
+  | {
+      type: 'packHunt'
+      unitParam: 'unitId'
+      moveDistance: number
+      damagePerAdjacent: number
+    }
+  | {
+      type: 'markAdvanceToward'
+      targetUnitParam: 'unitId'
+      distance: number
     }
 
 export type CardInstance = {
@@ -334,4 +373,7 @@ export type GameSettings = {
   maxCopies: number
   actionBudgetP1: number
   actionBudgetP2: number
+  victoryCondition?: VictoryCondition
+  roguelikeMatchNumber?: number
+  roguelikeEncounterId?: RoguelikeEncounterId
 }

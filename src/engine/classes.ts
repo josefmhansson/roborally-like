@@ -67,7 +67,12 @@ export function getCardClassId(cardId: CardDefId): PlayerClassId | null {
   return CARD_DEFS[cardId].classId ?? null
 }
 
+export function isRoguelikeOnlyCard(cardId: CardDefId): boolean {
+  return CARD_DEFS[cardId].roguelikeOnly === true
+}
+
 export function isCardAllowedForClass(cardId: CardDefId, classId: PlayerClassId): boolean {
+  if (isRoguelikeOnlyCard(cardId)) return false
   const cardClassId = getCardClassId(cardId)
   return cardClassId === null || cardClassId === classId
 }

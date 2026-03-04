@@ -121,6 +121,54 @@ test('commander leader grants adjacent friendly units +1 attack damage', () => {
   readyAndResolve(state)
 
   assert.equal(state.units['cmd-target']?.strength, 1)
+  assert.ok(
+    state.units['cmd-attacker']?.modifiers.some(
+      (modifier) => modifier.type === 'strong' && modifier.turnsRemaining === 'indefinite'
+    )
+  )
+})
+
+test('commander aura Strong is applied and removed based on adjacency', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
+  const state = createGameState(
+    settings,
+    {
+      p1: Array.from({ length: settings.deckSize }, () => 'move_any'),
+      p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    },
+    { p1: 'commander', p2: null }
+  )
+
+  clearNonLeaderUnits(state)
+  const leader = state.units['stronghold-0']
+  assert.ok(leader && leader.kind === 'leader')
+  leader.pos = { q: 2, r: 2 }
+  leader.facing = 0
+  state.units['cmd-aura-unit'] = {
+    id: 'cmd-aura-unit',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 0, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const moveIntoAura = findCardId(state, 0, 'move_any')
+  assert.ok(planOrder(state, 0, moveIntoAura, { unitId: 'cmd-aura-unit', direction: 0, distance: 1 }))
+  readyAndResolve(state)
+  assert.deepEqual(state.units['cmd-aura-unit']?.pos, { q: 1, r: 2 })
+  assert.ok(
+    state.units['cmd-aura-unit']?.modifiers.some(
+      (modifier) => modifier.type === 'strong' && modifier.turnsRemaining === 'indefinite'
+    )
+  )
+
+  const moveOutOfAura = findCardId(state, 0, 'move_any')
+  assert.ok(planOrder(state, 0, moveOutOfAura, { unitId: 'cmd-aura-unit', direction: 3, distance: 1 }))
+  readyAndResolve(state)
+  assert.deepEqual(state.units['cmd-aura-unit']?.pos, { q: 0, r: 2 })
+  assert.equal(state.units['cmd-aura-unit']?.modifiers.some((modifier) => modifier.type === 'strong'), false)
 })
 
 test('warleader leader can move full distance without Slow restriction', () => {
@@ -1790,4 +1838,357 @@ test('whirlwind can damage and push enemy leader', () => {
   assert.ok(leaderAfter)
   assert.equal(leaderAfter.strength, leaderStartStrength - 3)
   assert.notDeepEqual(leaderAfter.pos, leaderStartPos)
+})
+
+test('slow cards and subsequent cards resolve after all non-slow cards', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['attack_roguelike_slow', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['slow-user'] = {
+    id: 'slow-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['slow-enemy'] = {
+    id: 'slow-enemy',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const slowCardId = findCardId(state, 0, 'attack_roguelike_slow')
+  const p1JabCardId = findCardId(state, 0, 'attack_jab')
+  const p2JabCardId = findCardId(state, 1, 'attack_jab')
+  assert.ok(planOrder(state, 0, slowCardId, { unitId: 'slow-user', direction: 0 }))
+  assert.ok(planOrder(state, 0, p1JabCardId, { unitId: 'slow-user', direction: 0 }))
+  assert.ok(planOrder(state, 1, p2JabCardId, { unitId: 'slow-enemy', direction: 3 }))
+
+  state.ready = [true, true]
+  startActionPhase(state)
+
+  assert.deepEqual(
+    state.actionQueue.map((order) => `${order.player}:${order.defId}`),
+    ['1:attack_jab', '0:attack_roguelike_slow', '0:attack_jab']
+  )
+})
+
+test('roguelike elimination victory triggers when all enemy mobs are defeated', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'slimes' as const,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['elim-user'] = {
+    id: 'elim-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['elim-target'] = {
+    id: 'elim-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'slime_small',
+  }
+
+  const cardId = findCardId(state, 0, 'attack_execute')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'elim-user' }))
+  readyAndResolve(state)
+
+  assert.equal(state.winner, 0)
+  assert.ok(state.units['stronghold-1'])
+  assert.ok(state.log.some((entry) => entry === 'Player 1 wins by eliminating all enemy units.'))
+})
+
+test('destroyed slimes split into two smaller scaled slimes', () => {
+  const matchNumber = 8
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'slimes' as const,
+    roguelikeMatchNumber: matchNumber,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['split-user'] = {
+    id: 'split-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['slime-grand'] = {
+    id: 'slime-grand',
+    owner: 1,
+    kind: 'unit',
+    strength: 1,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'slime_grand',
+  }
+
+  const cardId = findCardId(state, 0, 'attack_execute')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'split-user' }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['slime-grand'], undefined)
+  const children = Object.values(state.units).filter((unit) => unit.owner === 1 && unit.roguelikeRole === 'slime_mid')
+  assert.equal(children.length, 2)
+  children.forEach((child) => {
+    assert.equal(child.strength, 3 + Math.floor(matchNumber / 2))
+  })
+  assert.equal(
+    state.log.filter((entry) => entry.startsWith('Slime split: slime-grand lobs from ')).length,
+    2
+  )
+  assert.equal(state.winner, null)
+})
+
+test('stomp stuns adjacent enemies and blocks their later orders this turn', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['attack_roguelike_stomp', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['stun-target'] = {
+    id: 'stun-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['stomp-user'] = {
+    id: 'stomp-user',
+    owner: 1,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const p1MoveCardId = findCardId(state, 0, 'move_any')
+  const stompCardId = findCardId(state, 1, 'attack_roguelike_stomp')
+  assert.ok(planOrder(state, 0, p1MoveCardId, { unitId: 'stun-target', direction: 0, distance: 1 }))
+  assert.ok(planOrder(state, 1, stompCardId, { unitId: 'stomp-user' }))
+
+  state.activePlayer = 1
+  readyAndResolve(state)
+
+  const targetAfter = state.units['stun-target']
+  assert.ok(targetAfter)
+  assert.deepEqual(targetAfter.pos, { q: 2, r: 2 })
+  assert.ok(state.log.some((entry) => entry === 'Unit stun-target is stunned and cannot act this turn.'))
+})
+
+test('regeneration heals units at turn end', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['regen-troll'] = {
+    id: 'regen-troll',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [{ type: 'regeneration', turnsRemaining: 'indefinite' }],
+    roguelikeRole: 'troll',
+  }
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['regen-troll']?.strength, 6)
+  assert.ok(state.log.some((entry) => entry === 'Regeneration heals unit regen-troll for 1.'))
+})
+
+test('pack hunt uses scaled damage per adjacent ally', () => {
+  const matchNumber = 7
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    roguelikeMatchNumber: matchNumber,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: ['attack_roguelike_pack_hunt', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  clearNonLeaderUnits(state)
+  const targetTile = { q: 4, r: 2 }
+  state.units['alpha'] = {
+    id: 'alpha',
+    owner: 1,
+    kind: 'unit',
+    strength: 8,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'alpha_wolf',
+  }
+  state.units['wolf-a'] = {
+    id: 'wolf-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 2),
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'wolf',
+  }
+  state.units['wolf-b'] = {
+    id: 'wolf-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 5),
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'wolf',
+  }
+  state.units['pack-prey'] = {
+    id: 'pack-prey',
+    owner: 0,
+    kind: 'unit',
+    strength: 20,
+    pos: targetTile,
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 1, 'attack_roguelike_pack_hunt')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'alpha', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['alpha']?.pos, { q: 3, r: 2 })
+  assert.equal(state.units['pack-prey']?.strength, 8)
+})
+
+test('mark only targets enemies and advances allied units toward the target', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_roguelike_mark'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['mark-a'] = {
+    id: 'mark-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 1 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['mark-b'] = {
+    id: 'mark-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['mark-target'] = {
+    id: 'mark-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'spell_roguelike_mark')
+  assert.equal(planOrder(state, 0, cardId, { unitId: 'mark-a' }), null)
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'mark-target' }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['mark-a']?.pos, { q: 2, r: 1 })
+  assert.deepEqual(state.units['mark-b']?.pos, { q: 1, r: 2 })
+})
+
+test('roguelike basic attack scales damage with match number', () => {
+  const matchNumber = 11
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    roguelikeMatchNumber: matchNumber,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_roguelike_basic'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['scaled-user'] = {
+    id: 'scaled-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['scaled-target'] = {
+    id: 'scaled-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 7,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_roguelike_basic')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'scaled-user', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['scaled-target']?.strength, 4)
 })

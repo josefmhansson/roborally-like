@@ -46,6 +46,7 @@ import type {
   OrderParams,
   PlayerId,
   PlayerClassId,
+  RoguelikeEncounterId,
   Trap,
   TileKind,
   Unit,
@@ -500,6 +501,7 @@ type TeleportAnimation = {
   duration: number
 }
 type ChainLightningAnimation = { type: 'chainLightning'; from: Hex; to: Hex; duration: number }
+type SlimeLobAnimation = { type: 'slimeLob'; from: Hex; to: Hex; duration: number }
 type HarpoonAnimation = {
   type: 'harpoon'
   from: Hex
@@ -532,6 +534,7 @@ type BoardAnimation =
   | ArrowAnimation
   | TeleportAnimation
   | ChainLightningAnimation
+  | SlimeLobAnimation
   | HarpoonAnimation
   | DeathRayAnimation
 
@@ -548,6 +551,7 @@ const WHIRLWIND_DURATION_MS = 340
 const ADJACENT_STRIKE_DURATION_MS = 220
 const TRAP_TRIGGER_DURATION_MS = 320
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
+const SLIME_LOB_DURATION_MS = 380
 const METEOR_DURATION_MS = 1600
 const ARROW_DURATION_MS = 300
 const TELEPORT_DURATION_MS = 320
@@ -635,6 +639,23 @@ const spawnBaseImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village
 const spawnTeamImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_team.png'))
 const barricadeBaseImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_base.png'))
 const barricadeTeamImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_team.png'))
+const trapImages: Record<'pitfall' | 'explosive', ImageAsset> = {
+  pitfall: loadImage(resolveAssetUrl('assets/traps/pitfall_trap.png')),
+  explosive: loadImage(resolveAssetUrl('assets/traps/explosive_trap.png')),
+}
+const monsterRoleImages: Record<RoguelikeEncounterUnitRole, ImageAsset[]> = {
+  slime_grand: [loadImage(resolveAssetUrl('assets/monsters/monster_grandslime.png'))],
+  slime_mid: [loadImage(resolveAssetUrl('assets/monsters/monster_slime.png'))],
+  slime_small: [loadImage(resolveAssetUrl('assets/monsters/monster_slimeling.png'))],
+  troll: [loadImage(resolveAssetUrl('assets/monsters/monster_troll.png'))],
+  alpha_wolf: [loadImage(resolveAssetUrl('assets/monsters/monster_alpha_wolf.png'))],
+  wolf: [
+    loadImage(resolveAssetUrl('assets/monsters/monster_wolf_1.png')),
+    loadImage(resolveAssetUrl('assets/monsters/monster_wolf_2.png')),
+    loadImage(resolveAssetUrl('assets/monsters/monster_wolf_3.png')),
+  ],
+}
+const roguelikeMonsterVariantByUnitId = new Map<string, number>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 
@@ -739,7 +760,7 @@ const ONLINE_RECONNECT_DELAY_MS = 2000
 const BOT_HUMAN_PLAYER: PlayerId = 0
 const BOT_PLAYER: PlayerId = 1
 const ROGUELIKE_STARTING_STRONGHOLD_HP = 20
-const ROGUELIKE_OPPONENT_DECK_SIZE = 20
+const ROGUELIKE_BASE_AP_BUDGET = 3
 const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
   strongholdHp: 34,
   extraDraw: 5,
@@ -762,12 +783,14 @@ const ROGUELIKE_STARTING_DECK: CardDefId[] = [
 type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
 type RoguelikeUiStage = 'reward_choice' | 'reward_notice' | 'run_over'
 
-type RoguelikeDifficulty = {
-  botStrongholdHp: number
-  botActionBudgetBonus: number
-  botDrawBonus: number
-  botStartingUnitCountBonus: number
-  botStartingUnitStrengthBonus: number
+type RoguelikeEncounterUnitRole = NonNullable<Unit['roguelikeRole']>
+
+type RoguelikeEncounterDef = {
+  id: RoguelikeEncounterId
+  name: string
+  deck: (matchNumber: number) => CardDefId[]
+  unitCounts: (matchNumber: number) => Array<{ role: RoguelikeEncounterUnitRole; count: number }>
+  actionBudget?: (matchNumber: number) => number
 }
 
 type RoguelikeRunState = {
@@ -784,6 +807,74 @@ type RoguelikeRunState = {
   draftOptions: CardDefId[]
   pendingRandomReward: RoguelikeRandomReward | null
   rewardNoticeMessage: string | null
+  currentEncounterId: RoguelikeEncounterId | null
+  currentMatchNumber: number
+}
+
+const ROGUELIKE_ENCOUNTER_DEFS: RoguelikeEncounterDef[] = [
+  {
+    id: 'slimes',
+    name: 'Slimes',
+    deck: () => [
+      'move_forward_face',
+      'move_forward_face',
+      'move_forward_face',
+      'move_forward_face',
+      'attack_coordinated',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'move_tandem',
+    ],
+    unitCounts: (n) => [
+      { role: 'slime_grand', count: 1 },
+      { role: 'slime_mid', count: Math.floor(n / 4) },
+      { role: 'slime_small', count: Math.floor(n / 3) },
+    ],
+  },
+  {
+    id: 'trolls',
+    name: 'Trolls',
+    deck: () => [
+      'move_forward_face',
+      'move_forward_face',
+      'attack_roguelike_slow',
+      'attack_roguelike_slow',
+      'attack_roguelike_slow',
+      'attack_roguelike_slow',
+      'attack_roguelike_stomp',
+      'attack_roguelike_stomp',
+    ],
+    unitCounts: (n) => [{ role: 'troll', count: 2 + Math.floor(n / 5) }],
+  },
+  {
+    id: 'wolf_pack',
+    name: 'Wolf Pack',
+    deck: () => [
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'attack_roguelike_pack_hunt',
+      'spell_roguelike_mark',
+    ],
+    unitCounts: () => [
+      { role: 'alpha_wolf', count: 1 },
+      { role: 'wolf', count: 4 },
+    ],
+  },
+]
+const ROGUELIKE_ENCOUNTER_ID_SET = new Set<RoguelikeEncounterId>(
+  ROGUELIKE_ENCOUNTER_DEFS.map((encounter) => encounter.id)
+)
+
+function isRoguelikeEncounterId(value: unknown): value is RoguelikeEncounterId {
+  return typeof value === 'string' && ROGUELIKE_ENCOUNTER_ID_SET.has(value as RoguelikeEncounterId)
 }
 
 let roguelikeRun: RoguelikeRunState | null = null
@@ -950,6 +1041,8 @@ function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClass
     draftOptions: [],
     pendingRandomReward: null,
     rewardNoticeMessage: null,
+    currentEncounterId: null,
+    currentMatchNumber: 1,
   }
 }
 
@@ -968,6 +1061,8 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     typeof source.pendingRandomReward === 'string' && source.pendingRandomReward in ROGUELIKE_RANDOM_REWARD_WEIGHTS
       ? (source.pendingRandomReward as RoguelikeRandomReward)
       : null
+  const currentEncounterId = isRoguelikeEncounterId(source.currentEncounterId) ? source.currentEncounterId : null
+  const currentMatchNumber = Math.max(1, Math.floor(Number(source.currentMatchNumber) || 1))
 
   return {
     wins: Math.max(0, Math.floor(Number(source.wins) || 0)),
@@ -986,6 +1081,8 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     draftOptions: sanitizeDeckForCurrentClass(normalizeDeckInput(source.draftOptions), playerClass, true).slice(0, 3),
     pendingRandomReward,
     rewardNoticeMessage: typeof source.rewardNoticeMessage === 'string' ? source.rewardNoticeMessage : null,
+    currentEncounterId,
+    currentMatchNumber,
   }
 }
 
@@ -2671,6 +2768,63 @@ function getRingTint(owner: PlayerId): string {
   return mixColor(getTeamTint(owner), '#000000', TEAM_RING_DARKEN)
 }
 
+function getEncounterRoleColor(role: Unit['roguelikeRole']): string | null {
+  if (role === 'slime_grand') return '#63ff95'
+  if (role === 'slime_mid') return '#4cd982'
+  if (role === 'slime_small') return '#2cb86a'
+  if (role === 'troll') return '#9aa26f'
+  if (role === 'alpha_wolf') return '#b8c4d6'
+  if (role === 'wolf') return '#9ca8bd'
+  return null
+}
+
+function getUnitRingColor(unit: Unit): string {
+  const fallback = getRingTint(unit.owner)
+  if (mode !== 'roguelike') return fallback
+  if (unit.owner !== BOT_PLAYER) return fallback
+  const roleColor = getEncounterRoleColor(unit.roguelikeRole)
+  return roleColor ?? fallback
+}
+
+function getUnitRenderScale(unit: Unit): number {
+  if (mode !== 'roguelike' || unit.owner !== BOT_PLAYER) return 1
+  return getEncounterRoleScale(unit.roguelikeRole)
+}
+
+function pruneRoguelikeMonsterVariants(sourceState: GameState): void {
+  const liveUnitIds = new Set<string>([
+    ...Object.keys(sourceState.units),
+    ...pendingDeathUnits.keys(),
+  ])
+  roguelikeMonsterVariantByUnitId.forEach((_, unitId) => {
+    if (liveUnitIds.has(unitId)) return
+    roguelikeMonsterVariantByUnitId.delete(unitId)
+  })
+}
+
+function getRoguelikeMonsterImage(unit: Unit): ImageAsset | null {
+  if (mode !== 'roguelike') return null
+  if (unit.owner !== BOT_PLAYER) return null
+  if (!unit.roguelikeRole) return null
+  const variants = monsterRoleImages[unit.roguelikeRole]
+  if (!variants || variants.length === 0) return null
+
+  const loaded = variants
+    .map((asset, index) => ({ asset, index }))
+    .filter((entry) => entry.asset.loaded)
+  if (loaded.length === 0) return null
+
+  const existing = roguelikeMonsterVariantByUnitId.get(unit.id)
+  if (existing !== undefined) {
+    const matched = loaded.find((entry) => entry.index === existing)
+    if (matched) return matched.asset
+  }
+
+  const picked = loaded[Math.floor(Math.random() * loaded.length)]
+  roguelikeMonsterVariantByUnitId.set(unit.id, picked.index)
+  return picked.asset
+}
+
 function getSpriteSetForOwner(owner: PlayerId): ClassSpriteSet {
   const classId = getLoadoutClass(owner)
   return classSpriteSets[classId] ?? classSpriteSets.commander
@@ -2679,6 +2833,11 @@ function getSpriteSetForOwner(owner: PlayerId): ClassSpriteSet {
 function getUnitDisplayName(owner: PlayerId): string {
   const classId = getLoadoutClass(owner)
   return PLAYER_CLASS_DEFS[classId].unitName
+}
+
+function getUnitLabel(unit: Unit): string {
+  if (unit.roguelikeRole) return getEncounterUnitLabel(unit.roguelikeRole)
+  return getUnitDisplayName(unit.owner)
 }
 
 function getLeaderDisplayName(owner: PlayerId): string {
@@ -3028,6 +3187,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'cannotMove') {
     return { label: 'Cannot move', kind: 'debuff' }
   }
+  if (modifier.type === 'stunned') {
+    return { label: 'Stunned', kind: 'debuff' }
+  }
   if (modifier.type === 'slow') {
     return { label: 'Slow', kind: 'debuff' }
   }
@@ -3039,6 +3201,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   }
   if (modifier.type === 'burn') {
     return { label: 'Burn', kind: 'debuff' }
+  }
+  if (modifier.type === 'regeneration') {
+    return { label: 'Regeneration', kind: 'buff' }
   }
   if (modifier.type === 'disarmed') {
     return { label: 'Disarmed', kind: 'debuff' }
@@ -3093,7 +3258,7 @@ function summarizeUnitModifiers(
 function getUnitPopoverLabel(unit: Unit): string {
   if (unit.kind === 'leader') return getLeaderDisplayName(unit.owner)
   if (unit.kind === 'barricade') return 'Barricade'
-  return getUnitDisplayName(unit.owner)
+  return getUnitLabel(unit)
 }
 
 function hideUnitStatusPopover(): void {
@@ -3348,6 +3513,37 @@ function drawChainLightningAnimation(animation: ChainLightningAnimation, progres
   drawLightningArc(projectHex(animation.from), projectHex(animation.to), progress)
 }
 
+function drawSlimeLobAnimation(animation: SlimeLobAnimation, progress: number): void {
+  const from = projectHex(animation.from)
+  const to = projectHex(animation.to)
+  const t = easeInOutCubic(progress)
+  const arcHeight = layout.size * 0.9
+  const center = {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t - Math.sin(t * Math.PI) * arcHeight,
+  }
+  const radius = layout.size * (0.13 + 0.05 * Math.sin(progress * Math.PI))
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.45 + Math.sin(progress * Math.PI) * 0.35
+  const glow = ctx.createRadialGradient(center.x, center.y, radius * 0.2, center.x, center.y, radius * 1.8)
+  glow.addColorStop(0, 'rgba(185, 255, 205, 0.92)')
+  glow.addColorStop(0.55, 'rgba(95, 220, 132, 0.86)')
+  glow.addColorStop(1, 'rgba(60, 170, 104, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, radius * 1.4, radius, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.globalAlpha = 0.95
+  ctx.fillStyle = 'rgba(118, 255, 162, 0.95)'
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, radius, radius * 0.75, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
 function drawBurnDamageAnimation(target: Hex, progress: number): void {
   const center = projectHex(target)
   const pulse = Math.sin(progress * Math.PI)
@@ -3518,6 +3714,10 @@ function drawTrapTriggerAnimation(animation: TrapTriggerAnimation, progress: num
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = alpha
+  const trapImage = trapImages[animation.trapKind]
+  if (trapImage?.loaded) {
+    drawAnchoredImageTo(ctx, trapImage, center, 0.74 + t * 0.18, 0.78)
+  }
 
   if (animation.trapKind === 'pitfall') {
     ctx.strokeStyle = 'rgba(147, 102, 45, 0.95)'
@@ -3860,6 +4060,28 @@ function getVisibleTraps(sourceState: GameState): Trap[] {
 
 function drawTrapMarker(trap: Trap): void {
   const center = projectHex(trap.pos)
+  const trapImage = trapImages[trap.kind]
+  if (trapImage?.loaded) {
+    const glowColor =
+      trap.kind === 'pitfall' ? 'rgba(172, 125, 72, 0.5)' : 'rgba(255, 166, 85, 0.58)'
+    ctx.save()
+    ctx.fillStyle = glowColor
+    ctx.beginPath()
+    ctx.ellipse(
+      center.x,
+      center.y + layout.size * 0.06,
+      layout.size * 0.28,
+      layout.size * 0.19 * BOARD_TILT,
+      0,
+      0,
+      Math.PI * 2
+    )
+    ctx.fill()
+    drawAnchoredImageTo(ctx, trapImage, center, 0.72, 0.78)
+    ctx.restore()
+    return
+  }
+
   const size = layout.size * 0.3
   const half = size / 2
   const baseFill = trap.kind === 'pitfall' ? 'rgba(122, 82, 38, 0.9)' : 'rgba(164, 88, 34, 0.9)'
@@ -3906,6 +4128,7 @@ function drawBoard(): void {
     boardOffset.x * deviceScale,
     boardOffset.y * deviceScale
   )
+  pruneRoguelikeMonsterVariants(state)
 
   const spawnTop = getSpawnTiles(state, 0)
   const spawnBottom = getSpawnTiles(state, 1)
@@ -4019,6 +4242,10 @@ function drawBoard(): void {
 
   if (currentAnimation?.type === 'chainLightning') {
     drawChainLightningAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'slimeLob') {
+    drawSlimeLobAnimation(currentAnimation, animationProgress)
   }
 
   if (currentAnimation?.type === 'teleport') {
@@ -4146,7 +4373,7 @@ function drawSelectableHighlights(): void {
 
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
-  const color = getRingTint(unit.owner)
+  const color = getUnitRingColor(unit)
   const preview = previewState?.units[unit.id]
   const previewStrength =
     state.phase === 'planning' && preview && preview.strength !== unit.strength ? preview.strength : null
@@ -4280,7 +4507,13 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   }
 
   if (unit.kind === 'unit') {
-    drawUnitSprite(center, unit.owner)
+    const unitScale = UNIT_IMAGE_SCALE * getUnitRenderScale(unit)
+    const monsterImage = getRoguelikeMonsterImage(unit)
+    if (monsterImage) {
+      drawAnchoredImage(monsterImage, center, unitScale, UNIT_ANCHOR_Y)
+    } else {
+      drawUnitSprite(center, unit.owner, unitScale)
+    }
   } else if (unit.kind === 'leader') {
     drawLeaderSprite(center, unit.owner, LEADER_IMAGE_SCALE)
   } else if (unit.kind === 'barricade' && barricadeBaseImage.loaded) {
@@ -4917,11 +5150,12 @@ function renderOrderForm(): void {
   const apCost = def.actionCost ?? 1
   const nextStep = getNextRequirement(def.id, activeOrder.params)
   const summary = renderOrderSummary(activeOrder.params)
+  const description = getCardDescriptionForMatch(def.id, def.description)
 
   orderFormEl.innerHTML = `
     <div class="order-summary">
       <div class="order-title">${def.name}</div>
-      <div class="order-desc">${def.description}</div>
+      <div class="order-desc">${description}</div>
       <div class="order-cost">${renderApBadge(apCost)}</div>
       <div class="order-steps">${summary}</div>
       <div class="order-hint">${nextStep ? stepHint(nextStep) : 'Auto-adding this order.'}</div>
@@ -5008,6 +5242,30 @@ function renderApBadge(cost: number): string {
   return `<div class="card-ap">${orbs}${zeroMark}</div>`
 }
 
+function getCurrentRoguelikeMatchNumber(): number {
+  if (mode !== 'roguelike') return 1
+  const fromSettings = Number(state.settings.roguelikeMatchNumber)
+  if (Number.isFinite(fromSettings) && fromSettings > 0) return Math.floor(fromSettings)
+  if (roguelikeRun) return Math.max(1, roguelikeRun.currentMatchNumber)
+  return 1
+}
+
+function getCardDescriptionForMatch(defId: CardDefId, fallback: string): string {
+  if (mode !== 'roguelike') return fallback
+  const matchNumber = getCurrentRoguelikeMatchNumber()
+  const scaled = getEncounterCardDamageValues(matchNumber)
+  if (defId === 'attack_roguelike_basic') {
+    return `Face a direction, then deal ${scaled.basicAttack} damage to an adjacent unit.`
+  }
+  if (defId === 'attack_roguelike_slow') {
+    return `Slow. Face a direction, then deal ${scaled.slowAttack} damage to an adjacent unit.`
+  }
+  if (defId === 'attack_roguelike_pack_hunt') {
+    return `Move 1 tile in any direction, then deal ${scaled.packHuntPerAdjacent} damage per adjacent ally to the tile in front.`
+  }
+  return fallback
+}
+
 function renderCardArt(defId: CardDefId): string {
   return `<div class="card-art" aria-hidden="true">${getCardArtSvg(defId)}</div>`
 }
@@ -5091,6 +5349,7 @@ function renderCardFace(
     def.keywords && def.keywords.length > 0
       ? `<div class="card-keywords">${def.keywords.map((keyword) => `<span class="card-keyword">${keyword}</span>`).join('')}</div>`
       : ''
+  const description = getCardDescriptionForMatch(def.id, def.description)
   const classMark = renderCardClassMark(def.id)
   const orderIndex = options.orderIndex ? `<div class="order-index">#${options.orderIndex}</div>` : ''
   return [
@@ -5098,7 +5357,7 @@ function renderCardFace(
     classMark,
     `<div class="card-title">${def.name}</div>`,
     renderCardArt(def.id),
-    `<div class="card-desc">${def.description}</div>`,
+    `<div class="card-desc">${description}</div>`,
     keywords,
     meta,
     orderIndex,
@@ -5452,66 +5711,61 @@ function applySeed(seed: string): void {
   updateSeedDisplay()
 }
 
-function getRoguelikeDifficulty(wins: number): RoguelikeDifficulty {
-  const normalizedWins = Math.max(0, wins)
-  const botStrongholdHp =
-    normalizedWins <= 4
-      ? 2 + Math.floor((normalizedWins * 3) / 4)
-      : 5 + Math.ceil((normalizedWins - 4) * 0.75)
+function getRoguelikeMatchNumber(run: RoguelikeRunState): number {
+  return Math.max(1, run.wins + 1)
+}
 
-  if (wins <= 0) {
-    return {
-      botStrongholdHp,
-      botActionBudgetBonus: -1,
-      botDrawBonus: -1,
-      botStartingUnitCountBonus: -1,
-      botStartingUnitStrengthBonus: -1,
-    }
-  }
-  if (wins === 1) {
-    return {
-      botStrongholdHp,
-      botActionBudgetBonus: -1,
-      botDrawBonus: -1,
-      botStartingUnitCountBonus: -1,
-      botStartingUnitStrengthBonus: 0,
-    }
-  }
-  if (wins === 2) {
-    return {
-      botStrongholdHp,
-      botActionBudgetBonus: -1,
-      botDrawBonus: 0,
-      botStartingUnitCountBonus: 0,
-      botStartingUnitStrengthBonus: 0,
-    }
-  }
-  if (wins === 3) {
-    return {
-      botStrongholdHp,
-      botActionBudgetBonus: 0,
-      botDrawBonus: 0,
-      botStartingUnitCountBonus: 0,
-      botStartingUnitStrengthBonus: 0,
-    }
-  }
-  if (wins === 4) {
-    return {
-      botStrongholdHp,
-      botActionBudgetBonus: 0,
-      botDrawBonus: 0,
-      botStartingUnitCountBonus: 0,
-      botStartingUnitStrengthBonus: 0,
-    }
-  }
+function getEncounterById(id: RoguelikeEncounterId): RoguelikeEncounterDef | null {
+  return ROGUELIKE_ENCOUNTER_DEFS.find((encounter) => encounter.id === id) ?? null
+}
 
-  const tier = wins - 5
+function pickRandomRoguelikeEncounter(): RoguelikeEncounterDef {
+  const index = Math.floor(Math.random() * ROGUELIKE_ENCOUNTER_DEFS.length)
+  return ROGUELIKE_ENCOUNTER_DEFS[Math.max(0, Math.min(index, ROGUELIKE_ENCOUNTER_DEFS.length - 1))]
+}
+
+function getRoguelikeEncounterActionBudget(encounter: RoguelikeEncounterDef, matchNumber: number): number {
+  const fallback = ROGUELIKE_BASE_AP_BUDGET + Math.floor(matchNumber / 10)
+  const value = encounter.actionBudget?.(matchNumber) ?? fallback
+  return Math.max(1, Math.floor(value))
+}
+
+function getEncounterRoleStrength(role: RoguelikeEncounterUnitRole, matchNumber: number): number {
+  if (role === 'slime_grand') return 5 + matchNumber
+  if (role === 'slime_mid') return 3 + Math.floor(matchNumber / 2)
+  if (role === 'slime_small') return 1 + Math.floor(matchNumber / 4)
+  if (role === 'troll') return 10 + matchNumber
+  if (role === 'alpha_wolf') return 4 + Math.floor((2 * matchNumber) / 3)
+  return 2 + Math.floor(matchNumber / 3)
+}
+
+function getEncounterUnitLabel(role: Unit['roguelikeRole']): string {
+  if (role === 'slime_grand') return 'Grandslime'
+  if (role === 'slime_mid') return 'Slime'
+  if (role === 'slime_small') return 'Slimeling'
+  if (role === 'troll') return 'Troll'
+  if (role === 'alpha_wolf') return 'Alpha Wolf'
+  if (role === 'wolf') return 'Wolf'
+  return 'Unit'
+}
+
+function getEncounterRoleScale(role: Unit['roguelikeRole']): number {
+  if (role === 'slime_grand') return 1.26
+  if (role === 'slime_mid') return 1.05
+  if (role === 'slime_small') return 0.8
+  if (role === 'alpha_wolf') return 1.12
+  return 1
+}
+
+function getEncounterCardDamageValues(matchNumber: number): {
+  basicAttack: number
+  slowAttack: number
+  packHuntPerAdjacent: number
+} {
   return {
-    botStrongholdHp,
-    botActionBudgetBonus: Math.floor((tier + 1) / 3),
-    botDrawBonus: Math.floor((tier + 2) / 4),
-    botStartingUnitCountBonus: Math.floor((tier + 2) / 4),
-    botStartingUnitStrengthBonus: Math.floor((tier + 4) / 6),
+    basicAttack: 1 + Math.floor(matchNumber / 5),
+    slowAttack: 5 + Math.floor(matchNumber / 2),
+    packHuntPerAdjacent: 2 + Math.floor(matchNumber / 3),
   }
 }
 
@@ -5548,6 +5802,75 @@ function addMultipleStartingUnits(sourceState: GameState, owner: PlayerId, count
   for (let i = 0; i < count; i += 1) {
     if (!addStartingUnit(sourceState, owner, strength)) break
   }
+}
+
+function buildEncounterRoleList(encounter: RoguelikeEncounterDef, matchNumber: number): RoguelikeEncounterUnitRole[] {
+  return encounter.unitCounts(matchNumber)
+    .flatMap((entry) =>
+      Array.from({ length: Math.max(0, Math.floor(entry.count)) }, () => entry.role)
+    )
+}
+
+function getEncounterPlacementTiles(sourceState: GameState): Hex[] {
+  const topAnchor = { q: Math.floor(sourceState.boardCols / 2), r: 0 }
+  const distanceBuckets = new Map<number, Hex[]>()
+  sourceState.tiles.forEach((tile) => {
+    if (tile.r > Math.floor((sourceState.boardRows - 1) * 0.78)) return
+    const hex = { q: tile.q, r: tile.r }
+    const key = Math.floor(hexDistance(hex, topAnchor))
+    if (!distanceBuckets.has(key)) {
+      distanceBuckets.set(key, [])
+    }
+    distanceBuckets.get(key)!.push(hex)
+  })
+  return [...distanceBuckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .flatMap(([, entries]) => shuffleCards(entries))
+}
+
+function placeEncounterUnits(
+  sourceState: GameState,
+  encounter: RoguelikeEncounterDef,
+  matchNumber: number
+): void {
+  const roles = buildEncounterRoleList(encounter, matchNumber)
+  const placementTiles = getEncounterPlacementTiles(sourceState)
+  const facing: Direction = 5
+  roles.forEach((role) => {
+    const tile = placementTiles.find((candidate) => !getUnitAtHex(sourceState, candidate))
+    if (!tile) return
+    const id = `u${BOT_PLAYER}-${sourceState.nextUnitId}`
+    sourceState.nextUnitId += 1
+    const modifiers: Unit['modifiers'] = role === 'troll' ? [{ type: 'regeneration', turnsRemaining: 'indefinite' }] : []
+    sourceState.units[id] = {
+      id,
+      owner: BOT_PLAYER,
+      kind: 'unit',
+      strength: getEncounterRoleStrength(role, matchNumber),
+      pos: { ...tile },
+      facing,
+      modifiers,
+      roguelikeRole: role,
+    }
+  })
+}
+
+function applyRoguelikeEncounterSetup(
+  sourceState: GameState,
+  encounter: RoguelikeEncounterDef,
+  matchNumber: number
+): void {
+  Object.entries(sourceState.units).forEach(([unitId, unit]) => {
+    if (unit.owner !== BOT_PLAYER) return
+    delete sourceState.units[unitId]
+  })
+  sourceState.settings = {
+    ...sourceState.settings,
+    victoryCondition: 'eliminate_units',
+    roguelikeMatchNumber: matchNumber,
+    roguelikeEncounterId: encounter.id,
+  }
+  placeEncounterUnits(sourceState, encounter, matchNumber)
 }
 
 function shuffleCards<T>(cards: T[]): T[] {
@@ -5591,23 +5914,22 @@ function applyOpeningHandDrawDelta(sourceState: GameState, player: PlayerId, dra
   }
 }
 
-function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunState): void {
-  const difficulty = getRoguelikeDifficulty(run.wins)
+function applyRoguelikeMatchModifiers(
+  sourceState: GameState,
+  run: RoguelikeRunState,
+  encounter: RoguelikeEncounterDef,
+  matchNumber: number
+): void {
   const playerStronghold = sourceState.units[`stronghold-${BOT_HUMAN_PLAYER}`]
-  const botStronghold = sourceState.units[`stronghold-${BOT_PLAYER}`]
   if (playerStronghold) {
     playerStronghold.strength = Math.max(1, run.strongholdHp)
   }
-  if (botStronghold) {
-    botStronghold.strength = Math.max(1, difficulty.botStrongholdHp)
-  }
 
-  let p1Budget = sourceState.actionBudgets[0]
-  let p2Budget = sourceState.actionBudgets[1]
+  let p1Budget = ROGUELIKE_BASE_AP_BUDGET
+  let p2Budget = getRoguelikeEncounterActionBudget(encounter, matchNumber)
   if (run.bonusActionBudget > 0) {
     p1Budget = Math.max(1, p1Budget + run.bonusActionBudget)
   }
-  p2Budget = Math.max(1, p2Budget + difficulty.botActionBudgetBonus)
   sourceState.actionBudgets = [p1Budget, p2Budget]
   sourceState.settings = {
     ...sourceState.settings,
@@ -5623,14 +5945,6 @@ function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunS
     })
     applyOpeningHandDrawDelta(sourceState, BOT_HUMAN_PLAYER, run.bonusDrawPerTurn)
   }
-  if (difficulty.botDrawBonus !== 0) {
-    sourceState.players[BOT_PLAYER].modifiers.push({
-      type: 'extraDraw',
-      amount: difficulty.botDrawBonus,
-      turnsRemaining: 'indefinite',
-    })
-    applyOpeningHandDrawDelta(sourceState, BOT_PLAYER, difficulty.botDrawBonus)
-  }
 
   if (run.bonusStartingUnits > 0) {
     addMultipleStartingUnits(sourceState, BOT_HUMAN_PLAYER, run.bonusStartingUnits, 2)
@@ -5639,26 +5953,6 @@ function applyRoguelikeMatchModifiers(sourceState: GameState, run: RoguelikeRunS
     Object.values(sourceState.units).forEach((unit) => {
       if (unit.owner !== BOT_HUMAN_PLAYER || unit.kind !== 'unit') return
       unit.strength = Math.max(1, unit.strength + run.bonusStartingUnitStrength)
-    })
-  }
-
-  const botUnits = Object.values(sourceState.units)
-    .filter((unit) => unit.owner === BOT_PLAYER && unit.kind === 'unit')
-    .sort((a, b) => a.id.localeCompare(b.id))
-
-  if (difficulty.botStartingUnitCountBonus < 0) {
-    const removeCount = Math.min(botUnits.length, Math.abs(difficulty.botStartingUnitCountBonus))
-    botUnits.slice(-removeCount).forEach((unit) => {
-      delete sourceState.units[unit.id]
-    })
-  } else if (difficulty.botStartingUnitCountBonus > 0) {
-    addMultipleStartingUnits(sourceState, BOT_PLAYER, difficulty.botStartingUnitCountBonus, 2)
-  }
-
-  if (difficulty.botStartingUnitStrengthBonus !== 0) {
-    Object.values(sourceState.units).forEach((unit) => {
-      if (unit.owner !== BOT_PLAYER || unit.kind !== 'unit') return
-      unit.strength = Math.max(1, unit.strength + difficulty.botStartingUnitStrengthBonus)
     })
   }
 }
@@ -5671,9 +5965,15 @@ function startNextRoguelikeMatch(statusMessage: string): void {
   clearUnitStatusPopoverState()
   winnerExtraEl.innerHTML = ''
 
+  const matchNumber = getRoguelikeMatchNumber(roguelikeRun)
+  const encounter = pickRandomRoguelikeEncounter()
+  const encounterDeck = encounter.deck(matchNumber)
   const settings: GameSettings = {
     ...gameSettings,
     strongholdStrength: ROGUELIKE_STARTING_STRONGHOLD_HP,
+    victoryCondition: 'eliminate_units',
+    roguelikeMatchNumber: matchNumber,
+    roguelikeEncounterId: encounter.id,
   }
   const playerClass = roguelikeRun.playerClass
   const playerDeck = sanitizeDeckForCurrentClass([...roguelikeRun.deck], playerClass, true)
@@ -5681,19 +5981,17 @@ function startNextRoguelikeMatch(statusMessage: string): void {
     playerDeck.push(...sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true))
   }
   roguelikeRun.deck = [...playerDeck]
+  roguelikeRun.currentEncounterId = encounter.id
+  roguelikeRun.currentMatchNumber = matchNumber
   playerClasses.p1 = playerClass
-  const botClass = pickRandomPlayerClass()
-  playerClasses.p2 = botClass
-  const botDeck = generateClusteredBotDeck({
-    deckSize: ROGUELIKE_OPPONENT_DECK_SIZE,
-    maxCopies: settings.maxCopies,
-  }, { classId: botClass })
+  playerClasses.p2 = 'commander'
 
   state = createGameState(settings, {
     p1: playerDeck,
-    p2: botDeck,
-  }, { p1: playerClass, p2: botClass })
-  applyRoguelikeMatchModifiers(state, roguelikeRun)
+    p2: encounterDeck,
+  }, { p1: playerClass, p2: null })
+  applyRoguelikeMatchModifiers(state, roguelikeRun, encounter, matchNumber)
+  applyRoguelikeEncounterSetup(state, encounter, matchNumber)
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false
   roguelikeRun.resultHandled = false
@@ -5706,7 +6004,7 @@ function startNextRoguelikeMatch(statusMessage: string): void {
   pendingOrder = null
   winnerModal.classList.add('hidden')
   updateReadyButtons()
-  statusEl.textContent = statusMessage
+  statusEl.textContent = `${statusMessage} Encounter: ${encounter.name}.`
   render()
 }
 
@@ -5891,7 +6189,14 @@ function renderMeta(): void {
   if (mode === 'online') {
     plannerNameEl.textContent = compactLabels ? `P${planningPlayer + 1} Online` : `Player ${planningPlayer + 1} Online`
   } else if (mode === 'roguelike') {
-    plannerNameEl.textContent = compactLabels ? `P1 Run ${roguelikeRun?.wins ?? 0}` : `Roguelike Run ${roguelikeRun?.wins ?? 0}`
+    const encounterLabel = roguelikeRun?.currentEncounterId
+      ? getEncounterById(roguelikeRun.currentEncounterId)?.name ?? null
+      : null
+    plannerNameEl.textContent = compactLabels
+      ? `P1 Run ${roguelikeRun?.wins ?? 0}`
+      : encounterLabel
+        ? `Run ${roguelikeRun?.wins ?? 0} | ${encounterLabel}`
+        : `Roguelike Run ${roguelikeRun?.wins ?? 0}`
   } else if (isBotControlledMode()) {
     plannerNameEl.textContent = compactLabels ? 'P1' : 'Player 1'
   } else {
@@ -6194,6 +6499,48 @@ function parseDestroyedUnits(logEntries: string[]): { index: number; unitId: str
   return destroyed
 }
 
+function parseSpawnEvents(logEntries: string[]): Array<{ index: number; unitId: string; pos: Hex }> {
+  const events: Array<{ index: number; unitId: string; pos: Hex }> = []
+  logEntries.forEach((entry, index) => {
+    const match = entry.match(/^Unit (.+) spawned at (-?\d+),(-?\d+)\.$/)
+    if (!match) return
+    events.push({
+      index,
+      unitId: match[1],
+      pos: { q: Number(match[2]), r: Number(match[3]) },
+    })
+  })
+  return events
+}
+
+function parseSlimeSplitEvents(logEntries: string[]): Array<{ index: number; from: Hex; to: Hex; spawnedUnitId?: string }> {
+  const splitEvents: Array<{ index: number; from: Hex; to: Hex; spawnedUnitId?: string }> = []
+  const spawnEvents = parseSpawnEvents(logEntries)
+  const usedSpawnIndices = new Set<number>()
+
+  logEntries.forEach((entry, index) => {
+    const match = entry.match(/^Slime split: .+ lobs from (-?\d+),(-?\d+) to (-?\d+),(-?\d+)\.$/)
+    if (!match) return
+    const from = { q: Number(match[1]), r: Number(match[2]) }
+    const to = { q: Number(match[3]), r: Number(match[4]) }
+
+    let spawnedUnitId: string | undefined
+    for (let i = spawnEvents.length - 1; i >= 0; i -= 1) {
+      const spawn = spawnEvents[i]
+      if (usedSpawnIndices.has(spawn.index)) continue
+      if (spawn.index > index) continue
+      if (spawn.pos.q !== to.q || spawn.pos.r !== to.r) continue
+      spawnedUnitId = spawn.unitId
+      usedSpawnIndices.add(spawn.index)
+      break
+    }
+
+    splitEvents.push({ index, from, to, spawnedUnitId })
+  })
+
+  return splitEvents
+}
+
 function parseTrapTriggers(logEntries: string[]): { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] {
   const triggers: { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] = []
   logEntries.forEach((entry) => {
@@ -6283,6 +6630,7 @@ function buildAnimations(
   const destroyedUnitIds = new Set(destroyedEvents.map((event) => event.unitId))
   const trapTriggers = parseTrapTriggers(logEntries)
   const shoveCollisions = parseShoveCollisions(logEntries)
+  const slimeSplitEvents = parseSlimeSplitEvents(logEntries)
   const animatedPositions = new Map<string, Hex>()
   const spawnedFallbackSnapshots = new Map<string, UnitSnapshot>()
   const destroyedAnimated = new Set<string>()
@@ -6451,6 +6799,62 @@ function buildAnimations(
         })
         formationMoves.forEach((move) => {
           animatedPositions.set(move.unitId, { ...move.to })
+        })
+      }
+      continue
+    }
+
+    if (effect.type === 'packHunt') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const beforeUnit = before[resolvedId]
+      const from = animatedPositions.get(resolvedId) ?? beforeUnit?.pos
+      const consumedMoveAttempt = consumeLoggedMoveAttempt(resolvedId)
+      if (consumedMoveAttempt) {
+        enqueueDestroyedUpTo(consumedMoveAttempt.index - 1)
+        lastConsumedLogIndex = Math.max(lastConsumedLogIndex, consumedMoveAttempt.index)
+      }
+      if (consumedMoveAttempt?.moved && from && consumedMoveAttempt.pos) {
+        const destination = consumedMoveAttempt.pos
+        if (from.q !== destination.q || from.r !== destination.r) {
+          animations.push({
+            type: 'move',
+            unitId: resolvedId,
+            from: { ...from },
+            to: { ...destination },
+            duration: MOVE_DURATION_MS,
+          })
+          animatedPositions.set(resolvedId, { ...destination })
+        }
+      }
+
+      const actorAfter = state.units[resolvedId]
+      if (!actorAfter) continue
+      const targetTile = neighbor(actorAfter.pos, actorAfter.facing)
+      if (!isTile(targetTile)) continue
+      const lunges = Object.values(state.units)
+        .filter(
+          (unit) =>
+            unit.owner === order.player &&
+            (unit.kind === 'unit' || unit.kind === 'leader') &&
+            hexDistance(unit.pos, targetTile) === 1
+        )
+        .map((unit) => {
+          const fromPos = animatedPositions.get(unit.id) ?? before[unit.id]?.pos ?? unit.pos
+          const dir = getDirectionToNeighbor(fromPos, targetTile)
+          if (dir === null) return null
+          return {
+            unitId: unit.id,
+            from: { ...fromPos },
+            dir,
+          }
+        })
+        .filter((entry): entry is { unitId: string; from: Hex; dir: Direction } => entry !== null)
+      if (lunges.length > 0) {
+        animations.push({
+          type: 'teamLunge',
+          lunges,
+          duration: LUNGE_DURATION_MS,
         })
       }
       continue
@@ -6815,6 +7219,26 @@ function buildAnimations(
       type: 'burn',
       target: { ...targetPos },
       duration: BURN_DURATION_MS,
+    })
+  })
+
+  slimeSplitEvents.forEach((event) => {
+    enqueueDestroyedUpTo(event.index - 1)
+    lastConsumedLogIndex = Math.max(lastConsumedLogIndex, event.index)
+    animations.push({
+      type: 'slimeLob',
+      from: { ...event.from },
+      to: { ...event.to },
+      duration: SLIME_LOB_DURATION_MS,
+    })
+    if (!event.spawnedUnitId) return
+    if (before[event.spawnedUnitId]) return
+    if (!state.units[event.spawnedUnitId]) return
+    unitAlphaOverrides.set(event.spawnedUnitId, 0)
+    animations.push({
+      type: 'spawn',
+      unitId: event.spawnedUnitId,
+      duration: SPAWN_DURATION_MS,
     })
   })
 
@@ -7353,6 +7777,16 @@ function getSelectableHexes(
         ...currentUnits.map((unit) => ({ ...unit.pos })),
       ])
     }
+    if (requirement === 'enemy') {
+      const enemies = units.filter((unit) => unit.owner !== player)
+      const currentEnemies = Object.values(state.units).filter(
+        (unit) => unit.owner !== player && canCardSelectUnit(defId, unit)
+      )
+      return dedupeHexes([
+        ...enemies.map((unit) => ({ ...unit.pos })),
+        ...currentEnemies.map((unit) => ({ ...unit.pos })),
+      ])
+    }
     const friendlyUnits = units.filter((unit) => unit.owner === player)
     const unitHexes = friendlyUnits.map((unit) => ({ ...unit.pos }))
     const planned = getPlannedSpawnTiles(player)
@@ -7618,7 +8052,7 @@ function resolveSelectableUnitId(
   defId: CardDefId,
   hex: Hex,
   player: PlayerId,
-  requirement: 'friendly' | 'any'
+  requirement: 'friendly' | 'enemy' | 'any'
 ): string | null {
   if (requirement === 'any') {
     const unit = Object.values(selectionState.units).find(
@@ -7627,6 +8061,25 @@ function resolveSelectableUnitId(
     if (unit) return unit.id
     const currentUnit = Object.values(state.units).find(
       (item) => item.pos.q === hex.q && item.pos.r === hex.r && canCardSelectUnit(defId, item)
+    )
+    return currentUnit ? currentUnit.id : null
+  }
+
+  if (requirement === 'enemy') {
+    const unit = Object.values(selectionState.units).find(
+      (item) =>
+        item.pos.q === hex.q &&
+        item.pos.r === hex.r &&
+        item.owner !== player &&
+        canCardSelectUnit(defId, item)
+    )
+    if (unit) return unit.id
+    const currentUnit = Object.values(state.units).find(
+      (item) =>
+        item.pos.q === hex.q &&
+        item.pos.r === hex.r &&
+        item.owner !== player &&
+        canCardSelectUnit(defId, item)
     )
     return currentUnit ? currentUnit.id : null
   }
@@ -7681,7 +8134,12 @@ function handleBoardClick(hex: Hex): void {
       statusEl.textContent =
         selectionId.startsWith('planned:') ? 'Planned spawn selected.' : 'Unit selected.'
     } else {
-      statusEl.textContent = requirement === 'any' ? 'Select a unit.' : 'Select a valid unit or planned spawn.'
+      statusEl.textContent =
+        requirement === 'enemy'
+          ? 'Select an enemy unit.'
+          : requirement === 'any'
+            ? 'Select a unit.'
+            : 'Select a valid unit or planned spawn.'
     }
   }
 

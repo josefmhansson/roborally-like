@@ -431,7 +431,10 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
     defId === 'attack_jab' ||
     defId === 'attack_shove' ||
     defId === 'attack_disarm' ||
-    defId === 'attack_bleed'
+    defId === 'attack_bleed' ||
+    defId === 'attack_roguelike_basic' ||
+    defId === 'attack_roguelike_slow' ||
+    defId === 'attack_roguelike_pack_hunt'
   ) {
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
@@ -468,7 +471,8 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
     defId === 'spell_burn' ||
     defId === 'spell_trip' ||
     defId === 'spell_snare' ||
-    defId === 'spell_dispel'
+    defId === 'spell_dispel' ||
+    defId === 'spell_roguelike_mark'
   ) {
     const targetableUnits = getTargetableUnitsForCard(projected, defId)
     const enemyUnits = targetableUnits.filter((unit) => unit.owner !== player)
@@ -573,8 +577,9 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
 
   const ownStronghold = projected.units[`stronghold-${player}`]
   const enemyStronghold = projected.units[`stronghold-${opponent}`]
-  const ownStrongholdStrength = ownStronghold?.strength ?? 0
-  const enemyStrongholdStrength = enemyStronghold?.strength ?? 0
+  const eliminateUnitsMode = projected.settings.victoryCondition === 'eliminate_units'
+  const ownStrongholdStrength = eliminateUnitsMode ? 0 : ownStronghold?.strength ?? 0
+  const enemyStrongholdStrength = eliminateUnitsMode ? 0 : enemyStronghold?.strength ?? 0
 
   const ownUnits = Object.values(projected.units).filter((unit) => unit.owner === player && unit.kind === 'unit')
   const enemyUnits = Object.values(projected.units).filter((unit) => unit.owner === opponent && unit.kind === 'unit')
@@ -584,7 +589,7 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
   const strongholdDelta = ownStrongholdStrength - enemyStrongholdStrength
   const unitStrengthDelta = ownStrength - enemyStrength
   const unitCountDelta = ownUnits.length - enemyUnits.length
-  const pressureDelta = computePressureDelta(projected, player, ownUnits, enemyUnits)
+  const pressureDelta = eliminateUnitsMode ? 0 : computePressureDelta(projected, player, ownUnits, enemyUnits)
   const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownUnits, enemyUnits)
   const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownUnits, enemyUnits)
   const chainLightningOpportunity = computeChainLightningPlanningBonus(state, projected, player)
