@@ -1,9 +1,10 @@
-import type { CardDefId, GameSettings, OrderParams, PlayerId } from '../../engine/types'
+import type { CardDefId, GameSettings, OrderParams, PlayerClassId, PlayerId } from '../../engine/types'
 import type { GameStateView, PresenceState, ViewMeta } from './view'
 
 export type RoomSetup = {
   settings: GameSettings
   loadouts: { p1: CardDefId[]; p2: CardDefId[] }
+  playerClasses?: { p1: PlayerClassId; p2: PlayerClassId }
 }
 
 export type QueueOrderCommand = {
@@ -30,6 +31,7 @@ export type ReadyCommand = {
 export type UpdateLoadoutCommand = {
   type: 'update_loadout'
   loadout: CardDefId[]
+  playerClass?: PlayerClassId
 }
 
 export type RematchCommand = {
@@ -54,6 +56,7 @@ export type JoinRoomMessage = {
   roomCode: string
   seatToken: string
   loadout?: CardDefId[]
+  playerClass?: PlayerClassId
 }
 
 export type CommandMessage = {

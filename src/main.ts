@@ -232,6 +232,7 @@ app.innerHTML = `
               <button id="resolve-next" class="btn ghost board-control-btn">Resolve Next</button>
               <button id="resolve-all" class="btn ghost board-control-btn">Resolve Turn</button>
             </div>
+            <div id="ready-anchor" class="ready-anchor"></div>
             <div id="planner-ap" class="planner-ap board-ap-rail"></div>
             <canvas id="board" aria-label="Game board"></canvas>
             <div id="unit-status-popover" class="unit-status-popover hidden" aria-live="polite"></div>
@@ -252,6 +253,7 @@ app.innerHTML = `
           <section class="card-rows">
             <div class="card-row">
               <div id="hand" class="card-grid hand-row"></div>
+              <div id="resolution-controls" class="resolution-controls hidden"></div>
             </div>
           </section>
         </div>
@@ -352,6 +354,9 @@ const readyButton = document.querySelector<HTMLButtonElement>('#ready-btn')!
 const resolveNextButton = document.querySelector<HTMLButtonElement>('#resolve-next')!
 const resolveAllButton = document.querySelector<HTMLButtonElement>('#resolve-all')!
 const resetGameButton = document.querySelector<HTMLButtonElement>('#reset-game')!
+const boardControlsEl = document.querySelector<HTMLDivElement>('.board-controls')!
+const readyAnchorEl = document.querySelector<HTMLDivElement>('#ready-anchor')!
+const resolutionControlsEl = document.querySelector<HTMLDivElement>('#resolution-controls')!
 
 if (
   !menuScreen ||
@@ -425,7 +430,10 @@ if (
   !readyButton ||
   !resolveNextButton ||
   !resolveAllButton ||
-  !resetGameButton
+  !resetGameButton ||
+  !boardControlsEl ||
+  !readyAnchorEl ||
+  !resolutionControlsEl
 ) {
   throw new Error('Action buttons missing')
 }
@@ -501,7 +509,7 @@ type TeleportAnimation = {
   duration: number
 }
 type ChainLightningAnimation = { type: 'chainLightning'; from: Hex; to: Hex; duration: number }
-type SlimeLobAnimation = { type: 'slimeLob'; from: Hex; to: Hex; duration: number }
+type SlimeLobAnimation = { type: 'slimeLob'; arcs: Array<{ from: Hex; to: Hex }>; duration: number }
 type HarpoonAnimation = {
   type: 'harpoon'
   from: Hex
@@ -558,6 +566,10 @@ const TELEPORT_DURATION_MS = 320
 const HARPOON_DURATION_MS = 500
 const DEATH_RAY_DURATION_MS = 340
 const CARD_TRANSFER_DURATION_MS = 800
+const RESOLUTION_CARD_APPROACH_DURATION_MS = 360
+const RESOLUTION_CARD_HOLD_DURATION_MS = 500
+const RESOLUTION_CARD_SHRINK_DURATION_MS = 240
+const RESOLUTION_CARD_SCALE = 2.2
 
 let isAnimating = false
 let animationQueue: BoardAnimation[] = []
@@ -743,8 +755,9 @@ type OnlineResolutionReplayState = {
 let onlineResolutionReplay: OnlineResolutionReplayState | null = null
 let onlinePendingAction:
   | { type: 'create'; setup: RoomSetup }
-  | { type: 'join'; roomCode: string; seatToken: string; loadout: CardDefId[] }
+  | { type: 'join'; roomCode: string; seatToken: string; loadout: CardDefId[]; playerClass: PlayerClassId }
   | null = null
+let onlineLastJoinPayload: { loadout: CardDefId[]; playerClass: PlayerClassId } | null = null
 let onlineAutoEnterGameOnJoin = true
 let onlineRouteToLoadoutOnJoin = false
 let onlineRematchRequested = false
@@ -1006,7 +1019,7 @@ function sanitizeDeckForCurrentClass(
 }
 
 function sanitizeLoadoutsForCurrentClasses(options: { enforceClassRestrictions?: boolean } = {}): void {
-  const enforceClassRestrictions = options.enforceClassRestrictions ?? mode !== 'online'
+  const enforceClassRestrictions = options.enforceClassRestrictions ?? true
   loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, playerClasses.p1, enforceClassRestrictions)
   loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, playerClasses.p2, enforceClassRestrictions)
 }
@@ -1571,6 +1584,7 @@ function dispatchPendingOnlineAction(): void {
       roomCode: onlinePendingAction.roomCode,
       seatToken: onlinePendingAction.seatToken,
       loadout: onlinePendingAction.loadout,
+      playerClass: onlinePendingAction.playerClass,
     })
   }
   if (sent) {
@@ -1621,6 +1635,7 @@ function resetCardVisualState(): void {
 function teardownOnlineSession(clearStoredSession: boolean): void {
   clearOnlineReconnectTimer()
   onlinePendingAction = null
+  onlineLastJoinPayload = null
   onlineAutoEnterGameOnJoin = true
   onlineRouteToLoadoutOnJoin = false
   onlineRematchRequested = false
@@ -1646,11 +1661,19 @@ function scheduleOnlineReconnect(): void {
   if (onlineReconnectTimer !== null) return
   onlineReconnectTimer = window.setTimeout(() => {
     onlineReconnectTimer = null
+    const reconnectSeat = session.seat
+    const reconnectLoadout = reconnectSeat === 0 ? [...loadouts.p1] : [...loadouts.p2]
+    const reconnectClass = reconnectSeat === 0 ? playerClasses.p1 : playerClasses.p2
+    onlineLastJoinPayload = {
+      loadout: reconnectLoadout,
+      playerClass: reconnectClass,
+    }
     onlinePendingAction = {
       type: 'join',
       roomCode: session.roomCode,
       seatToken: session.seatToken,
-      loadout: [...loadouts.p1],
+      loadout: reconnectLoadout,
+      playerClass: reconnectClass,
     }
     ensureOnlineClient()
   }, ONLINE_RECONNECT_DELAY_MS)
@@ -1706,6 +1729,7 @@ function ensureOnlineClient(): void {
 
 function beginOnlineCreate(): void {
   onlineSuppressReconnect = false
+  onlineLastJoinPayload = null
   onlineAutoEnterGameOnJoin = false
   onlineRouteToLoadoutOnJoin = false
   onlineRematchRequested = false
@@ -1714,6 +1738,10 @@ function beginOnlineCreate(): void {
     loadouts: {
       p1: [...loadouts.p1],
       p2: [...STARTING_DECK],
+    },
+    playerClasses: {
+      p1: playerClasses.p1,
+      p2: DEFAULT_PLAYER_CLASSES.p2,
     },
   }
   applyPlayMode('online')
@@ -1727,12 +1755,19 @@ function beginOnlineJoin(roomCode: string, seatToken: string, routeToLoadout = t
   onlineAutoEnterGameOnJoin = !routeToLoadout
   onlineRouteToLoadoutOnJoin = routeToLoadout
   onlineRematchRequested = false
+  const joinLoadout = [...loadouts.p1]
+  const joinClass = playerClasses.p1
+  onlineLastJoinPayload = {
+    loadout: joinLoadout,
+    playerClass: joinClass,
+  }
   applyPlayMode('online')
   onlinePendingAction = {
     type: 'join',
     roomCode: roomCode.trim().toUpperCase(),
     seatToken: seatToken.trim(),
-    loadout: [...loadouts.p1],
+    loadout: joinLoadout,
+    playerClass: joinClass,
   }
   setOnlineStatus('Connecting to join room...')
   ensureOnlineClient()
@@ -1768,9 +1803,13 @@ function submitOnlineLoadoutAndContinue(): void {
     setOnlineStatus('Still connecting to room...')
     return
   }
+  const selfSeat = onlineSession.seat
+  const selfLoadout = selfSeat === 0 ? [...loadouts.p1] : [...loadouts.p2]
+  const selfClass = selfSeat === 0 ? playerClasses.p1 : playerClasses.p2
   sendOnlineCommand({
     type: 'update_loadout',
-    loadout: [...loadouts.p1],
+    loadout: selfLoadout,
+    playerClass: selfClass,
   })
   statusEl.textContent = state.winner !== null ? 'Deck saved.' : 'Deck submitted. Entering match...'
   if (state.winner !== null) {
@@ -1781,9 +1820,13 @@ function submitOnlineLoadoutAndContinue(): void {
 
 function requestOnlineRematch(): void {
   if (mode !== 'online' || !onlineSession) return
+  const selfSeat = onlineSession.seat
+  const selfLoadout = selfSeat === 0 ? [...loadouts.p1] : [...loadouts.p2]
+  const selfClass = selfSeat === 0 ? playerClasses.p1 : playerClasses.p2
   sendOnlineCommand({
     type: 'update_loadout',
-    loadout: [...loadouts.p1],
+    loadout: selfLoadout,
+    playerClass: selfClass,
   })
   sendOnlineCommand({ type: 'rematch' })
   onlineRematchRequested = true
@@ -1839,6 +1882,7 @@ function mapViewToState(view: GameStateView): GameState {
     winner: view.winner,
     spawnedByOrder: { ...view.spawnedByOrder },
     settings: { ...view.settings },
+    playerClasses: [view.playerClasses?.[0] ?? null, view.playerClasses?.[1] ?? null],
   }
   normalizeLeaderUnitsInState(mapped)
   return mapped
@@ -1931,7 +1975,12 @@ function applyOnlineSnapshot(stateView: GameStateView, viewMeta: ViewMeta, prese
   resizeDecks(gameSettings.deckSize)
   enforceMaxCopies()
   planningPlayer = viewMeta.selfSeat
-  loadoutPlayer = 0
+  loadoutPlayer = viewMeta.selfSeat
+  playerClasses = {
+    p1: normalizePlayerClassInput(state.playerClasses?.[0], DEFAULT_PLAYER_CLASSES.p1),
+    p2: normalizePlayerClassInput(state.playerClasses?.[1], DEFAULT_PLAYER_CLASSES.p2),
+  }
+  sanitizeLoadoutsForCurrentClasses()
   clearOverlayClone()
   pendingCardTransfer = null
   hiddenCardIds.clear()
@@ -2031,8 +2080,17 @@ function handleServerMessage(message: ServerMessage): void {
       onlineSession.seat = message.seat
       onlineSession.connected = true
     }
+    if (onlineLastJoinPayload) {
+      if (message.seat === 0) {
+        loadouts.p1 = [...onlineLastJoinPayload.loadout]
+        playerClasses.p1 = onlineLastJoinPayload.playerClass
+      } else {
+        loadouts.p2 = [...onlineLastJoinPayload.loadout]
+        playerClasses.p2 = onlineLastJoinPayload.playerClass
+      }
+    }
     planningPlayer = message.seat
-    loadoutPlayer = 0
+    loadoutPlayer = message.seat
     persistOnlineSession(message.roomCode, onlineSession.seatToken)
     setOnlineStatus(`Joined room ${message.roomCode} as Player ${message.seat + 1}.`)
     refreshOnlineLobbyUi()
@@ -2791,11 +2849,16 @@ function getUnitRenderScale(unit: Unit): number {
   return getEncounterRoleScale(unit.roguelikeRole)
 }
 
-function pruneRoguelikeMonsterVariants(sourceState: GameState): void {
+function pruneRoguelikeMonsterVariants(sourceState: GameState, preview: GameState | null): void {
   const liveUnitIds = new Set<string>([
     ...Object.keys(sourceState.units),
     ...pendingDeathUnits.keys(),
   ])
+  if (preview) {
+    Object.keys(preview.units).forEach((unitId) => {
+      liveUnitIds.add(unitId)
+    })
+  }
   roguelikeMonsterVariantByUnitId.forEach((_, unitId) => {
     if (liveUnitIds.has(unitId)) return
     roguelikeMonsterVariantByUnitId.delete(unitId)
@@ -3513,9 +3576,9 @@ function drawChainLightningAnimation(animation: ChainLightningAnimation, progres
   drawLightningArc(projectHex(animation.from), projectHex(animation.to), progress)
 }
 
-function drawSlimeLobAnimation(animation: SlimeLobAnimation, progress: number): void {
-  const from = projectHex(animation.from)
-  const to = projectHex(animation.to)
+function drawSingleSlimeLobArc(fromTile: Hex, toTile: Hex, progress: number): void {
+  const from = projectHex(fromTile)
+  const to = projectHex(toTile)
   const t = easeInOutCubic(progress)
   const arcHeight = layout.size * 0.9
   const center = {
@@ -3542,6 +3605,12 @@ function drawSlimeLobAnimation(animation: SlimeLobAnimation, progress: number): 
   ctx.ellipse(center.x, center.y, radius, radius * 0.75, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
+}
+
+function drawSlimeLobAnimation(animation: SlimeLobAnimation, progress: number): void {
+  animation.arcs.forEach((arc) => {
+    drawSingleSlimeLobArc(arc.from, arc.to, progress)
+  })
 }
 
 function drawBurnDamageAnimation(target: Hex, progress: number): void {
@@ -4128,7 +4197,7 @@ function drawBoard(): void {
     boardOffset.x * deviceScale,
     boardOffset.y * deviceScale
   )
-  pruneRoguelikeMonsterVariants(state)
+  pruneRoguelikeMonsterVariants(state, previewState && state.phase === 'planning' ? previewState : null)
 
   const spawnTop = getSpawnTiles(state, 0)
   const spawnBottom = getSpawnTiles(state, 1)
@@ -4626,10 +4695,18 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
 
     const spriteSet = getSpriteSetForOwner(unit.owner)
     const troopBaseImage = unit.kind === 'leader' ? spriteSet.leaderBaseImage : spriteSet.unitBaseImage
-    if (troopBaseImage.loaded) {
+    const monsterImage = unit.kind === 'unit' ? getRoguelikeMonsterImage(unit) : null
+    const spriteImage = monsterImage ?? troopBaseImage
+    if (spriteImage.loaded) {
       ghostCtx.save()
       ghostCtx.filter = 'grayscale(1) brightness(1.8)'
-      drawAnchoredImageTo(ghostCtx, troopBaseImage, localCenter, unitSpriteScale, UNIT_ANCHOR_Y)
+      drawAnchoredImageTo(
+        ghostCtx,
+        spriteImage,
+        localCenter,
+        unitSpriteScale * (unit.kind === 'unit' ? getUnitRenderScale(unit) : 1),
+        UNIT_ANCHOR_Y
+      )
       ghostCtx.filter = 'none'
       ghostCtx.restore()
     }
@@ -5493,6 +5570,94 @@ function animateCardMove(
   })
 }
 
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+function waitForWebAnimation(animation: Animation | null): Promise<void> {
+  return new Promise((resolve) => {
+    if (!animation) {
+      resolve()
+      return
+    }
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    animation.onfinish = finish
+    animation.oncancel = finish
+  })
+}
+
+async function playResolutionCardPreview(order: GameState['actionQueue'][number]): Promise<void> {
+  const source = ordersEl.querySelector<HTMLElement>(`[data-order-id="${order.id}"]`)
+  if (!source) return
+  const fromRect = source.getBoundingClientRect()
+  if (fromRect.width <= 0 || fromRect.height <= 0) return
+
+  const clone = source.cloneNode(true) as HTMLElement
+  clone.classList.add('resolution-card-spotlight')
+  clone.classList.remove('order-resolved')
+  clone.classList.remove('card-placeholder')
+  clone.classList.remove('hidden-card')
+  clone.style.left = `${fromRect.left}px`
+  clone.style.top = `${fromRect.top}px`
+  clone.style.width = `${fromRect.width}px`
+  clone.style.height = `${fromRect.height}px`
+  clone.style.transform = 'translate(0px, 0px) scale(1)'
+  clone.style.opacity = '1'
+  cardOverlay.appendChild(clone)
+
+  const previousVisibility = source.style.visibility
+  source.style.visibility = 'hidden'
+
+  const targetLeft = (window.innerWidth - fromRect.width) / 2
+  const targetTop = (window.innerHeight - fromRect.height) / 2
+  const dx = targetLeft - fromRect.left
+  const dy = targetTop - fromRect.top
+  const centerTransform = `translate(${dx}px, ${dy}px) scale(${RESOLUTION_CARD_SCALE})`
+
+  try {
+    const approach = clone.animate(
+      [
+        { transform: 'translate(0px, 0px) scale(1)', opacity: 1 },
+        { transform: centerTransform, opacity: 1 },
+      ],
+      {
+        duration: RESOLUTION_CARD_APPROACH_DURATION_MS,
+        easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+        fill: 'forwards',
+      }
+    )
+    await waitForWebAnimation(approach)
+    clone.style.transform = centerTransform
+    clone.style.opacity = '1'
+    await waitMs(RESOLUTION_CARD_HOLD_DURATION_MS)
+
+    const shrink = clone.animate(
+      [
+        { transform: centerTransform, opacity: 1 },
+        { transform: `translate(${dx}px, ${dy}px) scale(0.01)`, opacity: 0 },
+      ],
+      {
+        duration: RESOLUTION_CARD_SHRINK_DURATION_MS,
+        easing: 'cubic-bezier(0.32, 0, 0.67, 1)',
+        fill: 'forwards',
+      }
+    )
+    await waitForWebAnimation(shrink)
+  } finally {
+    clone.remove()
+    if (source.isConnected) {
+      source.style.visibility = previousVisibility
+    }
+  }
+}
+
 function runPendingCardTransfer(): void {
   if (!pendingCardTransfer || pendingCardTransfer.started) return
   pendingCardTransfer.started = true
@@ -5525,7 +5690,7 @@ function renderLoadout(): void {
   applyCardAssetCssVars()
   sanitizeLoadoutsForCurrentClasses()
   if (mode === 'online') {
-    loadoutPlayer = 0
+    loadoutPlayer = onlineSession?.seat ?? planningPlayer
   }
   const loadoutClass = getLoadoutClass(loadoutPlayer)
   const loadoutClassDef = PLAYER_CLASS_DEFS[loadoutClass]
@@ -5536,14 +5701,11 @@ function renderLoadout(): void {
   loadoutContinueButton.disabled = !(mode === 'online' && onlineSession)
   loadoutContinueButton.textContent =
     mode === 'online' && state.winner !== null ? 'Save Deck + Back to Match' : 'Continue to Match'
-  loadoutCountLabel.textContent =
-    mode === 'online'
-      ? `${deck.length}/${gameSettings.deckSize} cards`
-      : `${deck.length}/${gameSettings.deckSize} cards | ${loadoutClassDef.name}`
+  loadoutCountLabel.textContent = `${deck.length}/${gameSettings.deckSize} cards | ${loadoutClassDef.name}`
   loadoutClassSelect.value = loadoutClass
-  loadoutClassSelect.disabled = mode === 'online'
+  loadoutClassSelect.disabled = false
   loadoutClassSelect.style.borderColor = loadoutClassDef.color
-  loadoutClassSelect.parentElement?.classList.toggle('hidden', mode === 'online')
+  loadoutClassSelect.parentElement?.classList.remove('hidden')
   loadoutControls.classList.toggle('hidden', !loadoutFiltersExpanded)
   loadoutFilterToggleButton.classList.toggle('active', loadoutFiltersExpanded)
   loadoutFilterToggleButton.textContent = loadoutFiltersExpanded ? 'Filter ▲' : 'Filter ▼'
@@ -5580,7 +5742,7 @@ function renderLoadout(): void {
     })
   })
 
-  const classPool = mode === 'online' ? null : new Set(getCardPoolForClass(loadoutClass))
+  const classPool = new Set(getCardPoolForClass(loadoutClass))
   const allCards = Object.values(CARD_DEFS)
     .filter((def) => (classPool ? classPool.has(def.id) : true))
     .filter((def) => loadoutFilter === 'all' || cardCountsAsType(def, loadoutFilter))
@@ -5813,10 +5975,17 @@ function buildEncounterRoleList(encounter: RoguelikeEncounterDef, matchNumber: n
 
 function getEncounterPlacementTiles(sourceState: GameState): Hex[] {
   const topAnchor = { q: Math.floor(sourceState.boardCols / 2), r: 0 }
+  const bottomAnchor = { q: Math.floor(sourceState.boardCols / 2), r: sourceState.boardRows - 1 }
   const distanceBuckets = new Map<number, Hex[]>()
   sourceState.tiles.forEach((tile) => {
     if (tile.r > Math.floor((sourceState.boardRows - 1) * 0.78)) return
     const hex = { q: tile.q, r: tile.r }
+    if (
+      (hex.q === topAnchor.q && hex.r === topAnchor.r) ||
+      (hex.q === bottomAnchor.q && hex.r === bottomAnchor.r)
+    ) {
+      return
+    }
     const key = Math.floor(hexDistance(hex, topAnchor))
     if (!distanceBuckets.has(key)) {
       distanceBuckets.set(key, [])
@@ -6260,8 +6429,23 @@ function renderMeta(): void {
   winnerRematchButton.disabled = mode !== 'online' || onlineRematchRequested || !(onlineSession?.connected ?? false)
 }
 
+function syncPhaseControlPlacement(): void {
+  if (readyButton.parentElement !== readyAnchorEl) {
+    readyAnchorEl.appendChild(readyButton)
+  }
+  const inResolution = state.phase === 'action'
+  const resolveParent = inResolution ? resolutionControlsEl : boardControlsEl
+  if (resolveNextButton.parentElement !== resolveParent) {
+    resolveParent.appendChild(resolveNextButton)
+  }
+  if (resolveAllButton.parentElement !== resolveParent) {
+    resolveParent.appendChild(resolveAllButton)
+  }
+}
+
 function render(): void {
   applyMatchClassTheme()
+  syncPhaseControlPlacement()
   previewState = state.phase === 'planning' ? simulatePlannedState(state, planningPlayer) : null
   const handScroll = handEl.scrollLeft
   const ordersScroll = ordersEl.scrollLeft
@@ -6312,11 +6496,14 @@ function render(): void {
   const inOnlineMode = mode === 'online'
   const inBotMode = isBotControlledMode()
   const inOnlineReplayAction = inOnlineMode && isOnlineResolutionReplayActive()
+  const showResolutionControls = !inPlanning && !(inOnlineMode && !inOnlineReplayAction)
   const roomPaused = inOnlineMode ? onlineSession?.presence.paused ?? false : false
   const disconnected = inOnlineMode ? !(onlineSession?.connected ?? false) : false
   readyButton.classList.toggle('hidden', !inPlanning)
-  resolveNextButton.classList.toggle('hidden', inPlanning || (inOnlineMode && !inOnlineReplayAction))
-  resolveAllButton.classList.toggle('hidden', inPlanning || (inOnlineMode && !inOnlineReplayAction))
+  resolveNextButton.classList.toggle('hidden', !showResolutionControls)
+  resolveAllButton.classList.toggle('hidden', !showResolutionControls)
+  handEl.classList.toggle('resolution-hidden-hand', showResolutionControls)
+  resolutionControlsEl.classList.toggle('hidden', !showResolutionControls)
   switchPlannerButton.classList.toggle('hidden', mode !== 'local')
   readyButton.disabled = !inPlanning || state.ready[planningPlayer] || roomPaused || disconnected || (inBotMode && botThinking)
   resolveNextButton.disabled = state.phase !== 'action' || isAnimating
@@ -6513,16 +6700,19 @@ function parseSpawnEvents(logEntries: string[]): Array<{ index: number; unitId: 
   return events
 }
 
-function parseSlimeSplitEvents(logEntries: string[]): Array<{ index: number; from: Hex; to: Hex; spawnedUnitId?: string }> {
-  const splitEvents: Array<{ index: number; from: Hex; to: Hex; spawnedUnitId?: string }> = []
+function parseSlimeSplitEvents(
+  logEntries: string[]
+): Array<{ index: number; sourceUnitId: string; from: Hex; to: Hex; spawnedUnitId?: string }> {
+  const splitEvents: Array<{ index: number; sourceUnitId: string; from: Hex; to: Hex; spawnedUnitId?: string }> = []
   const spawnEvents = parseSpawnEvents(logEntries)
   const usedSpawnIndices = new Set<number>()
 
   logEntries.forEach((entry, index) => {
-    const match = entry.match(/^Slime split: .+ lobs from (-?\d+),(-?\d+) to (-?\d+),(-?\d+)\.$/)
+    const match = entry.match(/^Slime split: (.+) lobs from (-?\d+),(-?\d+) to (-?\d+),(-?\d+)\.$/)
     if (!match) return
-    const from = { q: Number(match[1]), r: Number(match[2]) }
-    const to = { q: Number(match[3]), r: Number(match[4]) }
+    const sourceUnitId = match[1]
+    const from = { q: Number(match[2]), r: Number(match[3]) }
+    const to = { q: Number(match[4]), r: Number(match[5]) }
 
     let spawnedUnitId: string | undefined
     for (let i = spawnEvents.length - 1; i >= 0; i -= 1) {
@@ -6535,7 +6725,7 @@ function parseSlimeSplitEvents(logEntries: string[]): Array<{ index: number; fro
       break
     }
 
-    splitEvents.push({ index, from, to, spawnedUnitId })
+    splitEvents.push({ index, sourceUnitId, from, to, spawnedUnitId })
   })
 
   return splitEvents
@@ -7222,23 +7412,49 @@ function buildAnimations(
     })
   })
 
+  const splitGroups: Array<{
+    index: number
+    arcs: Array<{ from: Hex; to: Hex }>
+    spawnedUnitIds: string[]
+  }> = []
+  const splitGroupsBySource = new Map<string, (typeof splitGroups)[number]>()
   slimeSplitEvents.forEach((event) => {
-    enqueueDestroyedUpTo(event.index - 1)
-    lastConsumedLogIndex = Math.max(lastConsumedLogIndex, event.index)
-    animations.push({
-      type: 'slimeLob',
+    let group = splitGroupsBySource.get(event.sourceUnitId)
+    if (!group) {
+      group = {
+        index: event.index,
+        arcs: [],
+        spawnedUnitIds: [],
+      }
+      splitGroupsBySource.set(event.sourceUnitId, group)
+      splitGroups.push(group)
+    }
+    group.arcs.push({
       from: { ...event.from },
       to: { ...event.to },
-      duration: SLIME_LOB_DURATION_MS,
     })
     if (!event.spawnedUnitId) return
     if (before[event.spawnedUnitId]) return
     if (!state.units[event.spawnedUnitId]) return
-    unitAlphaOverrides.set(event.spawnedUnitId, 0)
+    if (group.spawnedUnitIds.includes(event.spawnedUnitId)) return
+    group.spawnedUnitIds.push(event.spawnedUnitId)
+  })
+
+  splitGroups.forEach((group) => {
+    enqueueDestroyedUpTo(group.index - 1)
+    lastConsumedLogIndex = Math.max(lastConsumedLogIndex, group.index)
     animations.push({
-      type: 'spawn',
-      unitId: event.spawnedUnitId,
-      duration: SPAWN_DURATION_MS,
+      type: 'slimeLob',
+      arcs: group.arcs.map((arc) => ({ from: { ...arc.from }, to: { ...arc.to } })),
+      duration: SLIME_LOB_DURATION_MS,
+    })
+    group.spawnedUnitIds.forEach((unitId) => {
+      unitAlphaOverrides.set(unitId, 0)
+      animations.push({
+        type: 'spawn',
+        unitId,
+        duration: SPAWN_DURATION_MS,
+      })
     })
   })
 
@@ -7326,47 +7542,67 @@ function runNextAnimation(): void {
 }
 
 function resolveNextActionAnimated(): void {
-  if (state.phase !== 'action') return
-  const before = snapshotUnits(state)
-  const logStart = state.log.length
+  if (state.phase !== 'action' || isAnimating) return
   const currentOrder = state.actionQueue[state.actionIndex]
-  resolveNextAction(state)
-  if (!currentOrder) {
-    const turnEndLogs = state.log.slice(logStart)
-    const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
-    const burnAnimations = parseBurnDamageTargets(turnEndLogs)
-      .map((unitId) => {
-        const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
-        if (!targetPos) return null
-        return {
-          type: 'burn',
-          target: { ...targetPos },
-          duration: BURN_DURATION_MS,
-        } as BoardAnimation
-      })
-      .filter((animation): animation is BoardAnimation => animation !== null)
-    if (burnAnimations.length > 0) {
-      animationQueue.push(...burnAnimations)
-      if (!currentAnimation) runNextAnimation()
+
+  const runResolutionStep = (order: GameState['actionQueue'][number] | undefined): void => {
+    const before = snapshotUnits(state)
+    const logStart = state.log.length
+    resolveNextAction(state)
+    if (!order) {
+      const turnEndLogs = state.log.slice(logStart)
+      const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
+      const burnAnimations = parseBurnDamageTargets(turnEndLogs)
+        .map((unitId) => {
+          const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
+          if (!targetPos) return null
+          return {
+            type: 'burn',
+            target: { ...targetPos },
+            duration: BURN_DURATION_MS,
+          } as BoardAnimation
+        })
+        .filter((animation): animation is BoardAnimation => animation !== null)
+      if (burnAnimations.length > 0) {
+        animationQueue.push(...burnAnimations)
+        if (!currentAnimation) runNextAnimation()
+        return
+      }
+      isAnimating = false
+      finalizeOnlineResolutionReplay()
+      render()
       return
     }
-    finalizeOnlineResolutionReplay()
-    render()
-    return
-  }
-  const animations = buildAnimations(currentOrder, before, state.log.slice(logStart))
-  if (animations.length === 0) {
-    finalizeOnlineResolutionReplay()
-    render()
-    if (autoResolve && state.phase === 'action') {
-      requestAnimationFrame(() => resolveNextActionAnimated())
+    const animations = buildAnimations(order, before, state.log.slice(logStart))
+    if (animations.length === 0) {
+      isAnimating = false
+      finalizeOnlineResolutionReplay()
+      render()
+      if (autoResolve && state.phase === 'action') {
+        requestAnimationFrame(() => resolveNextActionAnimated())
+      }
+      return
     }
+    animationQueue.push(...animations)
+    if (!currentAnimation) {
+      runNextAnimation()
+    }
+  }
+
+  if (!currentOrder) {
+    runResolutionStep(undefined)
     return
   }
-  animationQueue.push(...animations)
-  if (!currentAnimation) {
-    runNextAnimation()
-  }
+
+  clearOverlayClone()
+  isAnimating = true
+  void playResolutionCardPreview(currentOrder)
+    .catch(() => {
+      // Ignore preview animation failures and continue resolving.
+    })
+    .finally(() => {
+      runResolutionStep(currentOrder)
+    })
 }
 
 function tryAutoAddOrder(): void {
@@ -8339,6 +8575,9 @@ menuStartRoguelikeButton.addEventListener('click', () => {
 })
 
 menuLoadoutButton.addEventListener('click', () => {
+  if (mode !== 'online') {
+    loadoutPlayer = 0
+  }
   setScreen('loadout')
 })
 
@@ -8437,7 +8676,7 @@ loadoutClearButton.addEventListener('click', () => {
 })
 
 loadoutRandomButton.addEventListener('click', () => {
-  const targetPlayer: PlayerId = mode === 'online' ? 0 : loadoutPlayer
+  const targetPlayer: PlayerId = mode === 'online' ? (onlineSession?.seat ?? 0) : loadoutPlayer
   const randomClass = pickRandomPlayerClass()
   setLoadoutClass(targetPlayer, randomClass)
   const randomizedDeck = generateClusteredBotDeck(gameSettings, { classId: randomClass })
@@ -8460,7 +8699,6 @@ loadoutSort.addEventListener('change', () => {
 })
 
 loadoutClassSelect.addEventListener('change', () => {
-  if (mode === 'online') return
   const nextClass = normalizePlayerClassInput(loadoutClassSelect.value, getLoadoutClass(loadoutPlayer))
   setLoadoutClass(loadoutPlayer, nextClass)
   if (loadoutPlayer === 0) {

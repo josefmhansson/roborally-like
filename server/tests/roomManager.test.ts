@@ -94,8 +94,10 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
     'attack_arrow',
     'reinforce_boost',
   ]
-  manager.applySeatLoadoutOnFirstJoin(room, 1, submitted)
+  manager.applySeatLoadoutOnFirstJoin(room, 1, submitted, 'archmage')
   const seatCards = [...room.state.players[1].hand, ...room.state.players[1].deck].map((card) => card.defId)
+  assert.equal(room.seatClasses[1], 'archmage')
+  assert.equal(room.state.playerClasses?.[1], 'archmage')
 
   assert.equal(seatCards.length, 6)
   assert.deepEqual(
@@ -103,9 +105,10 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
     sortDefIds(submitted.slice(0, 6))
   )
 
-  manager.applySeatLoadoutOnFirstJoin(room, 1, ['reinforce_spawn'])
+  manager.applySeatLoadoutOnFirstJoin(room, 1, ['reinforce_spawn'], 'commander')
   const seatCardsAfterRelock = [...room.state.players[1].hand, ...room.state.players[1].deck].map((card) => card.defId)
   assert.deepEqual(sortDefIds(seatCardsAfterRelock), sortDefIds(seatCards))
+  assert.equal(room.seatClasses[1], 'archmage')
 
   const roomPadded = manager.createRoom({
     settings: {
@@ -124,10 +127,44 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
     },
   })
 
-  manager.applySeatLoadoutOnFirstJoin(roomPadded, 1, ['spell_meteor'])
+  manager.applySeatLoadoutOnFirstJoin(roomPadded, 1, ['spell_meteor'], 'archmage')
   const paddedCards = [...roomPadded.state.players[1].hand, ...roomPadded.state.players[1].deck].map((card) => card.defId)
   assert.equal(paddedCards.length, 6)
   assert.equal(paddedCards.filter((defId) => defId === 'spell_meteor').length, 1)
+})
+
+test('pregame loadout update applies selected class and strips class-locked cards', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom({
+    settings: {
+      boardRows: 6,
+      boardCols: 6,
+      strongholdStrength: 5,
+      deckSize: 6,
+      drawPerTurn: 2,
+      maxCopies: 3,
+      actionBudgetP1: 3,
+      actionBudgetP2: 3,
+    },
+    loadouts: {
+      p1: ['reinforce_spawn'],
+      p2: ['reinforce_spawn'],
+    },
+  })
+
+  manager.updateSeatLoadout(room, 0, ['reinforce_spawn', 'move_any', 'attack_arrow'], 'warleader')
+  assert.equal(room.seatClasses[0], 'warleader')
+  assert.equal(room.state.playerClasses?.[0], 'warleader')
+  assert.equal(
+    room.state.units['stronghold-0']?.modifiers.some((modifier) => modifier.type === 'slow'),
+    false
+  )
+
+  manager.updateSeatLoadout(room, 0, ['spell_meteor', 'spell_lightning'], 'commander')
+  assert.equal(room.seatClasses[0], 'commander')
+  assert.equal(room.state.playerClasses?.[0], 'commander')
+  assert.equal(room.seatLoadouts[0].includes('spell_meteor'), false)
+  assert.equal(room.seatLoadouts[0].includes('spell_lightning'), false)
 })
 
 test('room telemetry submission includes played cards and accumulated unplayed hand cards', () => {

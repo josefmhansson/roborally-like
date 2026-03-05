@@ -62,6 +62,7 @@ export function buildStateViewForState(
     winner: sourceState.winner,
     spawnedByOrder: { ...sourceState.spawnedByOrder },
     settings: { ...sourceState.settings },
+    playerClasses: [sourceState.playerClasses?.[0] ?? null, sourceState.playerClasses?.[1] ?? null],
   }
 
   const viewMeta: ViewMeta = {

@@ -32,7 +32,7 @@ export function applyRoomCommand(room: Room, seat: PlayerId, command: ClientGame
           message: 'Loadout can only be changed before match start or after match end.',
         }
       }
-      updateRoomSeatLoadout(room, seat, command.loadout)
+      updateRoomSeatLoadout(room, seat, command.loadout, command.playerClass)
       return { ok: true, message: 'Loadout updated.' }
     }
     case 'rematch': {
@@ -246,6 +246,17 @@ function cloneGameState(source: GameState): GameState {
     winner: source.winner,
     spawnedByOrder: { ...source.spawnedByOrder },
     settings: { ...source.settings },
+    playerClasses: source.playerClasses ? [source.playerClasses[0], source.playerClasses[1]] : undefined,
+    leaderMovedLastTurn: source.leaderMovedLastTurn ? [source.leaderMovedLastTurn[0], source.leaderMovedLastTurn[1]] : undefined,
+    turnStartLeaderPositions: source.turnStartLeaderPositions
+      ? [
+          { ...source.turnStartLeaderPositions[0] },
+          { ...source.turnStartLeaderPositions[1] },
+        ]
+      : undefined,
+    archmageBonusApplied: source.archmageBonusApplied
+      ? [source.archmageBonusApplied[0], source.archmageBonusApplied[1]]
+      : undefined,
   }
 }
 

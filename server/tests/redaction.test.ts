@@ -13,10 +13,12 @@ test('redaction hides opponent hand and planning orders', () => {
   assert.equal(seat0View.stateView.players[0].hand === null, false)
   assert.equal(seat0View.stateView.players[1].hand, null)
   assert.equal(seat0View.stateView.players[1].orders, null)
+  assert.deepEqual(seat0View.stateView.playerClasses, ['commander', 'commander'])
 
   assert.equal(seat1View.stateView.players[1].hand === null, false)
   assert.equal(seat1View.stateView.players[0].hand, null)
   assert.equal(seat1View.stateView.players[0].orders, null)
+  assert.deepEqual(seat1View.stateView.playerClasses, ['commander', 'commander'])
 })
 
 test('redaction strips detailed planned card names during planning', () => {

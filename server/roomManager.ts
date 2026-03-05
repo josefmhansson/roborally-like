@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
 import type { WebSocket } from 'ws'
 import { CARD_DEFS, STARTING_DECK } from '../src/engine/cards'
+import { DEFAULT_PLAYER_CLASSES, isCardAllowedForClass, isPlayerClassId } from '../src/engine/classes'
 import { createGameState, DEFAULT_SETTINGS } from '../src/engine/game'
-import type { CardDefId, GameSettings, GameState, PlayerId } from '../src/engine/types'
+import type { CardDefId, GameSettings, GameState, PlayerClassId, PlayerId } from '../src/engine/types'
 import type { MatchTelemetrySubmission } from '../src/shared/telemetry'
 import type { RoomSetup } from '../src/shared/net/protocol'
 
@@ -27,6 +28,7 @@ export type Room = {
   state: GameState
   seats: [SeatState, SeatState]
   seatLoadouts: [CardDefId[], CardDefId[]]
+  seatClasses: [PlayerClassId, PlayerClassId]
   rematchReady: [boolean, boolean]
   paused: boolean
   reconnectDeadlineAt: number | null
@@ -51,11 +53,15 @@ export class RoomManager {
   createRoom(setup?: RoomSetup): Room {
     const roomCode = this.generateRoomCode()
     const settings = normalizeSettings(setup?.settings)
-    const loadouts = normalizeLoadouts(settings, setup?.loadouts)
+    const seatClasses = normalizePlayerClasses(setup?.playerClasses)
+    const loadouts = normalizeLoadouts(settings, setup?.loadouts, seatClasses)
     const now = Date.now()
     const room: Room = {
       code: roomCode,
-      state: createGameState(settings, loadouts),
+      state: createGameState(settings, loadouts, {
+        p1: seatClasses[0],
+        p2: seatClasses[1],
+      }),
       seats: [
         {
           token: createToken(),
@@ -73,6 +79,7 @@ export class RoomManager {
         },
       ],
       seatLoadouts: [loadouts.p1, loadouts.p2],
+      seatClasses,
       rematchReady: [false, false],
       paused: false,
       reconnectDeadlineAt: null,
@@ -136,10 +143,15 @@ export class RoomManager {
     return room
   }
 
-  applySeatLoadoutOnFirstJoin(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[]): void {
+  applySeatLoadoutOnFirstJoin(
+    room: Room,
+    seat: PlayerId,
+    submittedLoadout?: CardDefId[],
+    submittedClass?: PlayerClassId
+  ): void {
     const seatState = room.seats[seat]
     if (seatState.loadoutLocked) return
-    this.updateSeatLoadout(room, seat, submittedLoadout)
+    this.updateSeatLoadout(room, seat, submittedLoadout, submittedClass)
     seatState.loadoutLocked = true
   }
 
@@ -147,8 +159,8 @@ export class RoomManager {
     return canRoomUpdateLoadout(room)
   }
 
-  updateSeatLoadout(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[]): void {
-    updateRoomSeatLoadout(room, seat, submittedLoadout)
+  updateSeatLoadout(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[], submittedClass?: PlayerClassId): void {
+    updateRoomSeatLoadout(room, seat, submittedLoadout, submittedClass)
   }
 
   requestRematch(room: Room, seat: PlayerId): { started: boolean } {
@@ -205,11 +217,37 @@ export function canRoomUpdateLoadout(room: Room): boolean {
   return isPregameLoadoutWindow(room)
 }
 
-export function updateRoomSeatLoadout(room: Room, seat: PlayerId, submittedLoadout?: CardDefId[]): void {
-  const normalizedDeck = sanitizeDeck(submittedLoadout ?? STARTING_DECK, room.state.settings)
+export function updateRoomSeatLoadout(
+  room: Room,
+  seat: PlayerId,
+  submittedLoadout?: CardDefId[],
+  submittedClass?: PlayerClassId
+): void {
+  const normalizedClass = normalizePlayerClassId(submittedClass, room.seatClasses[seat])
+  room.seatClasses[seat] = normalizedClass
+  const normalizedDeck = sanitizeDeck(submittedLoadout ?? STARTING_DECK, room.state.settings, normalizedClass)
   room.seatLoadouts[seat] = [...normalizedDeck]
+
+  const pregame = isPregameLoadoutWindow(room)
+  if (!room.ended && room.state.winner === null && pregame) {
+    room.state = createGameState(
+      room.state.settings,
+      {
+        p1: [...room.seatLoadouts[0]],
+        p2: [...room.seatLoadouts[1]],
+      },
+      {
+        p1: room.seatClasses[0],
+        p2: room.seatClasses[1],
+      }
+    )
+    room.rematchReady = [false, false]
+    return
+  }
+
   room.state.players[seat] = createPlayerStateFromDeck(normalizedDeck, seat, room.state.settings.drawPerTurn)
   room.state.ready[seat] = false
+  room.state.playerClasses = [room.seatClasses[0], room.seatClasses[1]]
   if (room.ended || room.state.winner !== null) {
     room.rematchReady[seat] = false
   } else {
@@ -228,10 +266,17 @@ export function requestRoomRematch(room: Room, seat: PlayerId): { started: boole
 
 function resetRoomForRematch(room: Room): void {
   const now = Date.now()
-  room.state = createGameState(room.state.settings, {
-    p1: [...room.seatLoadouts[0]],
-    p2: [...room.seatLoadouts[1]],
-  })
+  room.state = createGameState(
+    room.state.settings,
+    {
+      p1: [...room.seatLoadouts[0]],
+      p2: [...room.seatLoadouts[1]],
+    },
+    {
+      p1: room.seatClasses[0],
+      p2: room.seatClasses[1],
+    }
+  )
   room.ended = false
   room.endReason = null
   room.rematchReady = [false, false]
@@ -344,18 +389,20 @@ function toBoundedInt(input: unknown, fallback: number, min: number, max: number
 
 function normalizeLoadouts(
   settings: GameSettings,
-  input?: { p1: CardDefId[]; p2: CardDefId[] }
+  input: { p1: CardDefId[]; p2: CardDefId[] } | undefined,
+  seatClasses: [PlayerClassId, PlayerClassId]
 ): { p1: CardDefId[]; p2: CardDefId[] } {
-  const p1 = sanitizeDeck(input?.p1 ?? STARTING_DECK, settings)
-  const p2 = sanitizeDeck(input?.p2 ?? STARTING_DECK, settings)
+  const p1 = sanitizeDeck(input?.p1 ?? STARTING_DECK, settings, seatClasses[0])
+  const p2 = sanitizeDeck(input?.p2 ?? STARTING_DECK, settings, seatClasses[1])
   return { p1, p2 }
 }
 
-function sanitizeDeck(deck: CardDefId[], settings: GameSettings): CardDefId[] {
+function sanitizeDeck(deck: CardDefId[], settings: GameSettings, classId: PlayerClassId): CardDefId[] {
   const counts = new Map<CardDefId, number>()
   const output: CardDefId[] = []
   for (const defId of deck) {
     if (!(defId in CARD_DEFS)) continue
+    if (!isCardAllowedForClass(defId, classId)) continue
     const count = counts.get(defId) ?? 0
     if (count >= settings.maxCopies) continue
     output.push(defId)
@@ -366,6 +413,7 @@ function sanitizeDeck(deck: CardDefId[], settings: GameSettings): CardDefId[] {
   while (output.length < settings.deckSize) {
     let paddedAny = false
     for (const defId of STARTING_DECK) {
+      if (!isCardAllowedForClass(defId, classId)) continue
       const count = counts.get(defId) ?? 0
       if (count >= settings.maxCopies) continue
       output.push(defId)
@@ -377,6 +425,19 @@ function sanitizeDeck(deck: CardDefId[], settings: GameSettings): CardDefId[] {
   }
 
   return output
+}
+
+function normalizePlayerClasses(
+  input: RoomSetup['playerClasses'] | undefined
+): [PlayerClassId, PlayerClassId] {
+  return [
+    normalizePlayerClassId(input?.p1, DEFAULT_PLAYER_CLASSES.p1),
+    normalizePlayerClassId(input?.p2, DEFAULT_PLAYER_CLASSES.p2),
+  ]
+}
+
+function normalizePlayerClassId(input: unknown, fallback: PlayerClassId): PlayerClassId {
+  return isPlayerClassId(input) ? input : fallback
 }
 
 function createPlayerStateFromDeck(

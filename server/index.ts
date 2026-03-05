@@ -3,11 +3,12 @@ import { networkInterfaces } from 'node:os'
 import { URL } from 'node:url'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ClientMessage, ClientGameCommand, RoomSetup, ServerMessage } from '../src/shared/net/protocol'
+import { isPlayerClassId } from '../src/engine/classes'
 import { applyRoomCommand } from './commandHandlers'
 import { buildPresence, buildStateView, buildStateViewForState } from './redaction'
 import { RoomManager, buildRoomTelemetrySubmission, markRoomTelemetrySubmitted, recordRoomPlayedCards } from './roomManager'
 import { TelemetryStore } from './telemetryStore'
-import type { GameState, OrderParams, PlayerId } from '../src/engine/types'
+import type { GameState, OrderParams, PlayerClassId, PlayerId } from '../src/engine/types'
 
 type SocketSession = {
   roomCode: string
@@ -181,7 +182,7 @@ function handleClientMessage(ws: WebSocket, request: IncomingMessage, message: C
       send(ws, { type: 'error', code: 'invalid_token', message: 'Seat token is invalid.' })
       return
     }
-    manager.applySeatLoadoutOnFirstJoin(room, seat, message.loadout)
+    manager.applySeatLoadoutOnFirstJoin(room, seat, message.loadout, message.playerClass)
     const previousSocket = room.seats[seat].socket
     if (previousSocket && previousSocket !== ws) {
       sessions.delete(previousSocket)
@@ -411,11 +412,14 @@ function parseClientMessage(raw: WebSocket.RawData): ClientMessage | null {
       if (typeof value.roomCode !== 'string' || typeof value.seatToken !== 'string') return null
       const loadout = parseJoinLoadout(value.loadout)
       if (value.loadout !== undefined && !loadout) return null
+      const playerClass = parsePlayerClass(value.playerClass)
+      if (value.playerClass !== undefined && !playerClass) return null
       return {
         type: 'join_room',
         roomCode: value.roomCode,
         seatToken: value.seatToken,
         loadout: loadout ?? undefined,
+        playerClass: playerClass ?? undefined,
       }
     }
     if (value.type === 'command') {
@@ -442,12 +446,15 @@ function parseRoomSetup(value: unknown): RoomSetup | null {
   const p1 = parseJoinLoadout(value.loadouts.p1)
   const p2 = parseJoinLoadout(value.loadouts.p2)
   if (!p1 || !p2) return null
+  const playerClasses = parsePlayerClasses(value.playerClasses)
+  if (value.playerClasses !== undefined && !playerClasses) return null
   return {
     settings,
     loadouts: {
       p1,
       p2,
     },
+    playerClasses: playerClasses ?? undefined,
   }
 }
 
@@ -493,6 +500,18 @@ function parseJoinLoadout(value: unknown): RoomSetup['loadouts']['p1'] | null {
   return cards as RoomSetup['loadouts']['p1']
 }
 
+function parsePlayerClass(value: unknown): PlayerClassId | null {
+  return isPlayerClassId(value) ? value : null
+}
+
+function parsePlayerClasses(value: unknown): RoomSetup['playerClasses'] | null {
+  if (!isObject(value)) return null
+  const p1 = parsePlayerClass(value.p1)
+  const p2 = parsePlayerClass(value.p2)
+  if (!p1 || !p2) return null
+  return { p1, p2 }
+}
+
 function parseGameCommand(value: unknown): ClientGameCommand | null {
   if (!isObject(value) || typeof value.type !== 'string') return null
   if (value.type === 'queue_order') {
@@ -521,9 +540,12 @@ function parseGameCommand(value: unknown): ClientGameCommand | null {
   if (value.type === 'update_loadout') {
     const loadout = parseJoinLoadout(value.loadout)
     if (!loadout) return null
+    const playerClass = parsePlayerClass(value.playerClass)
+    if (value.playerClass !== undefined && !playerClass) return null
     return {
       type: 'update_loadout',
       loadout,
+      playerClass: playerClass ?? undefined,
     }
   }
   if (value.type === 'rematch') {

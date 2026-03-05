@@ -3,6 +3,7 @@ import type {
   GameSettings,
   Order,
   Phase,
+  PlayerClassId,
   PlayerId,
   Trap,
   Tile,
@@ -42,6 +43,7 @@ export type GameStateView = {
   winner: PlayerId | null
   spawnedByOrder: Record<string, UnitId>
   settings: GameSettings
+  playerClasses: [PlayerClassId | null, PlayerClassId | null]
 }
 
 export type ViewMeta = {
