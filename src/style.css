@@ -1337,6 +1337,11 @@ body.in-match #winner-modal .btn.ready {
   -webkit-touch-callout: none;
 }
 
+.card-grid.hand-row.reorder-enabled .hand-card,
+.orders.reorder-enabled .order-card {
+  touch-action: none;
+}
+
 .order-card {
   position: relative;
   min-height: var(--card-height);

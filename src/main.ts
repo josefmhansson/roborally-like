@@ -583,7 +583,7 @@ const HARPOON_DURATION_MS = 500
 const DEATH_RAY_DURATION_MS = 340
 const CARD_TRANSFER_DURATION_MS = 800
 const RESOLUTION_CARD_APPROACH_DURATION_MS = 360
-const RESOLUTION_CARD_HOLD_DURATION_MS = 500
+const RESOLUTION_CARD_HOLD_DURATION_MS = 250
 const RESOLUTION_CARD_SHRINK_DURATION_MS = 240
 const RESOLUTION_CARD_SCALE = 2.2
 
@@ -609,6 +609,8 @@ type CardReorderDragState = {
   targetId: string
   startX: number
   startY: number
+  lastX: number
+  lastY: number
   startScrollLeft: number
   startScrollTop: number
   isDragging: boolean
@@ -758,6 +760,7 @@ let lastInputWasTouch = false
 let touchTapCandidate = false
 let suppressWinnerModalForRestoredOutcome = false
 const hiddenCardIds = new Set<string>()
+const resolvingOrderIdsHidden = new Set<string>()
 const handVisualOrder: Record<PlayerId, string[]> = { 0: [], 1: [] }
 
 let mode: PlayMode = 'local'
@@ -1642,6 +1645,7 @@ function applyPlayMode(next: PlayMode): void {
 
 function resetCardVisualState(): void {
   hiddenCardIds.clear()
+  resolvingOrderIdsHidden.clear()
   pendingCardTransfer = null
   onlineResolutionReplay = null
   clearOverlayClone()
@@ -3449,10 +3453,12 @@ function togglePinnedUnitStatusFromHex(hex: Hex): void {
   const unit = getUnitAtStateHex(hex)
   if (!unit) {
     pinnedStatusUnitId = null
+    hoveredStatusUnitId = null
     renderUnitStatusPopover()
     return
   }
   pinnedStatusUnitId = pinnedStatusUnitId === unit.id ? null : unit.id
+  hoveredStatusUnitId = null
   renderUnitStatusPopover()
 }
 
@@ -4977,6 +4983,8 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
         targetId: fromId,
         startX: event.clientX,
         startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
         startScrollLeft: options.container.scrollLeft,
         startScrollTop: options.container.scrollTop,
         isDragging: false,
@@ -5002,8 +5010,19 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
       const movedDistance = Math.abs(dx) + Math.abs(dy)
       if (!drag.isDragging) {
         if (drag.pointerType === 'touch') {
+          const moveX = event.clientX - drag.lastX
+          const moveY = event.clientY - drag.lastY
+          if (moveX !== 0) {
+            drag.container.scrollLeft -= moveX
+          }
+          if (moveY !== 0) {
+            drag.container.scrollTop -= moveY
+          }
+          drag.lastX = event.clientX
+          drag.lastY = event.clientY
           if (movedDistance > TOUCH_REORDER_CANCEL_MOVE_PX) {
             clearCardReorderHoldTimer(drag)
+            options.suppressNextClick()
             cardReorderDrag = null
           }
           return
@@ -5119,15 +5138,19 @@ function renderHand(): void {
 
 function renderOrders(): void {
   const inPlanning = state.phase === 'planning'
+  if (inPlanning && resolvingOrderIdsHidden.size > 0) {
+    resolvingOrderIdsHidden.clear()
+  }
   const playerOrders = state.players[planningPlayer].orders
   const allOrders = state.actionQueue
-  const ordersToShow = inPlanning ? playerOrders : allOrders
+  const ordersToShow = inPlanning
+    ? playerOrders
+    : allOrders.slice(state.actionIndex).filter((order) => !resolvingOrderIdsHidden.has(order.id))
   const validity = inPlanning ? getPlannedOrderValidity(state, planningPlayer) : []
   if (ordersToShow.length === 0) {
     ordersEl.innerHTML = '<div class="empty">No orders queued.</div>'
     return
   }
-  const playedIds = !inPlanning ? new Set(state.actionQueue.slice(0, state.actionIndex).map((order) => order.id)) : null
   ordersEl.innerHTML = ordersToShow
     .map((order, index) => {
       const def = CARD_DEFS[order.defId]
@@ -5135,7 +5158,7 @@ function renderOrders(): void {
       const cardClassName = getCardClassName(def.id)
       const isValid = inPlanning ? validity[index] ?? true : true
       const teamClass = `order-team-${order.player}`
-      const resolvedClass = playedIds?.has(order.id) ? 'order-resolved' : ''
+      const resolvedClass = ''
       const isHidden = hiddenCardIds.has(order.cardId)
       const isPendingTransfer = pendingCardTransfer?.cardId === order.cardId && pendingCardTransfer?.target === 'orders'
       if (isPendingTransfer) {
@@ -5628,9 +5651,6 @@ async function playResolutionCardPreview(order: GameState['actionQueue'][number]
   clone.style.opacity = '1'
   cardOverlay.appendChild(clone)
 
-  const previousVisibility = source.style.visibility
-  source.style.visibility = 'hidden'
-
   const targetLeft = (window.innerWidth - fromRect.width) / 2
   const targetTop = (window.innerHeight - fromRect.height) / 2
   const dx = targetLeft - fromRect.left
@@ -5668,9 +5688,6 @@ async function playResolutionCardPreview(order: GameState['actionQueue'][number]
     await waitForWebAnimation(shrink)
   } finally {
     clone.remove()
-    if (source.isConnected) {
-      source.style.visibility = previousVisibility
-    }
   }
 }
 
@@ -6527,6 +6544,9 @@ function render(): void {
   readyButton.disabled = !inPlanning || state.ready[planningPlayer] || roomPaused || disconnected || (inBotMode && botThinking)
   resolveNextButton.disabled = state.phase !== 'action' || isAnimating
   resolveAllButton.disabled = state.phase !== 'action' || isAnimating
+  const cardsCanReorder = inPlanning && !state.ready[planningPlayer] && !isBotPlanningLocked()
+  handEl.classList.toggle('reorder-enabled', cardsCanReorder)
+  ordersEl.classList.toggle('reorder-enabled', cardsCanReorder)
   resetGameButton.disabled = inOnlineMode
   scheduleProgressSave()
 }
@@ -7615,12 +7635,21 @@ function resolveNextActionAnimated(): void {
 
   clearOverlayClone()
   isAnimating = true
-  void playResolutionCardPreview(currentOrder)
+  const fromOrderRects = captureCardRects(ordersEl)
+  const previewPromise = playResolutionCardPreview(currentOrder)
+  resolvingOrderIdsHidden.add(currentOrder.id)
+  render()
+  applyDelayedReflow(ordersEl, fromOrderRects, 0, currentOrder.cardId)
+  void previewPromise
     .catch(() => {
       // Ignore preview animation failures and continue resolving.
     })
     .finally(() => {
-      runResolutionStep(currentOrder)
+      try {
+        runResolutionStep(currentOrder)
+      } finally {
+        resolvingOrderIdsHidden.delete(currentOrder.id)
+      }
     })
 }
 
