@@ -228,21 +228,29 @@ app.innerHTML = `
             <div id="planner-name" class="board-planner"></div>
             <div class="board-controls">
               <button id="switch-planner" class="btn ghost board-control-btn">Switch Player</button>
-              <button id="ready-btn" class="btn board-control-btn">Ready</button>
               <button id="resolve-next" class="btn ghost board-control-btn">Resolve Next</button>
               <button id="resolve-all" class="btn ghost board-control-btn">Resolve Turn</button>
             </div>
-            <div id="ready-anchor" class="ready-anchor"></div>
             <div id="planner-ap" class="planner-ap board-ap-rail"></div>
             <canvas id="board" aria-label="Game board"></canvas>
             <div id="unit-status-popover" class="unit-status-popover hidden" aria-live="polite"></div>
             <div class="hud">
               <div id="status">Select a card to start planning.</div>
               <div class="meta">
-                <span id="turn"></span>
-                <span id="active"></span>
-                <span id="counts"></span>
-                <span id="network-state"></span>
+                <div class="meta-phase">
+                  <span id="turn"></span>
+                  <span id="active"></span>
+                  <span id="network-state"></span>
+                </div>
+                <div id="planning-ready-slot" class="meta-ready-slot">
+                  <button id="ready-btn" class="btn board-control-btn">Ready</button>
+                </div>
+                <div id="counts" class="meta-counts">
+                  <span id="counts-deck-p1"></span>
+                  <span id="counts-deck-p2"></span>
+                  <span id="counts-discard-p1"></span>
+                  <span id="counts-discard-p2"></span>
+                </div>
               </div>
             </div>
           </section>
@@ -338,7 +346,11 @@ const plannerApEl = document.querySelector<HTMLDivElement>('#planner-ap')!
 const turnEl = document.querySelector<HTMLSpanElement>('#turn')!
 const activeEl = document.querySelector<HTMLSpanElement>('#active')!
 const logEl = document.querySelector<HTMLDivElement>('#log')!
-const countsEl = document.querySelector<HTMLSpanElement>('#counts')!
+const countsEl = document.querySelector<HTMLDivElement>('#counts')!
+const countsDeckP1El = document.querySelector<HTMLSpanElement>('#counts-deck-p1')!
+const countsDeckP2El = document.querySelector<HTMLSpanElement>('#counts-deck-p2')!
+const countsDiscardP1El = document.querySelector<HTMLSpanElement>('#counts-discard-p1')!
+const countsDiscardP2El = document.querySelector<HTMLSpanElement>('#counts-discard-p2')!
 const networkStateEl = document.querySelector<HTMLSpanElement>('#network-state')!
 const winnerModal = document.querySelector<HTMLDivElement>('#winner-modal')!
 const winnerTextEl = document.querySelector<HTMLDivElement>('#winner-text')!
@@ -355,7 +367,7 @@ const resolveNextButton = document.querySelector<HTMLButtonElement>('#resolve-ne
 const resolveAllButton = document.querySelector<HTMLButtonElement>('#resolve-all')!
 const resetGameButton = document.querySelector<HTMLButtonElement>('#reset-game')!
 const boardControlsEl = document.querySelector<HTMLDivElement>('.board-controls')!
-const readyAnchorEl = document.querySelector<HTMLDivElement>('#ready-anchor')!
+const planningReadySlotEl = document.querySelector<HTMLDivElement>('#planning-ready-slot')!
 const resolutionControlsEl = document.querySelector<HTMLDivElement>('#resolution-controls')!
 
 if (
@@ -412,6 +424,10 @@ if (
   !activeEl ||
   !logEl ||
   !countsEl ||
+  !countsDeckP1El ||
+  !countsDeckP2El ||
+  !countsDiscardP1El ||
+  !countsDiscardP2El ||
   !networkStateEl ||
   !winnerModal ||
   !winnerTextEl ||
@@ -432,7 +448,7 @@ if (
   !resolveAllButton ||
   !resetGameButton ||
   !boardControlsEl ||
-  !readyAnchorEl ||
+  !planningReadySlotEl ||
   !resolutionControlsEl
 ) {
   throw new Error('Action buttons missing')
@@ -6382,11 +6398,14 @@ function renderMeta(): void {
     (planningPlayer === 0 ? gameSettings.actionBudgetP1 : gameSettings.actionBudgetP2) ??
     3
   const counts = onlineSession?.viewMeta?.counts
-  if (mode === 'online' && counts) {
-    countsEl.textContent = `Deck P1: ${counts[0].deck} | Discard P1: ${counts[0].discard} | Deck P2: ${counts[1].deck} | Discard P2: ${counts[1].discard}`
-  } else {
-    countsEl.textContent = `Deck P1: ${state.players[0].deck.length} | Discard P1: ${state.players[0].discard.length} | Deck P2: ${state.players[1].deck.length} | Discard P2: ${state.players[1].discard.length}`
-  }
+  const deckP1 = mode === 'online' && counts ? counts[0].deck : state.players[0].deck.length
+  const deckP2 = mode === 'online' && counts ? counts[1].deck : state.players[1].deck.length
+  const discardP1 = mode === 'online' && counts ? counts[0].discard : state.players[0].discard.length
+  const discardP2 = mode === 'online' && counts ? counts[1].discard : state.players[1].discard.length
+  countsDeckP1El.textContent = `Deck P1: ${deckP1}`
+  countsDeckP2El.textContent = `Deck P2: ${deckP2}`
+  countsDiscardP1El.textContent = `Discard P1: ${discardP1}`
+  countsDiscardP2El.textContent = `Discard P2: ${discardP2}`
 
   if (mode === 'online' && onlineSession) {
     const deadline = onlineSession.presence.deadlineAt
@@ -6430,8 +6449,8 @@ function renderMeta(): void {
 }
 
 function syncPhaseControlPlacement(): void {
-  if (readyButton.parentElement !== readyAnchorEl) {
-    readyAnchorEl.appendChild(readyButton)
+  if (readyButton.parentElement !== planningReadySlotEl) {
+    planningReadySlotEl.appendChild(readyButton)
   }
   const inResolution = state.phase === 'action'
   const resolveParent = inResolution ? resolutionControlsEl : boardControlsEl

@@ -483,23 +483,13 @@ input[type='number'] {
   min-width: 132px;
 }
 
-.ready-anchor {
-  position: absolute;
-  left: 50%;
-  bottom: clamp(72px, 11%, 126px);
-  transform: translateX(-50%);
-  z-index: 6;
-  pointer-events: none;
-}
-
 #ready-btn {
-  min-width: 220px;
+  min-width: 154px;
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.5px;
   padding: 14px 26px;
   border-radius: 14px;
-  pointer-events: auto;
 }
 
 .board-ap-rail {
@@ -650,12 +640,15 @@ input[type='number'] {
 }
 
 .hud {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
   color: var(--muted);
   font-size: 14px;
+}
+
+#status {
+  min-width: 0;
 }
 
 .unit-status-popover {
@@ -733,9 +726,50 @@ input[type='number'] {
 }
 
 .meta {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.35fr);
   gap: 12px;
+  align-items: center;
   font-size: 13px;
+}
+
+.meta-phase {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+#turn,
+#active,
+#network-state {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#network-state {
+  font-size: 11px;
+}
+
+.meta-ready-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.meta-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.meta-counts > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .side-panel {
@@ -1705,12 +1739,8 @@ body.debug-cards .hidden-card {
     white-space: nowrap;
   }
 
-  .ready-anchor {
-    bottom: calc(44px + env(safe-area-inset-bottom));
-  }
-
   #ready-btn {
-    min-width: 170px;
+    min-width: 120px;
     font-size: 16px;
     padding: 10px 14px;
   }
@@ -1759,18 +1789,27 @@ body.debug-cards .hidden-card {
   .meta {
     width: 100%;
     font-size: 9px;
-    gap: 6px;
+    gap: 5px;
     display: grid;
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
   }
 
-  #counts {
-    min-width: 0;
+  .meta-phase {
+    gap: 2px;
+  }
+
+  #network-state {
+    font-size: 8px;
+  }
+
+  .meta-counts {
+    gap: 2px 6px;
+    font-size: 8px;
+  }
+
+  .meta-counts > span {
     text-align: right;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   #board {
