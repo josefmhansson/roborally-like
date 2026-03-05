@@ -482,6 +482,7 @@ type UnitSnapshot = {
   strength: number
   owner: PlayerId
   kind: Unit['kind']
+  roguelikeRole?: Unit['roguelikeRole']
   modifiers: Unit['modifiers']
 }
 type MoveAnimation = { type: 'move'; unitId: string; from: Hex; to: Hex; duration: number }
@@ -515,6 +516,7 @@ type AdjacentStrikeAnimation = { type: 'adjacentStrike'; origin: Hex; duration: 
 type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
 type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
+type StateSyncAnimation = { type: 'stateSync'; upToLogIndex: number; duration: 0 }
 type TeleportAnimation = {
   type: 'teleport'
   unitId: string
@@ -556,6 +558,7 @@ type BoardAnimation =
   | TrapTriggerAnimation
   | MeteorAnimation
   | ArrowAnimation
+  | StateSyncAnimation
   | TeleportAnimation
   | ChainLightningAnimation
   | SlimeLobAnimation
@@ -596,6 +599,9 @@ let autoResolve = false
 const pendingDeathUnits = new Map<string, Unit>()
 const unitAlphaOverrides = new Map<string, number>()
 const deathAlphaOverrides = new Map<string, number>()
+let animationRenderUnits: Record<string, Unit> | null = null
+let animationLogEntriesForSync: string[] = []
+let animationAppliedLogIndex = -1
 let isDraggingCardReorder = false
 let suppressNextOrderClick = false
 let suppressNextHandClick = false
@@ -2323,6 +2329,7 @@ function clearActionAnimationState(): void {
   pendingDeathUnits.clear()
   unitAlphaOverrides.clear()
   deathAlphaOverrides.clear()
+  clearAnimationBoardSync()
 }
 
 function clearOverlayTimers(): void {
@@ -4291,17 +4298,21 @@ function drawBoard(): void {
     drawPlannedMoves(state)
   }
 
-  for (const unit of Object.values(state.units)) {
-    if (currentAnimation?.type === 'harpoon' && currentAnimation.pulledUnit?.id === unit.id) {
-      continue
-    }
-    if (currentAnimation?.type === 'teleport' && currentAnimation.unitId === unit.id) {
-      continue
-    }
+  const boardUnits = animationRenderUnits ?? state.units
+  const drawableUnits = Object.values(boardUnits)
+    .filter((unit) => !(currentAnimation?.type === 'harpoon' && currentAnimation.pulledUnit?.id === unit.id))
+    .filter((unit) => !(currentAnimation?.type === 'teleport' && currentAnimation.unitId === unit.id))
+    .map((unit) => ({
+      unit,
+      center: getAnimatedCenter(unit),
+    }))
+    .sort((a, b) => a.center.y - b.center.y || a.center.x - b.center.x || a.unit.id.localeCompare(b.unit.id))
+
+  drawableUnits.forEach(({ unit, center }) => {
     const alphaOverride = unitAlphaOverrides.get(unit.id) ?? 1
-    if (alphaOverride <= 0) continue
-    drawUnit(unit, getAnimatedCenter(unit), alphaOverride)
-  }
+    if (alphaOverride <= 0) return
+    drawUnit(unit, center, alphaOverride)
+  })
 
   if (currentAnimation?.type === 'lightning') {
     drawLightningStrike(projectHex(currentAnimation.target), animationProgress)
@@ -6568,10 +6579,177 @@ function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
       strength: unit.strength,
       owner: unit.owner,
       kind: unit.kind,
+      roguelikeRole: unit.roguelikeRole,
       modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
   return snap
+}
+
+function cloneSnapshotUnit(snapshot: UnitSnapshot): Unit {
+  return {
+    id: snapshot.id,
+    owner: snapshot.owner,
+    kind: snapshot.kind,
+    strength: snapshot.strength,
+    pos: { ...snapshot.pos },
+    facing: snapshot.facing,
+    modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
+    roguelikeRole: snapshot.roguelikeRole,
+  }
+}
+
+function startAnimationBoardSync(before: Record<string, UnitSnapshot>, logEntries: string[]): void {
+  const units: Record<string, Unit> = {}
+  Object.values(before).forEach((snapshot) => {
+    units[snapshot.id] = cloneSnapshotUnit(snapshot)
+  })
+  animationRenderUnits = units
+  animationLogEntriesForSync = [...logEntries]
+  animationAppliedLogIndex = -1
+}
+
+function clearAnimationBoardSync(): void {
+  animationRenderUnits = null
+  animationLogEntriesForSync = []
+  animationAppliedLogIndex = -1
+}
+
+function parseModifierDuration(raw: string | undefined): number | 'indefinite' {
+  if (!raw) return 'indefinite'
+  const turns = Number(raw)
+  if (!Number.isFinite(turns)) return 'indefinite'
+  return Math.max(0, Math.floor(turns))
+}
+
+function applyAnimationBoardSyncUpTo(upToLogIndex: number): void {
+  if (!animationRenderUnits) return
+  if (animationLogEntriesForSync.length === 0) return
+  if (upToLogIndex <= animationAppliedLogIndex) return
+  const capped = Math.min(upToLogIndex, animationLogEntriesForSync.length - 1)
+  for (let index = animationAppliedLogIndex + 1; index <= capped; index += 1) {
+    const entry = animationLogEntriesForSync[index]
+    if (!entry) continue
+
+    const moveMatch = entry.match(/^Unit (.+) moves to (-?\d+),(-?\d+)\.$/)
+    if (moveMatch) {
+      const unit = animationRenderUnits[moveMatch[1]]
+      if (unit) {
+        unit.pos = { q: Number(moveMatch[2]), r: Number(moveMatch[3]) }
+      }
+      continue
+    }
+
+    const pushedMatch = entry.match(/^Unit (.+) is pushed to (-?\d+),(-?\d+)\.$/)
+    if (pushedMatch) {
+      const unit = animationRenderUnits[pushedMatch[1]]
+      if (unit) {
+        unit.pos = { q: Number(pushedMatch[2]), r: Number(pushedMatch[3]) }
+      }
+      continue
+    }
+
+    const pulledMatch = entry.match(/^Unit (.+) is pulled to (-?\d+),(-?\d+)\.$/)
+    if (pulledMatch) {
+      const unit = animationRenderUnits[pulledMatch[1]]
+      if (unit) {
+        unit.pos = { q: Number(pulledMatch[2]), r: Number(pulledMatch[3]) }
+      }
+      continue
+    }
+
+    const teleportMatch = entry.match(/^Unit (.+) teleports to (-?\d+),(-?\d+)\.$/)
+    if (teleportMatch) {
+      const unit = animationRenderUnits[teleportMatch[1]]
+      if (unit) {
+        unit.pos = { q: Number(teleportMatch[2]), r: Number(teleportMatch[3]) }
+      }
+      continue
+    }
+
+    const faceMatch = entry.match(/^Unit (.+) faces (\d+)\.$/)
+    if (faceMatch) {
+      const unit = animationRenderUnits[faceMatch[1]]
+      if (unit) {
+        unit.facing = Number(faceMatch[2]) as Direction
+      }
+      continue
+    }
+
+    const damageMatch = entry.match(/^Unit (.+) takes (\d+) damage\.$/)
+    if (damageMatch) {
+      const unit = animationRenderUnits[damageMatch[1]]
+      if (unit) {
+        unit.strength = Math.max(0, unit.strength - Number(damageMatch[2]))
+      }
+      continue
+    }
+
+    const gainMatch = entry.match(/^Unit (.+) gains (\d+) strength\.$/)
+    if (gainMatch) {
+      const unit = animationRenderUnits[gainMatch[1]]
+      if (unit) {
+        unit.strength += Number(gainMatch[2])
+      }
+      continue
+    }
+
+    const regenMatch = entry.match(/^Regeneration heals unit (.+) for (\d+)\.$/)
+    if (regenMatch) {
+      const unit = animationRenderUnits[regenMatch[1]]
+      if (unit) {
+        unit.strength += Number(regenMatch[2])
+      }
+      continue
+    }
+
+    const modifierMatch = entry.match(
+      /^Unit (.+) is affected: ([a-zA-Z]+) (?:for (\d+) turn\(s\)|indefinitely)(?: \(stacks: (\d+)\))?\.$/
+    )
+    if (modifierMatch) {
+      const unit = animationRenderUnits[modifierMatch[1]]
+      if (!unit) continue
+      const modifierType = modifierMatch[2] as Unit['modifiers'][number]['type']
+      const duration = parseModifierDuration(modifierMatch[3])
+      const stacks = modifierMatch[4] ? Math.max(1, Number(modifierMatch[4])) : null
+      if (stacks !== null && Number.isFinite(stacks)) {
+        unit.modifiers = unit.modifiers.filter((modifier) => modifier.type !== modifierType)
+        for (let i = 0; i < stacks; i += 1) {
+          unit.modifiers.push({ type: modifierType, turnsRemaining: duration })
+        }
+      } else {
+        const existing = unit.modifiers.find((modifier) => modifier.type === modifierType)
+        if (existing) {
+          existing.turnsRemaining = duration
+        } else {
+          unit.modifiers.push({ type: modifierType, turnsRemaining: duration })
+        }
+      }
+      continue
+    }
+
+    const clearAllModifiersMatch = entry.match(/^Unit (.+) has all modifiers removed\.$/)
+    if (clearAllModifiersMatch) {
+      const unit = animationRenderUnits[clearAllModifiersMatch[1]]
+      if (unit) {
+        unit.modifiers = []
+      }
+      continue
+    }
+
+    const destroyedMatch = entry.match(/^Unit (.+) is destroyed\.$/)
+    if (destroyedMatch) {
+      delete animationRenderUnits[destroyedMatch[1]]
+      continue
+    }
+
+    const executedMatch = entry.match(/^Unit (.+) is executed\.$/)
+    if (executedMatch) {
+      delete animationRenderUnits[executedMatch[1]]
+      continue
+    }
+  }
+  animationAppliedLogIndex = capped
 }
 
 function resolveUnitIdFromParams(
@@ -6770,9 +6948,9 @@ function parseSlimeSplitEvents(
   return splitEvents
 }
 
-function parseTrapTriggers(logEntries: string[]): { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] {
-  const triggers: { unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }[] = []
-  logEntries.forEach((entry) => {
+function parseTrapTriggers(logEntries: string[]): Array<{ index: number; unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }> {
+  const triggers: Array<{ index: number; unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }> = []
+  logEntries.forEach((entry, index) => {
     const match = entry.match(/^Unit (.+) triggers a (pitfall|explosive) trap(?: at (-?\d+),(-?\d+))?\.$/)
     if (!match) return
     const trapKind = match[2] as 'pitfall' | 'explosive'
@@ -6780,7 +6958,7 @@ function parseTrapTriggers(logEntries: string[]): { unitId: string; trapKind: 'p
       match[3] !== undefined && match[4] !== undefined
         ? { q: Number(match[3]), r: Number(match[4]) }
         : undefined
-    triggers.push({ unitId: match[1], trapKind, tile })
+    triggers.push({ index, unitId: match[1], trapKind, tile })
   })
   return triggers
 }
@@ -6858,6 +7036,12 @@ function buildAnimations(
   const destroyedEvents = parseDestroyedUnits(logEntries)
   const destroyedUnitIds = new Set(destroyedEvents.map((event) => event.unitId))
   const trapTriggers = parseTrapTriggers(logEntries)
+  const trapTriggerCountByUnit = new Map<string, number>()
+  trapTriggers.forEach((trigger) => {
+    trapTriggerCountByUnit.set(trigger.unitId, (trapTriggerCountByUnit.get(trigger.unitId) ?? 0) + 1)
+  })
+  const queuedTrapTriggerCountByUnit = new Map<string, number>()
+  const deferredDestroyedByUnit = new Map<string, { index: number; unitId: string }[]>()
   const shoveCollisions = parseShoveCollisions(logEntries)
   const slimeSplitEvents = parseSlimeSplitEvents(logEntries)
   const animatedPositions = new Map<string, Hex>()
@@ -6865,6 +7049,20 @@ function buildAnimations(
   const destroyedAnimated = new Set<string>()
   let destroyedCursor = 0
   let lastConsumedLogIndex = -1
+  let lastQueuedSyncLogIndex = -1
+
+  const queueStateSync = (upToLogIndex: number): void => {
+    if (logEntries.length === 0) return
+    const capped = Math.min(upToLogIndex, logEntries.length - 1)
+    if (capped < 0) return
+    if (capped <= lastQueuedSyncLogIndex) return
+    animations.push({
+      type: 'stateSync',
+      upToLogIndex: capped,
+      duration: 0,
+    })
+    lastQueuedSyncLogIndex = capped
+  }
 
   const consumeLoggedMove = (unitId: string): { index: number; pos: Hex } | null => {
     const queue = loggedMoveEvents.get(unitId)
@@ -6887,31 +7085,56 @@ function buildAnimations(
     return next
   }
 
+  const enqueueDestroyedEvent = (event: { index: number; unitId: string }): void => {
+    if (destroyedAnimated.has(event.unitId)) return
+    if (state.units[event.unitId]) return
+    const snapshot = before[event.unitId] ?? spawnedFallbackSnapshots.get(event.unitId)
+    if (!snapshot) return
+    const deathPos = animatedPositions.get(event.unitId) ?? loggedPositions.get(event.unitId) ?? snapshot.pos
+    pendingDeathUnits.set(event.unitId, {
+      id: event.unitId,
+      owner: snapshot.owner,
+      kind: snapshot.kind,
+      strength: snapshot.strength,
+      pos: { ...deathPos },
+      facing: snapshot.facing,
+      modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
+    })
+    deathAlphaOverrides.set(event.unitId, 1)
+    queueStateSync(event.index)
+    animations.push({
+      type: 'death',
+      unit: pendingDeathUnits.get(event.unitId)!,
+      duration: DEATH_DURATION_MS,
+    })
+    destroyedAnimated.add(event.unitId)
+  }
+
+  const flushDeferredDestroyedForUnit = (unitId: string): void => {
+    const trapCount = trapTriggerCountByUnit.get(unitId) ?? 0
+    if (trapCount === 0) return
+    const queuedCount = queuedTrapTriggerCountByUnit.get(unitId) ?? 0
+    if (queuedCount < trapCount) return
+    const deferred = deferredDestroyedByUnit.get(unitId)
+    if (!deferred || deferred.length === 0) return
+    deferred.sort((a, b) => a.index - b.index).forEach((event) => enqueueDestroyedEvent(event))
+    deferredDestroyedByUnit.delete(unitId)
+  }
+
   const enqueueDestroyedUpTo = (maxLogIndex: number): void => {
     while (destroyedCursor < destroyedEvents.length && destroyedEvents[destroyedCursor].index <= maxLogIndex) {
       const event = destroyedEvents[destroyedCursor]
       destroyedCursor += 1
       if (destroyedAnimated.has(event.unitId)) continue
-      if (state.units[event.unitId]) continue
-      const snapshot = before[event.unitId] ?? spawnedFallbackSnapshots.get(event.unitId)
-      if (!snapshot) continue
-      const deathPos = animatedPositions.get(event.unitId) ?? loggedPositions.get(event.unitId) ?? snapshot.pos
-      pendingDeathUnits.set(event.unitId, {
-        id: event.unitId,
-        owner: snapshot.owner,
-        kind: snapshot.kind,
-        strength: snapshot.strength,
-        pos: { ...deathPos },
-        facing: snapshot.facing,
-        modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
-      })
-      deathAlphaOverrides.set(event.unitId, 1)
-      animations.push({
-        type: 'death',
-        unit: pendingDeathUnits.get(event.unitId)!,
-        duration: DEATH_DURATION_MS,
-      })
-      destroyedAnimated.add(event.unitId)
+      const trapCount = trapTriggerCountByUnit.get(event.unitId) ?? 0
+      const queuedCount = queuedTrapTriggerCountByUnit.get(event.unitId) ?? 0
+      if (trapCount > queuedCount) {
+        const deferred = deferredDestroyedByUnit.get(event.unitId) ?? []
+        deferred.push(event)
+        deferredDestroyedByUnit.set(event.unitId, deferred)
+        continue
+      }
+      enqueueDestroyedEvent(event)
     }
   }
 
@@ -6999,6 +7222,11 @@ function buildAnimations(
         duration: MOVE_DURATION_MS,
       })
       animatedPositions.set(resolvedId, { ...destination })
+      if (consumedMove) {
+        queueStateSync(consumedMove.index)
+      } else if (consumedMoveAttempt?.moved) {
+        queueStateSync(consumedMoveAttempt.index)
+      }
     }
 
     if (effect.type === 'moveAdjacentFriendlyGroup' && order.defId === 'move_tandem') {
@@ -7007,12 +7235,13 @@ function buildAnimations(
         if (entries.length === 0) return
         const beforeUnit = before[unitId]
         if (!beforeUnit) return
+        const from = animatedPositions.get(unitId) ?? beforeUnit.pos
         const [firstMove] = entries.splice(0, 1)
         if (!firstMove) return
-        if (beforeUnit.pos.q === firstMove.pos.q && beforeUnit.pos.r === firstMove.pos.r) return
+        if (from.q === firstMove.pos.q && from.r === firstMove.pos.r) return
         formationMoves.push({
           unitId,
-          from: { ...beforeUnit.pos },
+          from: { ...from },
           to: { ...firstMove.pos },
           index: firstMove.index,
         })
@@ -7029,6 +7258,7 @@ function buildAnimations(
         formationMoves.forEach((move) => {
           animatedPositions.set(move.unitId, { ...move.to })
         })
+        queueStateSync(formationMoves[formationMoves.length - 1].index)
       }
       continue
     }
@@ -7055,6 +7285,7 @@ function buildAnimations(
           })
           animatedPositions.set(resolvedId, { ...destination })
         }
+        queueStateSync(consumedMoveAttempt.index)
       }
 
       const actorAfter = state.units[resolvedId]
@@ -7149,6 +7380,10 @@ function buildAnimations(
             duration: LUNGE_DURATION_MS,
           })
         })
+        const stageSyncIndex =
+          nextMoveIndex !== Number.MAX_SAFE_INTEGER ? nextMoveIndex - 1 : logEntries.length - 1
+        queueStateSync(stageSyncIndex)
+        enqueueDestroyedUpTo(stageSyncIndex)
         if (nextMoveIndex !== Number.MAX_SAFE_INTEGER) {
           lastConsumedLogIndex = Math.max(lastConsumedLogIndex, nextMoveIndex - 1)
         } else {
@@ -7341,6 +7576,7 @@ function buildAnimations(
             collision: true,
             duration: SHOVE_DURATION_MS,
           })
+          queueStateSync(collision.index)
         }
         continue
       }
@@ -7439,6 +7675,9 @@ function buildAnimations(
       trapKind: trigger.trapKind,
       duration: TRAP_TRIGGER_DURATION_MS,
     })
+    queueStateSync(trigger.index)
+    queuedTrapTriggerCountByUnit.set(trigger.unitId, (queuedTrapTriggerCountByUnit.get(trigger.unitId) ?? 0) + 1)
+    flushDeferredDestroyedForUnit(trigger.unitId)
   })
 
   parseBurnDamageTargets(logEntries).forEach((unitId) => {
@@ -7487,6 +7726,7 @@ function buildAnimations(
       arcs: group.arcs.map((arc) => ({ from: { ...arc.from }, to: { ...arc.to } })),
       duration: SLIME_LOB_DURATION_MS,
     })
+    queueStateSync(group.index)
     group.spawnedUnitIds.forEach((unitId) => {
       unitAlphaOverrides.set(unitId, 0)
       animations.push({
@@ -7531,7 +7771,12 @@ function buildAnimations(
     })
   })
 
+  queueStateSync(Number.MAX_SAFE_INTEGER)
   enqueueDestroyedUpTo(Number.MAX_SAFE_INTEGER)
+  deferredDestroyedByUnit.forEach((events) => {
+    events.sort((a, b) => a.index - b.index).forEach((event) => enqueueDestroyedEvent(event))
+  })
+  deferredDestroyedByUnit.clear()
 
   return animations
 }
@@ -7562,9 +7807,11 @@ function tickAnimation(time: number): void {
 }
 
 function runNextAnimation(): void {
-  currentAnimation = animationQueue.shift() ?? null
-  if (!currentAnimation) {
+  const nextAnimation = animationQueue.shift() ?? null
+  if (!nextAnimation) {
+    currentAnimation = null
     isAnimating = false
+    clearAnimationBoardSync()
     if (autoResolve && state.phase === 'action') {
       requestAnimationFrame(() => resolveNextActionAnimated())
       return
@@ -7572,6 +7819,23 @@ function runNextAnimation(): void {
     finalizeOnlineResolutionReplay()
     render()
     return
+  }
+  if (nextAnimation.type === 'stateSync') {
+    applyAnimationBoardSyncUpTo(nextAnimation.upToLogIndex)
+    renderBoardOnly()
+    runNextAnimation()
+    return
+  }
+  currentAnimation = nextAnimation
+  if (currentAnimation.type === 'spawn' && animationRenderUnits && !animationRenderUnits[currentAnimation.unitId]) {
+    const source = state.units[currentAnimation.unitId] ?? pendingDeathUnits.get(currentAnimation.unitId)
+    if (source) {
+      animationRenderUnits[currentAnimation.unitId] = {
+        ...source,
+        pos: { ...source.pos },
+        modifiers: source.modifiers.map((modifier) => ({ ...modifier })),
+      }
+    }
   }
   isAnimating = true
   animationProgress = 0
@@ -7607,13 +7871,16 @@ function resolveNextActionAnimated(): void {
         if (!currentAnimation) runNextAnimation()
         return
       }
+      clearAnimationBoardSync()
       isAnimating = false
       finalizeOnlineResolutionReplay()
       render()
       return
     }
-    const animations = buildAnimations(order, before, state.log.slice(logStart))
+    const orderLogs = state.log.slice(logStart)
+    const animations = buildAnimations(order, before, orderLogs)
     if (animations.length === 0) {
+      clearAnimationBoardSync()
       isAnimating = false
       finalizeOnlineResolutionReplay()
       render()
@@ -7622,6 +7889,7 @@ function resolveNextActionAnimated(): void {
       }
       return
     }
+    startAnimationBoardSync(before, orderLogs)
     animationQueue.push(...animations)
     if (!currentAnimation) {
       runNextAnimation()

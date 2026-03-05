@@ -335,6 +335,51 @@ test('pitfall trap triggers on movement, deals 2 damage, snares, and stops movem
   assert.equal(state.traps.length, 0)
 })
 
+test('pitfall trap triggers on friendly movement by default', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['spell_pitfall_trap', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['friendly-trap-anchor'] = {
+    id: 'friendly-trap-anchor',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['friendly-trap-target'] = {
+    id: 'friendly-trap-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const trapTile = { q: 3, r: 2 }
+  const trapCardId = findCardId(state, 0, 'spell_pitfall_trap')
+  const moveCardId = findCardId(state, 0, 'move_any')
+  assert.ok(planOrder(state, 0, trapCardId, { tile: trapTile }))
+  assert.ok(planOrder(state, 0, moveCardId, { unitId: 'friendly-trap-target', direction: 0, distance: 3 }))
+
+  readyAndResolve(state)
+
+  const moved = state.units['friendly-trap-target']
+  assert.ok(moved)
+  assert.deepEqual(moved.pos, trapTile)
+  assert.equal(moved.strength, 2)
+  const snared = moved.modifiers.find((modifier) => modifier.type === 'cannotMove')
+  assert.ok(snared)
+  assert.equal(snared.turnsRemaining, 1)
+  assert.equal(state.traps.length, 0)
+})
+
 test('planning ignores hidden enemy trap effects for follow-up orders', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -915,6 +960,61 @@ test('tandem movement lets leader units follow after adjacent allies move away',
 
   assert.deepEqual(state.units['stronghold-0']?.pos, { q: 3, r: 2 })
   assert.deepEqual(state.units['tm-front']?.pos, { q: 5, r: 2 })
+})
+
+test('tandem movement does not pass through a non-participant blocker', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_tandem'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['tm-main'] = {
+    id: 'tm-main',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['tm-front'] = {
+    id: 'tm-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['tm-back'] = {
+    id: 'tm-back',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['tm-blocker'] = {
+    id: 'tm-blocker',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 5, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_tandem')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'tm-main', direction: 0, distance: 3 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['tm-front']?.pos, { q: 4, r: 2 })
+  assert.deepEqual(state.units['tm-main']?.pos, { q: 3, r: 2 })
+  assert.deepEqual(state.units['tm-back']?.pos, { q: 2, r: 2 })
+  assert.deepEqual(state.units['tm-blocker']?.pos, { q: 5, r: 2 })
 })
 
 test('trip prevents movement for two turns', () => {

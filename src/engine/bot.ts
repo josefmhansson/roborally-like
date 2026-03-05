@@ -583,15 +583,19 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
 
   const ownUnits = Object.values(projected.units).filter((unit) => unit.owner === player && unit.kind === 'unit')
   const enemyUnits = Object.values(projected.units).filter((unit) => unit.owner === opponent && unit.kind === 'unit')
+  const ownCombatants = Object.values(projected.units).filter((unit) => unit.owner === player && isCombatUnit(unit))
+  const enemyCombatants = Object.values(projected.units).filter((unit) => unit.owner === opponent && isCombatUnit(unit))
   const ownStrength = ownUnits.reduce((sum, unit) => sum + unit.strength, 0)
   const enemyStrength = enemyUnits.reduce((sum, unit) => sum + unit.strength, 0)
 
   const strongholdDelta = ownStrongholdStrength - enemyStrongholdStrength
   const unitStrengthDelta = ownStrength - enemyStrength
   const unitCountDelta = ownUnits.length - enemyUnits.length
-  const pressureDelta = eliminateUnitsMode ? 0 : computePressureDelta(projected, player, ownUnits, enemyUnits)
-  const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownUnits, enemyUnits)
-  const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownUnits, enemyUnits)
+  const pressureDelta = eliminateUnitsMode
+    ? computeEliminationPressureDelta(ownUnits, enemyUnits)
+    : computePressureDelta(projected, player, ownUnits, enemyUnits)
+  const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownCombatants, enemyCombatants)
+  const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownCombatants, enemyCombatants)
   const chainLightningOpportunity = computeChainLightningPlanningBonus(state, projected, player)
 
   const score =
@@ -630,6 +634,26 @@ function computePressureDelta(
   return ownPressure - enemyPressure
 }
 
+function computeEliminationPressureDelta(ownUnits: Unit[], enemyUnits: Unit[]): number {
+  if (ownUnits.length === 0 || enemyUnits.length === 0) return 0
+
+  const ownPressure = ownUnits.reduce((sum, unit) => {
+    const nearestEnemyDistance = enemyUnits.reduce((nearest, enemy) => {
+      return Math.min(nearest, hexDistance(unit.pos, enemy.pos))
+    }, Number.MAX_SAFE_INTEGER)
+    return sum + Math.max(0, BOT_HEURISTICS.pressure.distancePressureWindow - nearestEnemyDistance)
+  }, 0)
+
+  const enemyPressure = enemyUnits.reduce((sum, unit) => {
+    const nearestOwnDistance = ownUnits.reduce((nearest, own) => {
+      return Math.min(nearest, hexDistance(unit.pos, own.pos))
+    }, Number.MAX_SAFE_INTEGER)
+    return sum + Math.max(0, BOT_HEURISTICS.pressure.distancePressureWindow - nearestOwnDistance)
+  }, 0)
+
+  return ownPressure - enemyPressure
+}
+
 function computeImmediateTacticalDelta(
   state: GameState,
   player: PlayerId,
@@ -659,6 +683,7 @@ function computeOpponentHistoryRisk(
   ownUnits: Unit[],
   enemyUnits: Unit[]
 ): number {
+  if (state.settings.victoryCondition === 'eliminate_units') return 0
   if (ownUnits.length === 0 || enemyUnits.length === 0) return 0
   const opponent: PlayerId = player === 0 ? 1 : 0
   const revealed = state.players[opponent].discard
@@ -670,7 +695,7 @@ function computeOpponentHistoryRisk(
 
   const rayExposure = enemyUnits.reduce((sum, unit) => {
     const first = firstUnitInFacingRay(state, unit)
-    if (!first || first.owner !== player || first.kind !== 'unit') return sum
+    if (!first || first.owner !== player || !isCombatUnit(first)) return sum
     return sum + 1
   }, 0)
 
@@ -890,7 +915,7 @@ function countAdjacentEnemies(state: GameState, origin: Hex, enemy: PlayerId): n
   let count = 0
   DIRECTIONS.forEach((direction) => {
     const target = getUnitAt(state, neighbor(origin, direction))
-    if (!target || target.owner !== enemy || target.kind !== 'unit') return
+    if (!target || target.owner !== enemy || !isCombatUnit(target)) return
     count += 1
   })
   return count
@@ -931,10 +956,14 @@ function countAdjacentFriendlies(state: GameState, origin: Hex, owner: PlayerId)
   let count = 0
   DIRECTIONS.forEach((direction) => {
     const target = getUnitAt(state, neighbor(origin, direction))
-    if (!target || target.owner !== owner || target.kind !== 'unit') return
+    if (!target || target.owner !== owner || !isCombatUnit(target)) return
     count += 1
   })
   return count
+}
+
+function isCombatUnit(unit: Unit): boolean {
+  return unit.kind === 'unit' || unit.kind === 'leader'
 }
 
 function deterministicJitter(state: GameState, player: PlayerId): number {

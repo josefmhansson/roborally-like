@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CARD_DEFS } from '../../src/engine/cards'
 import { buildBotPlan } from '../../src/engine/bot'
-import { createGameState, planOrder } from '../../src/engine/game'
+import { DEFAULT_SETTINGS, createGameState, planOrder } from '../../src/engine/game'
 import type { GameState } from '../../src/engine/types'
 
 function cloneState<T>(value: T): T {
@@ -232,4 +232,95 @@ test('bot uses chain lightning when clustered fragile targets make it high value
 
   const result = buildBotPlan(state, 1, { thinkTimeMs: 250 })
   assert.deepEqual(result.orders.map((order) => order.cardId), ['bot-chain-high'])
+})
+
+test('bot advances toward enemy units in eliminate-units mode', () => {
+  const settings = { ...DEFAULT_SETTINGS, victoryCondition: 'eliminate_units', deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  state.phase = 'planning'
+  state.winner = null
+  state.ready = [false, false]
+  state.players[0].orders = []
+  state.players[1].orders = []
+  state.players[1].deck = []
+  state.players[1].discard = []
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-move', defId: 'move_any' }]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-runner'] = {
+    id: 'bot-runner',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-front'] = {
+    id: 'enemy-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 300 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-move')
+  assert.equal(result.orders[0]?.params.unitId, 'bot-runner')
+  assert.equal(result.orders[0]?.params.direction, 0)
+})
+
+test('bot prefers immediate attack over movement in eliminate-units mode', () => {
+  const settings = { ...DEFAULT_SETTINGS, victoryCondition: 'eliminate_units', deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: ['attack_jab', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  state.phase = 'planning'
+  state.winner = null
+  state.ready = [false, false]
+  state.players[0].orders = []
+  state.players[1].orders = []
+  state.players[1].deck = []
+  state.players[1].discard = []
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [
+    { id: 'bot-attack', defId: 'attack_jab' },
+    { id: 'bot-move', defId: 'move_any' },
+  ]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-attacker'] = {
+    id: 'bot-attacker',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-target'] = {
+    id: 'enemy-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 300 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-attack')
+  assert.equal(result.orders[0]?.params.unitId, 'bot-attacker')
+  assert.equal(result.orders[0]?.params.direction, 0)
 })

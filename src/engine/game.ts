@@ -1475,7 +1475,7 @@ function applyDamage(
 function triggerTrapAtCurrentTile(state: GameState, unit: Unit): { stopMovement: boolean } {
   if (state.phase !== 'action') return { stopMovement: false }
   if (!canTriggerTraps(unit)) return { stopMovement: false }
-  const trapIndex = state.traps.findIndex((trap) => sameHex(trap.pos, unit.pos) && trap.owner !== unit.owner)
+  const trapIndex = state.traps.findIndex((trap) => sameHex(trap.pos, unit.pos))
   if (trapIndex === -1) return { stopMovement: false }
 
   const [trap] = state.traps.splice(trapIndex, 1)
