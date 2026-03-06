@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { CARD_DEFS } from '../../src/engine/cards'
 import { buildBotPlan } from '../../src/engine/bot'
 import { DEFAULT_SETTINGS, createGameState, planOrder } from '../../src/engine/game'
+import { neighbor } from '../../src/engine/hex'
 import type { GameState } from '../../src/engine/types'
 
 function cloneState<T>(value: T): T {
@@ -197,7 +198,7 @@ test('bot can skip low-opportunity chain lightning', () => {
   assert.equal(result.orders.length, 0)
 })
 
-test('bot uses chain lightning when clustered fragile targets make it high value', () => {
+test('bot uses chain lightning when clustered 2-hp targets make it high value', () => {
   const state = setupBotPlanningState()
   state.actionBudgets = [3, 1]
   state.players[1].hand = [{ id: 'bot-chain-high', defId: 'attack_chain_lightning' }]
@@ -215,7 +216,7 @@ test('bot uses chain lightning when clustered fragile targets make it high value
     id: 'enemy-fragile-a',
     owner: 0,
     kind: 'unit',
-    strength: 1,
+    strength: 2,
     pos: { q: 3, r: 2 },
     facing: 0,
     modifiers: [],
@@ -224,7 +225,7 @@ test('bot uses chain lightning when clustered fragile targets make it high value
     id: 'enemy-fragile-b',
     owner: 0,
     kind: 'unit',
-    strength: 1,
+    strength: 2,
     pos: { q: 3, r: 1 },
     facing: 0,
     modifiers: [],
@@ -323,4 +324,102 @@ test('bot prefers immediate attack over movement in eliminate-units mode', () =>
   assert.equal(result.orders[0]?.cardId, 'bot-attack')
   assert.equal(result.orders[0]?.params.unitId, 'bot-attacker')
   assert.equal(result.orders[0]?.params.direction, 0)
+})
+
+test('slime bot prefers enemy target over adjacent ally for roguelike slow attack', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-slow', defId: 'attack_roguelike_slow' }]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-slime'] = {
+    id: 'bot-slime',
+    owner: 1,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'slime_grand',
+  }
+  state.units['ally-front'] = {
+    id: 'ally-front',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'slime_mid',
+  }
+  state.units['enemy-back'] = {
+    id: 'enemy-back',
+    owner: 0,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 300 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-slow')
+  assert.equal(result.orders[0]?.params.unitId, 'bot-slime')
+  assert.equal(result.orders[0]?.params.direction, 3)
+})
+
+test('slime bot avoids deliberate ally hit with pack hunt', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-pack', defId: 'attack_roguelike_pack_hunt' }]
+
+  clearNonLeaderUnits(state)
+  const allyTargetTile = { q: 3, r: 2 }
+  state.units['bot-pack-hunter'] = {
+    id: 'bot-pack-hunter',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: neighbor(allyTargetTile, 3),
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'slime_grand',
+  }
+  state.units['ally-pack-target'] = {
+    id: 'ally-pack-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 6,
+    pos: { ...allyTargetTile },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'slime_grand',
+  }
+  state.units['ally-pack-a'] = {
+    id: 'ally-pack-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: neighbor(allyTargetTile, 1),
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['ally-pack-b'] = {
+    id: 'ally-pack-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: neighbor(allyTargetTile, 5),
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 300 })
+  if (result.orders.length === 0) {
+    assert.equal(result.orders.length, 0)
+    return
+  }
+  assert.equal(result.orders[0]?.cardId, 'bot-pack')
+  assert.notEqual(result.orders[0]?.params.direction, 0)
 })

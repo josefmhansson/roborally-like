@@ -329,7 +329,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     id: 'attack_chain_lightning',
     name: 'Chain Lightning',
     description:
-      'Deal 1 damage to a random adjacent unit, then jump to random adjacent units until no new targets remain.',
+      'Deal 2 damage to a random adjacent unit, then jump to random adjacent units until no new targets remain.',
     type: 'attack',
     classId: 'archmage',
     actionCost: 1,
@@ -338,7 +338,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       {
         type: 'chainLightning',
         unitParam: 'unitId',
-        damage: 1,
+        damage: 2,
       },
     ],
   },

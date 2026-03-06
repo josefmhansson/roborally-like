@@ -635,9 +635,9 @@ test('chain lightning jumps across adjacent unique units and never hits the orig
   readyAndResolve(state)
 
   assert.equal(state.units['cl-user']?.strength, 4)
-  assert.equal(state.units['cl-a']?.strength, 2)
-  assert.equal(state.units['cl-b']?.strength, 2)
-  assert.equal(state.units['cl-c']?.strength, 2)
+  assert.equal(state.units['cl-a']?.strength, 1)
+  assert.equal(state.units['cl-b']?.strength, 1)
+  assert.equal(state.units['cl-c']?.strength, 1)
 })
 
 test('battlefield recruitment spawns a 1-strength unit adjacent to a friendly unit', () => {
@@ -2070,13 +2070,66 @@ test('destroyed slimes split into two smaller scaled slimes', () => {
   const children = Object.values(state.units).filter((unit) => unit.owner === 1 && unit.roguelikeRole === 'slime_mid')
   assert.equal(children.length, 2)
   children.forEach((child) => {
-    assert.equal(child.strength, 3 + Math.floor(matchNumber / 2))
+    assert.equal(child.strength, 3 + Math.floor(matchNumber / 4))
   })
   assert.equal(
     state.log.filter((entry) => entry.startsWith('Slime split: slime-grand lobs from ')).length,
     2
   )
   assert.equal(state.winner, null)
+})
+
+test('slime split spawn tiles stay deterministic across repeated identical resolutions', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'slimes' as const,
+    roguelikeMatchNumber: 9,
+  }
+  const baseState = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(baseState)
+  baseState.units['split-user'] = {
+    id: 'split-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 2, r: 3 },
+    facing: 0,
+    modifiers: [],
+  }
+  baseState.units['slime-grand'] = {
+    id: 'slime-grand',
+    owner: 1,
+    kind: 'unit',
+    strength: 1,
+    pos: { q: 3, r: 3 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'slime_grand',
+  }
+
+  const outcomes = new Set<string>()
+  for (let i = 0; i < 10; i += 1) {
+    const state = JSON.parse(JSON.stringify(baseState)) as GameState
+    const cardId = findCardId(state, 0, 'attack_execute')
+    assert.ok(planOrder(state, 0, cardId, { unitId: 'split-user' }))
+    readyAndResolve(state)
+
+    const childTiles = Object.values(state.units)
+      .filter((unit) => unit.owner === 1 && unit.roguelikeRole === 'slime_mid')
+      .map((unit) => `${unit.pos.q},${unit.pos.r}`)
+      .sort()
+    assert.equal(childTiles.length, 2)
+    outcomes.add(childTiles.join('|'))
+  }
+
+  assert.equal(outcomes.size, 1)
 })
 
 test('stomp stuns adjacent enemies and blocks their later orders this turn', () => {

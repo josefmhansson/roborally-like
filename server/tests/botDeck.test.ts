@@ -107,3 +107,31 @@ test('bot deck generator respects class-specific card pools when class is provid
     )
   })
 })
+
+test('bot deck generator upweights class-specific cards for the selected class', () => {
+  const classId = 'archmage'
+  const allowedPool = (Object.keys(CARD_DEFS) as CardDefId[]).filter(
+    (cardId) => cardId !== 'reinforce_spawn' && isCardAllowedForClass(cardId, classId)
+  )
+  const classSpecificPool = allowedPool.filter((cardId) => CARD_DEFS[cardId].classId === classId)
+  const baselineShare = classSpecificPool.length / allowedPool.length
+
+  let classSpecificCopies = 0
+  let nonRecruitCopies = 0
+  for (let run = 0; run < 180; run += 1) {
+    const deck = generateClusteredBotDeck({ deckSize: 18, maxCopies: 3 }, { classId })
+    deck.forEach((cardId) => {
+      if (cardId === 'reinforce_spawn') return
+      nonRecruitCopies += 1
+      if (CARD_DEFS[cardId].classId === classId) {
+        classSpecificCopies += 1
+      }
+    })
+  }
+
+  const observedShare = classSpecificCopies / nonRecruitCopies
+  assert.ok(
+    observedShare > baselineShare + 0.015,
+    `expected class-specific share above baseline (${observedShare.toFixed(3)} vs ${baselineShare.toFixed(3)})`
+  )
+})

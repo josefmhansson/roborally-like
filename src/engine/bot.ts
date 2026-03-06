@@ -53,6 +53,7 @@ export const BOT_HEURISTICS = {
     tacticalDeltaWeight: 10,
     opponentHistoryRiskWeight: -14,
     chainLightningOpportunityWeight: 12,
+    queueTimingRiskWeight: -18,
   },
   pressure: {
     distancePressureWindow: 10,
@@ -88,6 +89,11 @@ export const BOT_HEURISTICS = {
     guaranteedReachableTargets: 4,
     guaranteedFragileTargets: 2,
     isolatedDurableChanceScale: 0.35,
+  },
+  timing: {
+    lateOrderIndexRisk: 0.18,
+    slowTailExtraRisk: 0.95,
+    priorityRiskScale: 0.7,
   },
 } as const
 
@@ -427,14 +433,36 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   }
 
   if (
+    defId === 'attack_roguelike_basic' ||
+    defId === 'attack_roguelike_slow' ||
+    defId === 'attack_roguelike_pack_hunt'
+  ) {
+    refs.forEach((ref) => {
+      const candidates: { params: OrderParams; hitsEnemy: boolean }[] = []
+      DIRECTIONS.forEach((direction) => {
+        const target = getDirectionalAttackTarget(projected, ref.snapshot, defId, direction)
+        if (target && target.owner === player) return
+        candidates.push({
+          params: { unitId: ref.refId, direction },
+          hitsEnemy: Boolean(target && target.owner !== player),
+        })
+      })
+
+      if (candidates.length === 0) return
+      const preferred = candidates.some((candidate) => candidate.hitsEnemy)
+        ? candidates.filter((candidate) => candidate.hitsEnemy)
+        : candidates
+      preferred.forEach((candidate) => params.push(candidate.params))
+    })
+    return params
+  }
+
+  if (
     defId === 'attack_fwd' ||
     defId === 'attack_jab' ||
     defId === 'attack_shove' ||
     defId === 'attack_disarm' ||
-    defId === 'attack_bleed' ||
-    defId === 'attack_roguelike_basic' ||
-    defId === 'attack_roguelike_slow' ||
-    defId === 'attack_roguelike_pack_hunt'
+    defId === 'attack_bleed'
   ) {
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
@@ -511,6 +539,18 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
 
 function getTargetableUnitsForCard(state: GameState, defId: CardDefId): Unit[] {
   return Object.values(state.units).filter((unit) => canCardTargetUnit(defId, unit))
+}
+
+function getDirectionalAttackTarget(state: GameState, unit: Unit, defId: CardDefId, direction: Direction): Unit | null {
+  if (defId === 'attack_roguelike_pack_hunt') {
+    const moveEnd = projectMoveEnd(state, unit, direction, 1)
+    const targetHex = neighbor(moveEnd, direction)
+    if (!inBounds(state, targetHex)) return null
+    return getUnitAt(state, targetHex)
+  }
+  const targetHex = neighbor(unit.pos, direction)
+  if (!inBounds(state, targetHex)) return null
+  return getUnitAt(state, targetHex)
 }
 
 function addHexCandidate(map: Map<string, Hex>, hex: Hex): void {
@@ -597,6 +637,7 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
   const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownCombatants, enemyCombatants)
   const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownCombatants, enemyCombatants)
   const chainLightningOpportunity = computeChainLightningPlanningBonus(state, projected, player)
+  const queueTimingRisk = computeQueueTimingRisk(state, player)
 
   const score =
     strongholdDelta * BOT_HEURISTICS.scoring.strongholdDeltaWeight +
@@ -606,6 +647,7 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
     tacticalDelta * BOT_HEURISTICS.scoring.tacticalDeltaWeight +
     opponentHistoryRisk * BOT_HEURISTICS.scoring.opponentHistoryRiskWeight +
     chainLightningOpportunity * BOT_HEURISTICS.scoring.chainLightningOpportunityWeight +
+    queueTimingRisk * BOT_HEURISTICS.scoring.queueTimingRiskWeight +
     deterministicJitter(state, player)
 
   evaluationCache?.set(cacheKey, score)
@@ -850,7 +892,7 @@ function evaluateChainLightningOpportunity(
   visited.forEach((targetId) => {
     const target = state.units[targetId]
     if (!target) return
-    if (target.strength <= 1) fragileTargets += 1
+    if (target.strength <= 2) fragileTargets += 1
     if (target.kind === 'leader') leaderTargets += 1
   })
 
@@ -899,6 +941,70 @@ function computeChainLightningOpportunityValue(opportunity: ChainLightningOpport
     opportunity.fragileTargets * 0.9 +
     opportunity.leaderTargets * 1.4
   )
+}
+
+function computeQueueTimingRisk(state: GameState, player: PlayerId): number {
+  const orders = state.players[player].orders
+  if (orders.length <= 1) return 0
+  const slowTailOrderIds = getSlowTailOrderIds(orders)
+  let risk = 0
+
+  orders.forEach((order, index) => {
+    const sensitivity = getOrderTimingSensitivity(order)
+    if (sensitivity <= 0) return
+
+    let orderRisk = sensitivity * index * BOT_HEURISTICS.timing.lateOrderIndexRisk
+    if (slowTailOrderIds.has(order.id)) {
+      orderRisk += sensitivity * BOT_HEURISTICS.timing.slowTailExtraRisk
+    }
+    if (isPriorityOrder(order)) {
+      orderRisk *= BOT_HEURISTICS.timing.priorityRiskScale
+    }
+    risk += orderRisk
+  })
+
+  return risk
+}
+
+function getOrderTimingSensitivity(order: Order): number {
+  const def = CARD_DEFS[order.defId]
+  if (order.defId === 'spell_invest' || order.defId === 'spell_divination') return 0.02
+  if (def.type === 'reinforcement') return 0.06
+  if (def.type === 'movement') return order.defId === 'move_tandem' ? 0.16 : 0.1
+  if (order.defId === 'attack_blade_dance') return 0.38
+  if (
+    order.defId === 'attack_coordinated' ||
+    order.defId === 'attack_whirlwind' ||
+    order.defId === 'attack_chain_lightning' ||
+    order.defId === 'spell_meteor'
+  ) {
+    return 0.45
+  }
+  if (def.type === 'spell') return 0.95
+  if (def.type === 'attack') return 0.85
+  return 0.2
+}
+
+function isPriorityOrder(order: Order): boolean {
+  return CARD_DEFS[order.defId].keywords?.includes('Priority') ?? false
+}
+
+function isSlowOrder(order: Order): boolean {
+  return CARD_DEFS[order.defId].keywords?.includes('Slow') ?? false
+}
+
+function getSlowTailOrderIds(orders: Order[]): Set<string> {
+  const slowTail = new Set<string>()
+  let seenSlow = false
+  orders.forEach((order) => {
+    if (!seenSlow && isSlowOrder(order)) {
+      seenSlow = true
+    }
+    if (seenSlow) {
+      slowTail.add(order.id)
+    }
+  })
+  return slowTail
 }
 
 function cardHistoryLikelihood(

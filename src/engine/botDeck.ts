@@ -58,7 +58,13 @@ export function generateClusteredBotDeck(
 
   const deck: CardDefId[] = []
   ALL_CATEGORIES.forEach((category) => {
-    const categoryCards = buildClusteredCategoryCards(cardsByCategory, category, categoryCounts[category], maxCopies)
+    const categoryCards = buildClusteredCategoryCards(
+      cardsByCategory,
+      category,
+      categoryCounts[category],
+      maxCopies,
+      options.classId
+    )
     deck.push(...categoryCards)
   })
   for (let index = 0; index < requiredRecruitCount; index += 1) {
@@ -216,17 +222,18 @@ function buildClusteredCategoryCards(
   cardsByCategory: Record<BotDeckCategory, CardDefId[]>,
   category: BotDeckCategory,
   count: number,
-  maxCopies: number
+  maxCopies: number,
+  classId?: PlayerClassId
 ): CardDefId[] {
   if (count <= 0) return []
 
-  const pool = shuffle([...cardsByCategory[category]])
+  const pool = [...cardsByCategory[category]]
   if (pool.length === 0) return []
 
   const minimumUnique = Math.max(1, Math.ceil(count / maxCopies))
   const maximumUnique = Math.min(count, pool.length)
   const uniqueCount = chooseClusteredUniqueCount(minimumUnique, maximumUnique)
-  const selected = pool.slice(0, uniqueCount)
+  const selected = pickWeightedDistinct(pool, uniqueCount, (cardId) => getDeckCardWeight(cardId, classId))
   const copies = new Map<CardDefId, number>()
   selected.forEach((cardId) => copies.set(cardId, 1))
 
@@ -239,7 +246,7 @@ function buildClusteredCategoryCards(
       const current = copies.get(cardId) ?? 0
       const room = maxCopies - current
       if (room <= 0) return 0
-      return (current + 1) * (current + 1)
+      return (current + 1) * (current + 1) * getDeckCardWeight(cardId, classId)
     })
     copies.set(chosen, (copies.get(chosen) ?? 0) + 1)
     remaining -= 1
@@ -260,6 +267,27 @@ function chooseClusteredUniqueCount(minimum: number, maximum: number): number {
   const span = maximum - minimum
   const biasTowardLow = Math.pow(Math.random(), 2.2)
   return minimum + Math.floor(biasTowardLow * (span + 1))
+}
+
+function getDeckCardWeight(cardId: CardDefId, classId?: PlayerClassId): number {
+  if (!classId) return 1
+  return CARD_DEFS[cardId].classId === classId ? 2 : 1
+}
+
+function pickWeightedDistinct<T>(items: T[], count: number, getWeight: (item: T) => number): T[] {
+  if (count <= 0 || items.length === 0) return []
+  const remaining = [...items]
+  const selected: T[] = []
+  const limit = Math.min(count, remaining.length)
+  for (let index = 0; index < limit; index += 1) {
+    const chosen = pickWeighted(remaining, getWeight)
+    selected.push(chosen)
+    const chosenIndex = remaining.indexOf(chosen)
+    if (chosenIndex !== -1) {
+      remaining.splice(chosenIndex, 1)
+    }
+  }
+  return selected
 }
 
 function pickWeighted<T>(items: T[], getWeight: (item: T) => number): T {

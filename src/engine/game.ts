@@ -81,12 +81,12 @@ function getRoguelikePackHuntDamagePerAdjacent(state: GameState): number {
 
 function getRoguelikeUnitStrengthForRole(state: GameState, role: Unit['roguelikeRole']): number {
   const n = getRoguelikeMatchNumber(state)
-  if (role === 'slime_grand') return 5 + n
-  if (role === 'slime_mid') return 3 + Math.floor(n / 2)
-  if (role === 'slime_small') return 1 + Math.floor(n / 4)
-  if (role === 'troll') return 10 + n
-  if (role === 'alpha_wolf') return 4 + Math.floor((2 * n) / 3)
-  if (role === 'wolf') return 2 + Math.floor(n / 3)
+  if (role === 'slime_grand') return 5 + Math.floor(n / 2)
+  if (role === 'slime_mid') return 3 + Math.floor(n / 4)
+  if (role === 'slime_small') return 1 + Math.floor(n / 8)
+  if (role === 'troll') return 10 + Math.floor(n / 2)
+  if (role === 'alpha_wolf') return 4 + Math.floor(n / 3)
+  if (role === 'wolf') return 2 + Math.floor(n / 6)
   return 1
 }
 
@@ -1409,22 +1409,27 @@ function getSlimeSplitChildRole(role: Unit['roguelikeRole']): Unit['roguelikeRol
 }
 
 function findNearestOpenTileForSplit(state: GameState, origin: Hex): Hex | null {
-  const maxRadius = Math.max(1, state.boardRows + state.boardCols)
-  for (let radius = 1; radius <= maxRadius; radius += 1) {
-    const candidates = shuffle(
-      state.tiles
-        .map((tile) => ({ q: tile.q, r: tile.r }))
-        .filter((tile) => {
-          if (sameHex(tile, origin)) return false
-          if (getUnitAt(state, tile)) return false
-          return Math.floor(hexDistance(origin, tile)) === radius
-        })
-    )
-    if (candidates.length > 0) {
-      return candidates[0]
+  let nearest: Hex | null = null
+  let nearestDistance = Number.POSITIVE_INFINITY
+
+  state.tiles.forEach((tile) => {
+    const candidate = { q: tile.q, r: tile.r }
+    if (sameHex(candidate, origin)) return
+    if (getUnitAt(state, candidate)) return
+
+    const distance = hexDistance(origin, candidate)
+    if (distance < nearestDistance) {
+      nearest = candidate
+      nearestDistance = distance
+      return
     }
-  }
-  return null
+    if (distance > nearestDistance || !nearest) return
+    if (candidate.r < nearest.r || (candidate.r === nearest.r && candidate.q < nearest.q)) {
+      nearest = candidate
+    }
+  })
+
+  return nearest
 }
 
 function maybeSplitDestroyedSlime(state: GameState, destroyed: Unit): void {

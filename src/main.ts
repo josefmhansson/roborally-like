@@ -13,6 +13,7 @@ import {
 } from './engine/classes'
 import { DIRECTIONS, hexToPixel, neighbor, offsetToAxial, rotateDirection } from './engine/hex'
 import {
+  canCardTargetUnit,
   canCardSelectUnit,
   createGameState,
   DEFAULT_SETTINGS,
@@ -602,10 +603,8 @@ const deathAlphaOverrides = new Map<string, number>()
 let animationRenderUnits: Record<string, Unit> | null = null
 let animationLogEntriesForSync: string[] = []
 let animationAppliedLogIndex = -1
-let isDraggingCardReorder = false
-let suppressNextOrderClick = false
-let suppressNextHandClick = false
 type CardReorderDragState = {
+  options: CardStripReorderOptions
   pointerId: number
   pointerType: string
   container: HTMLElement
@@ -620,12 +619,15 @@ type CardReorderDragState = {
   startScrollLeft: number
   startScrollTop: number
   isDragging: boolean
+  didScroll: boolean
   holdTimer: number | null
 }
 let cardReorderDrag: CardReorderDragState | null = null
 const TOUCH_REORDER_HOLD_MS = 180
-const TOUCH_REORDER_CANCEL_MOVE_PX = 10
+const TOUCH_REORDER_CANCEL_MOVE_PX = 4
+const TOUCH_CARD_SCROLL_START_DISTANCE_PX = 6
 const CARD_REORDER_START_DISTANCE_PX = 8
+const CARD_ACTIVATE_MAX_MOVE_PX = 8
 let pendingCardTransfer:
   | {
       cardId: string
@@ -859,10 +861,12 @@ const ROGUELIKE_ENCOUNTER_DEFS: RoguelikeEncounterDef[] = [
       'move_forward_face',
       'move_forward_face',
       'attack_coordinated',
+      'attack_coordinated',
       'attack_roguelike_basic',
       'attack_roguelike_basic',
       'attack_roguelike_basic',
       'attack_roguelike_basic',
+      'move_tandem',
       'move_tandem',
     ],
     unitCounts: (n) => [
@@ -877,10 +881,12 @@ const ROGUELIKE_ENCOUNTER_DEFS: RoguelikeEncounterDef[] = [
     deck: () => [
       'move_forward_face',
       'move_forward_face',
+      'move_forward_face',
       'attack_roguelike_slow',
       'attack_roguelike_slow',
       'attack_roguelike_slow',
       'attack_roguelike_slow',
+      'attack_roguelike_stomp',
       'attack_roguelike_stomp',
       'attack_roguelike_stomp',
     ],
@@ -899,6 +905,8 @@ const ROGUELIKE_ENCOUNTER_DEFS: RoguelikeEncounterDef[] = [
       'attack_roguelike_basic',
       'attack_roguelike_basic',
       'attack_roguelike_pack_hunt',
+      'attack_roguelike_pack_hunt',
+      'spell_roguelike_mark',
       'spell_roguelike_mark',
     ],
     unitCounts: () => [
@@ -2673,6 +2681,13 @@ function isPointInsideOverlayClone(): boolean {
 
 function updateHoverFromPointer(): void {
   if (!hasPointer || overlayLocked) return
+  if (cardReorderDrag) {
+    if (hoverCardKey && !overlayLocked) {
+      hoverCardKey = null
+      clearOverlayClone()
+    }
+    return
+  }
   if (performance.now() < suppressOverlayUntil) return
   if (hiddenCardIds.size > 0) return
   const el = document.elementFromPoint(lastPointer.x, lastPointer.y) as HTMLElement | null
@@ -4813,7 +4828,7 @@ type CardStripReorderOptions = {
   canReorder: () => boolean
   getCardId: (card: HTMLElement) => string | null
   onReorder: (fromId: string, toId: string) => void
-  suppressNextClick: () => void
+  onActivate?: (card: HTMLElement) => void
 }
 
 type HandCard = GameState['players'][number]['hand'][number]
@@ -4942,24 +4957,19 @@ function beginCardReorderDrag(drag: CardReorderDragState): void {
   if (drag.isDragging) return
   clearCardReorderHoldTimer(drag)
   drag.isDragging = true
-  isDraggingCardReorder = true
-  drag.card.classList.add('card-reorder-dragging')
-  if (!drag.card.hasPointerCapture(drag.pointerId)) {
-    try {
-      drag.card.setPointerCapture(drag.pointerId)
-    } catch {
-      // Ignore failures when the pointer is no longer active.
-    }
+  if (!overlayLocked) {
+    hoverCardKey = null
+    clearOverlayClone()
   }
+  drag.card.classList.add('card-reorder-dragging')
 }
 
-function finishCardReorderDrag(pointerId: number, options: CardStripReorderOptions): void {
-  if (!cardReorderDrag || cardReorderDrag.pointerId !== pointerId) return
+function finishCardReorderDrag(pointerId: number): CardReorderDragState | null {
+  if (!cardReorderDrag || cardReorderDrag.pointerId !== pointerId) return null
   const drag = cardReorderDrag
   clearCardReorderHoldTimer(drag)
   cardReorderDrag = null
-  const didDrag = drag.isDragging
-  if (didDrag && drag.card.hasPointerCapture(pointerId)) {
+  if (drag.card.hasPointerCapture(pointerId)) {
     try {
       drag.card.releasePointerCapture(pointerId)
     } catch {
@@ -4968,11 +4978,24 @@ function finishCardReorderDrag(pointerId: number, options: CardStripReorderOptio
   }
   clearCardReorderDragVisual(drag.card)
   clearCardStripDragOver(drag.cards)
-  isDraggingCardReorder = false
-  if (!didDrag) return
-  options.suppressNextClick()
-  if (!drag.targetId || drag.targetId === drag.fromId) return
-  options.onReorder(drag.fromId, drag.targetId)
+  return drag
+}
+
+function resolveCardStripTarget(options: CardStripReorderOptions, clientX: number, clientY: number): HTMLElement | null {
+  const element = document.elementFromPoint(clientX, clientY) as HTMLElement | null
+  const target = element?.closest<HTMLElement>(options.cardSelector)
+  if (!target) return null
+  if (!options.container.contains(target)) return null
+  return options.cards.includes(target) ? target : null
+}
+
+function shouldActivateCardStripCard(drag: CardReorderDragState, clientX: number, clientY: number): boolean {
+  if (drag.isDragging || drag.didScroll) return false
+  const movedDistance = Math.abs(clientX - drag.startX) + Math.abs(clientY - drag.startY)
+  if (movedDistance > CARD_ACTIVATE_MAX_MOVE_PX) return false
+  const target = resolveCardStripTarget(drag.options, clientX, clientY)
+  if (!target) return false
+  return drag.options.getCardId(target) === drag.fromId
 }
 
 function bindCardStripReorder(options: CardStripReorderOptions): void {
@@ -4985,6 +5008,7 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
       const fromId = options.getCardId(card)
       if (!fromId) return
       cardReorderDrag = {
+        options,
         pointerId: event.pointerId,
         pointerType: event.pointerType,
         container: options.container,
@@ -4999,7 +5023,15 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
         startScrollLeft: options.container.scrollLeft,
         startScrollTop: options.container.scrollTop,
         isDragging: false,
+        didScroll: false,
         holdTimer: null,
+      }
+      try {
+        if (!card.hasPointerCapture(event.pointerId)) {
+          card.setPointerCapture(event.pointerId)
+        }
+      } catch {
+        // Ignore failures when the pointer is no longer active.
       }
       if (event.pointerType === 'touch') {
         cardReorderDrag.holdTimer = window.setTimeout(() => {
@@ -5012,7 +5044,7 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
     card.addEventListener('pointermove', (event) => {
       if (!cardReorderDrag || cardReorderDrag.pointerId !== event.pointerId) return
       if (!options.canReorder()) {
-        finishCardReorderDrag(event.pointerId, options)
+        finishCardReorderDrag(event.pointerId)
         return
       }
       const drag = cardReorderDrag
@@ -5023,18 +5055,19 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
         if (drag.pointerType === 'touch') {
           const moveX = event.clientX - drag.lastX
           const moveY = event.clientY - drag.lastY
-          if (moveX !== 0) {
-            drag.container.scrollLeft -= moveX
-          }
-          if (moveY !== 0) {
-            drag.container.scrollTop -= moveY
-          }
           drag.lastX = event.clientX
           drag.lastY = event.clientY
-          if (movedDistance > TOUCH_REORDER_CANCEL_MOVE_PX) {
+          if (movedDistance >= TOUCH_REORDER_CANCEL_MOVE_PX) {
             clearCardReorderHoldTimer(drag)
-            options.suppressNextClick()
-            cardReorderDrag = null
+          }
+          if (movedDistance >= TOUCH_CARD_SCROLL_START_DISTANCE_PX) {
+            drag.didScroll = true
+            if (moveX !== 0) {
+              drag.container.scrollLeft -= moveX
+            }
+            if (moveY !== 0) {
+              drag.container.scrollTop -= moveY
+            }
           }
           return
         }
@@ -5044,10 +5077,8 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
       event.preventDefault()
       autoScrollContainerForPointer(drag.container, event.clientX, event.clientY)
       updateCardReorderDragVisual(drag.card, drag, event.clientX, event.clientY)
-      const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
-      const target = element?.closest<HTMLElement>(options.cardSelector)
       clearCardStripDragOver(drag.cards)
-      const validTarget = target && drag.container.contains(target) && drag.cards.includes(target) ? target : null
+      const validTarget = resolveCardStripTarget(options, event.clientX, event.clientY)
       const targetId = validTarget ? options.getCardId(validTarget) : null
       if (validTarget && targetId && targetId !== drag.fromId) {
         validTarget.classList.add('card-reorder-over')
@@ -5058,17 +5089,108 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
     })
 
     card.addEventListener('pointerup', (event) => {
-      finishCardReorderDrag(event.pointerId, options)
+      const drag = finishCardReorderDrag(event.pointerId)
+      if (!drag) return
+      if (drag.isDragging) {
+        if (drag.targetId && drag.targetId !== drag.fromId) {
+          drag.options.onReorder(drag.fromId, drag.targetId)
+          return
+        }
+        syncOverlayFromSelection()
+        return
+      }
+      if (drag.options.onActivate && shouldActivateCardStripCard(drag, event.clientX, event.clientY)) {
+        drag.options.onActivate(drag.card)
+      }
     })
 
     card.addEventListener('pointercancel', (event) => {
-      finishCardReorderDrag(event.pointerId, options)
+      finishCardReorderDrag(event.pointerId)
     })
 
     card.addEventListener('lostpointercapture', (event) => {
-      finishCardReorderDrag(event.pointerId, options)
+      finishCardReorderDrag(event.pointerId)
     })
   })
+}
+
+function handleHandCardActivation(button: HTMLButtonElement): void {
+  if (state.phase !== 'planning') return
+  if (isBotPlanningLocked()) return
+  if (state.ready[planningPlayer]) return
+  const cardId = button.dataset.cardId ?? null
+  if (!cardId) return
+  const buttonKey = getCardVisualKey(button)
+  if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
+    overlayLocked = false
+    clearOverlayClone()
+  }
+  if (overlayClone && buttonKey && getOverlaySourceKey() === buttonKey && overlayClone.style.display !== 'none') {
+    overlayLocked = true
+    overlaySourceEl = button
+    overlaySourceVisibility = button.style.opacity
+    overlaySourceTransition = button.style.transition
+  } else {
+    showOverlayClone(button, true, true)
+  }
+  hoverCardKey = buttonKey
+  selectedCardId = cardId
+  pendingOrder = selectedCardId ? { cardId: selectedCardId, params: {} } : null
+  statusEl.textContent = selectedCardId ? 'Pick a unit/tile on the board.' : 'Select a card to start planning.'
+  tryAutoAddOrder()
+  render()
+}
+
+function handleOrderCardActivation(card: HTMLDivElement): void {
+  if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
+  const orderId = card.dataset.orderId
+  if (!orderId) return
+  if (mode === 'online') {
+    sendOnlineCommand({
+      type: 'remove_order',
+      orderId,
+    })
+    statusEl.textContent = 'Removing order...'
+    return
+  }
+  const fromRect = card.getBoundingClientRect()
+  const fromHandRects = captureCardRects(handEl)
+  const fromOrderRects = captureCardRects(ordersEl)
+  const playerState = state.players[planningPlayer]
+  const orderIndex = playerState.orders.findIndex((order) => order.id === orderId)
+  if (orderIndex === -1) return
+  const [removed] = playerState.orders.splice(orderIndex, 1)
+  playerState.hand.push({ id: removed.cardId, defId: removed.defId })
+  clearReady(planningPlayer)
+  statusEl.textContent = 'Order removed.'
+  clearOverlayClone()
+  suppressOverlayUntil = performance.now() + 200
+  card.style.visibility = 'hidden'
+  if (fromRect) {
+    hiddenCardIds.add(removed.cardId)
+    const pendingHandEl = handEl.querySelector<HTMLElement>(`[data-card-id="${removed.cardId}"]`)
+    if (pendingHandEl) {
+      pendingHandEl.classList.add('hidden-card')
+      pendingHandEl.style.visibility = 'hidden'
+      pendingHandEl.style.opacity = '0'
+    }
+    const pendingOrderEl = ordersEl.querySelector<HTMLElement>(`[data-card-id="${removed.cardId}"]`)
+    if (pendingOrderEl) {
+      pendingOrderEl.classList.add('hidden-card')
+      pendingOrderEl.style.visibility = 'hidden'
+      pendingOrderEl.style.opacity = '0'
+    }
+    pendingCardTransfer = {
+      cardId: removed.cardId,
+      fromRect,
+      fromHandRects,
+      fromOrderRects,
+      sourceEl: card,
+      target: 'hand',
+      started: false,
+    }
+  }
+  render()
 }
 
 function renderHand(): void {
@@ -5100,40 +5222,6 @@ function renderHand(): void {
     .join('')
 
   const cardButtons = Array.from(handEl.querySelectorAll<HTMLButtonElement>('.hand-card'))
-  cardButtons.forEach((button) => {
-    button.addEventListener('click', () => {
-      if (suppressNextHandClick) {
-        suppressNextHandClick = false
-        return
-      }
-      if (isDraggingCardReorder) return
-      if (state.phase !== 'planning') return
-      if (isBotPlanningLocked()) return
-      if (state.ready[planningPlayer]) return
-      const cardId = button.dataset.cardId ?? null
-      if (!cardId) return
-      const buttonKey = getCardVisualKey(button)
-      if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
-        overlayLocked = false
-        clearOverlayClone()
-      }
-      if (overlayClone && buttonKey && getOverlaySourceKey() === buttonKey && overlayClone.style.display !== 'none') {
-        overlayLocked = true
-        overlaySourceEl = button
-        overlaySourceVisibility = button.style.opacity
-        overlaySourceTransition = button.style.transition
-      } else {
-        showOverlayClone(button, true, true)
-      }
-      hoverCardKey = buttonKey
-      selectedCardId = cardId
-      pendingOrder = selectedCardId ? { cardId: selectedCardId, params: {} } : null
-      statusEl.textContent = selectedCardId ? 'Pick a unit/tile on the board.' : 'Select a card to start planning.'
-      tryAutoAddOrder()
-      render()
-    })
-  })
-
   bindCardStripReorder({
     container: handEl,
     cards: cardButtons,
@@ -5141,9 +5229,7 @@ function renderHand(): void {
     canReorder: () => state.phase === 'planning' && !state.ready[planningPlayer] && !isBotPlanningLocked(),
     getCardId: (card) => card.dataset.cardId ?? null,
     onReorder: reorderHandCards,
-    suppressNextClick: () => {
-      suppressNextHandClick = true
-    },
+    onActivate: (card) => handleHandCardActivation(card as HTMLButtonElement),
   })
 }
 
@@ -5195,67 +5281,7 @@ function renderOrders(): void {
       canReorder: () => state.phase === 'planning' && !state.ready[planningPlayer] && !isBotPlanningLocked(),
       getCardId: (card) => card.dataset.orderId ?? null,
       onReorder: reorderQueuedOrder,
-      suppressNextClick: () => {
-        suppressNextOrderClick = true
-      },
-    })
-
-    cards.forEach((card) => {
-      card.addEventListener('click', () => {
-        if (suppressNextOrderClick) {
-          suppressNextOrderClick = false
-          return
-        }
-        if (isDraggingCardReorder || state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
-        const orderId = card.dataset.orderId
-        if (!orderId) return
-        if (mode === 'online') {
-          sendOnlineCommand({
-            type: 'remove_order',
-            orderId,
-          })
-          statusEl.textContent = 'Removing order...'
-          return
-        }
-        const fromRect = card.getBoundingClientRect()
-        const fromHandRects = captureCardRects(handEl)
-        const fromOrderRects = captureCardRects(ordersEl)
-        const playerState = state.players[planningPlayer]
-        const orderIndex = playerState.orders.findIndex((order) => order.id === orderId)
-        if (orderIndex === -1) return
-        const [removed] = playerState.orders.splice(orderIndex, 1)
-        playerState.hand.push({ id: removed.cardId, defId: removed.defId })
-        clearReady(planningPlayer)
-        statusEl.textContent = 'Order removed.'
-        clearOverlayClone()
-        suppressOverlayUntil = performance.now() + 200
-        card.style.visibility = 'hidden'
-        if (fromRect) {
-          hiddenCardIds.add(removed.cardId)
-          const pendingHandEl = handEl.querySelector<HTMLElement>(`[data-card-id="${removed.cardId}"]`)
-          if (pendingHandEl) {
-            pendingHandEl.classList.add('hidden-card')
-            pendingHandEl.style.visibility = 'hidden'
-            pendingHandEl.style.opacity = '0'
-          }
-          const pendingOrderEl = ordersEl.querySelector<HTMLElement>(`[data-card-id="${removed.cardId}"]`)
-          if (pendingOrderEl) {
-            pendingOrderEl.classList.add('hidden-card')
-            pendingOrderEl.style.visibility = 'hidden'
-            pendingOrderEl.style.opacity = '0'
-          }
-          pendingCardTransfer = {
-            cardId: removed.cardId,
-            fromRect,
-            fromHandRects,
-            fromOrderRects,
-            sourceEl: card,
-            target: 'hand',
-            started: false,
-          }
-        }
-        render()
-      })
+      onActivate: (card) => handleOrderCardActivation(card as HTMLDivElement),
     })
   }
 }
@@ -5931,18 +5957,18 @@ function pickRandomRoguelikeEncounter(): RoguelikeEncounterDef {
 }
 
 function getRoguelikeEncounterActionBudget(encounter: RoguelikeEncounterDef, matchNumber: number): number {
-  const fallback = ROGUELIKE_BASE_AP_BUDGET + Math.floor(matchNumber / 10)
+  const fallback = ROGUELIKE_BASE_AP_BUDGET + Math.floor(matchNumber / 5)
   const value = encounter.actionBudget?.(matchNumber) ?? fallback
   return Math.max(1, Math.floor(value))
 }
 
 function getEncounterRoleStrength(role: RoguelikeEncounterUnitRole, matchNumber: number): number {
-  if (role === 'slime_grand') return 5 + matchNumber
-  if (role === 'slime_mid') return 3 + Math.floor(matchNumber / 2)
-  if (role === 'slime_small') return 1 + Math.floor(matchNumber / 4)
-  if (role === 'troll') return 10 + matchNumber
-  if (role === 'alpha_wolf') return 4 + Math.floor((2 * matchNumber) / 3)
-  return 2 + Math.floor(matchNumber / 3)
+  if (role === 'slime_grand') return 5 + Math.floor(matchNumber / 2)
+  if (role === 'slime_mid') return 3 + Math.floor(matchNumber / 4)
+  if (role === 'slime_small') return 1 + Math.floor(matchNumber / 8)
+  if (role === 'troll') return 10 + Math.floor(matchNumber / 2)
+  if (role === 'alpha_wolf') return 4 + Math.floor(matchNumber / 3)
+  return 2 + Math.floor(matchNumber / 6)
 }
 
 function getEncounterUnitLabel(role: Unit['roguelikeRole']): string {
@@ -6803,6 +6829,17 @@ function findAllUnitsInLine(before: Record<string, UnitSnapshot>, origin: Hex, d
   return targets
 }
 
+function findLineEndHex(origin: Hex, dir: Direction): Hex | null {
+  let cursor = { ...origin }
+  let lastValid: Hex | null = null
+  for (;;) {
+    cursor = neighbor(cursor, dir)
+    if (!isTile(cursor)) break
+    lastValid = { ...cursor }
+  }
+  return lastValid
+}
+
 function getDirectionToNeighbor(from: Hex, to: Hex): Direction | null {
   for (let direction = 0 as Direction; direction < 6; direction += 1) {
     const candidate = neighbor(from, direction)
@@ -7027,6 +7064,9 @@ function buildAnimations(
   before: Record<string, UnitSnapshot>,
   logEntries: string[] = []
 ): BoardAnimation[] {
+  if (logEntries.some((entry) => /^Unit .+ is stunned and cannot act this turn\.$/.test(entry))) {
+    return []
+  }
   const def = CARD_DEFS[order.defId]
   const animations: BoardAnimation[] = []
   const loggedPositions = parseUnitPositionUpdates(logEntries)
@@ -7099,6 +7139,7 @@ function buildAnimations(
       pos: { ...deathPos },
       facing: snapshot.facing,
       modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
+      roguelikeRole: snapshot.roguelikeRole,
     })
     deathAlphaOverrides.set(event.unitId, 1)
     queueStateSync(event.index)
@@ -7177,6 +7218,7 @@ function buildAnimations(
               pos: { ...spawnSnapshot.pos },
               facing: spawnSnapshot.facing,
               modifiers: [],
+              roguelikeRole: spawnSnapshot.roguelikeRole,
             })
             deathAlphaOverrides.set(spawnedId, 1)
           }
@@ -7467,11 +7509,12 @@ function buildAnimations(
         })
         if (order.defId === 'attack_arrow') {
           const target = findFirstUnitInLine(before, beforeUnit.pos, dir)
-          if (target) {
+          const end = target ? { ...target.pos } : findLineEndHex(beforeUnit.pos, dir)
+          if (end) {
             animations.push({
               type: 'arrow',
               from: beforeUnit.pos,
-              to: target.pos,
+              to: end,
               duration: ARROW_DURATION_MS,
             })
           }
@@ -8241,6 +8284,75 @@ function resolveDirectionAndDistance(base: Hex, target: Hex, maxDistance: number
   return null
 }
 
+function getModifierStackCount(
+  unit: Pick<Unit, 'modifiers'>,
+  type: Unit['modifiers'][number]['type']
+): number {
+  return unit.modifiers.reduce((sum, modifier) => sum + (modifier.type === type ? 1 : 0), 0)
+}
+
+function buildBladeDanceSelectionSnapshot(
+  snapshot: GameState,
+  params: OrderParams,
+  player: PlayerId,
+  step: TileSelectionParam
+): { base: Hex | null; occupied: Set<string> } {
+  const actingUnitId = resolveSnapshotUnitId(snapshot, params.unitId ?? '', player)
+  if (!actingUnitId) return { base: null, occupied: new Set() }
+
+  const units = new Map<string, Unit>(
+    Object.values(snapshot.units).map((unit) => [
+      unit.id,
+      {
+        ...unit,
+        pos: { ...unit.pos },
+        modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
+      },
+    ])
+  )
+  const actingUnit = units.get(actingUnitId)
+  if (!actingUnit) return { base: null, occupied: new Set() }
+
+  const applyAdjacentBladeDanceDamage = (): void => {
+    const dealtDelta = getModifierStackCount(actingUnit, 'strong') - getModifierStackCount(actingUnit, 'disarmed')
+    for (let direction = 0 as Direction; direction < 6; direction += 1) {
+      const targetHex = neighbor(actingUnit.pos, direction)
+      const target = [...units.values()].find((unit) => unit.pos.q === targetHex.q && unit.pos.r === targetHex.r)
+      if (!target || !canCardTargetUnit('attack_blade_dance', target)) continue
+      const damage = Math.max(0, 1 + dealtDelta + getModifierStackCount(target, 'vulnerable'))
+      if (damage <= 0) continue
+      target.strength -= damage
+      if (target.strength <= 0) {
+        units.delete(target.id)
+      }
+    }
+  }
+
+  const applyBladeDanceMoveStage = (direction: Direction | undefined): void => {
+    if (direction === undefined) return
+    const targetHex = neighbor(actingUnit.pos, direction)
+    if (!isTile(targetHex)) return
+    const blocked = [...units.values()].some(
+      (unit) => unit.id !== actingUnit.id && unit.pos.q === targetHex.q && unit.pos.r === targetHex.r
+    )
+    if (blocked) return
+    actingUnit.pos = { ...targetHex }
+    applyAdjacentBladeDanceDamage()
+  }
+
+  if (step === 'tile2' || step === 'tile3') {
+    applyBladeDanceMoveStage(params.direction)
+  }
+  if (step === 'tile3') {
+    applyBladeDanceMoveStage(params.moveDirection)
+  }
+
+  const occupied = new Set<string>(
+    [...units.values()].map((unit) => `${unit.pos.q},${unit.pos.r}`)
+  )
+  return { base: { ...actingUnit.pos }, occupied }
+}
+
 function getMoveToTileSelectionTargets(
   snapshot: GameState,
   defId: CardDefId,
@@ -8250,13 +8362,17 @@ function getMoveToTileSelectionTargets(
 ): Hex[] | null {
   const config = getChainedTileMoveConfig(defId, step)
   if (!config) return null
-  const base = getChainedTileMoveBase(snapshot, params, player, config)
+  const bladeDanceSnapshot =
+    defId === 'attack_blade_dance' ? buildBladeDanceSelectionSnapshot(snapshot, params, player, step) : null
+  const base = bladeDanceSnapshot?.base ?? getChainedTileMoveBase(snapshot, params, player, config)
   if (!base) return []
+  const occupied = bladeDanceSnapshot?.occupied ?? new Set(Object.values(snapshot.units).map((unit) => `${unit.pos.q},${unit.pos.r}`))
   const targets: Hex[] = []
   for (let direction = 0 as Direction; direction < 6; direction += 1) {
     for (let distance = 1; distance <= config.maxDistance; distance += 1) {
       const tile = stepInDirection(base, direction, distance)
       if (!isTile(tile)) break
+      if (occupied.has(`${tile.q},${tile.r}`)) continue
       targets.push(tile)
     }
   }
@@ -8477,27 +8593,17 @@ function stepInDirection(base: Hex, direction: Direction, distance: number): Hex
   return current
 }
 
-function getUnitSnapshot(
-  snapshot: GameState,
-  unitId: string,
-  player: PlayerId
-): { pos: Hex; facing: Direction } | null {
+function resolveSnapshotUnitId(snapshot: GameState, unitId: string, player: PlayerId): string | null {
   if (!unitId) return null
   if (unitId.startsWith('planned:')) {
     const orderRef = unitId.replace('planned:', '')
     const resolved = snapshot.spawnedByOrder[orderRef]
-    if (resolved && snapshot.units[resolved]) {
-      const unit = snapshot.units[resolved]
-      return { pos: unit.pos, facing: unit.facing }
-    }
+    if (resolved && snapshot.units[resolved]) return resolved
     const separator = orderRef.indexOf(':')
     const orderId = separator === -1 ? orderRef : orderRef.slice(0, separator)
     const spawnKey = separator === -1 ? null : orderRef.slice(separator + 1)
     const baseResolved = snapshot.spawnedByOrder[orderId]
-    if (baseResolved && snapshot.units[baseResolved]) {
-      const unit = snapshot.units[baseResolved]
-      return { pos: unit.pos, facing: unit.facing }
-    }
+    if (baseResolved && snapshot.units[baseResolved]) return baseResolved
     const planned = state.players[player].orders.find((order) => order.id === orderId)
     if (!planned) return null
     for (const effect of CARD_DEFS[planned.defId].effects) {
@@ -8506,16 +8612,21 @@ function getUnitSnapshot(
       if (spawnKey && effect.tileParam !== spawnKey) continue
       const tile = getOrderTileParam(planned.params, effect.tileParam)
       if (!tile) continue
-      if (effect.type === 'spawn') {
-        const facing = effect.facingParam ? planned.params.direction : effect.facing
-        return { pos: tile, facing: (facing ?? 0) as Direction }
-      }
-      const facing = effect.facingParam ? planned.params.direction : undefined
-      return { pos: tile, facing: (facing ?? 0) as Direction }
+      return Object.values(snapshot.units).find((unit) => unit.pos.q === tile.q && unit.pos.r === tile.r)?.id ?? null
     }
     return null
   }
-  const unit = snapshot.units[unitId]
+  return snapshot.units[unitId] ? unitId : null
+}
+
+function getUnitSnapshot(
+  snapshot: GameState,
+  unitId: string,
+  player: PlayerId
+): { pos: Hex; facing: Direction } | null {
+  const resolvedUnitId = resolveSnapshotUnitId(snapshot, unitId, player)
+  if (!resolvedUnitId) return null
+  const unit = snapshot.units[resolvedUnitId]
   if (!unit) return null
   return { pos: unit.pos, facing: unit.facing }
 }
