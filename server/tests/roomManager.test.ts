@@ -9,7 +9,7 @@ import {
   recordRoomPlayedCards,
   recordRoomUnplayedHandCards,
 } from '../roomManager'
-import type { CardDefId, GameState } from '../../src/engine/types'
+import type { CardDefId, GameSettings, GameState } from '../../src/engine/types'
 
 function mockSocket(): WebSocket {
   return {
@@ -42,7 +42,7 @@ test('room settings sanitize non-finite numbers to safe defaults', () => {
     settings: {
       boardRows: Number.NaN,
       boardCols: Number.NaN,
-      strongholdStrength: Number.NaN,
+      leaderStrength: Number.NaN,
       deckSize: Number.NaN,
       drawPerTurn: Number.NaN,
       maxCopies: Number.NaN,
@@ -57,12 +57,34 @@ test('room settings sanitize non-finite numbers to safe defaults', () => {
 
   assert.equal(room.state.settings.boardRows, 6)
   assert.equal(room.state.settings.boardCols, 6)
-  assert.equal(room.state.settings.strongholdStrength, 5)
+  assert.equal(room.state.settings.leaderStrength, 5)
   assert.equal(room.state.settings.deckSize, STARTING_DECK.length)
   assert.equal(room.state.settings.drawPerTurn, 5)
   assert.equal(room.state.settings.maxCopies, 3)
   assert.equal(room.state.settings.actionBudgetP1, 3)
   assert.equal(room.state.settings.actionBudgetP2, 3)
+})
+
+test('room settings accept legacy strongholdStrength payloads', () => {
+  const manager = new RoomManager()
+  const room = manager.createRoom({
+    settings: {
+      boardRows: 6,
+      boardCols: 6,
+      strongholdStrength: 9,
+      deckSize: 6,
+      drawPerTurn: 2,
+      maxCopies: 3,
+      actionBudgetP1: 3,
+      actionBudgetP2: 3,
+    } as unknown as GameSettings,
+    loadouts: {
+      p1: ['reinforce_spawn'],
+      p2: ['reinforce_spawn'],
+    },
+  })
+
+  assert.equal(room.state.settings.leaderStrength, 9)
 })
 
 test('first join loadout uses submitted P1 deck, pads to deck size, and trims excess', () => {
@@ -71,7 +93,7 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
     settings: {
       boardRows: 6,
       boardCols: 6,
-      strongholdStrength: 5,
+      leaderStrength: 5,
       deckSize: 6,
       drawPerTurn: 2,
       maxCopies: 3,
@@ -114,7 +136,7 @@ test('first join loadout uses submitted P1 deck, pads to deck size, and trims ex
     settings: {
       boardRows: 6,
       boardCols: 6,
-      strongholdStrength: 5,
+      leaderStrength: 5,
       deckSize: 6,
       drawPerTurn: 2,
       maxCopies: 3,
@@ -139,7 +161,7 @@ test('pregame loadout update applies selected class and strips class-locked card
     settings: {
       boardRows: 6,
       boardCols: 6,
-      strongholdStrength: 5,
+      leaderStrength: 5,
       deckSize: 6,
       drawPerTurn: 2,
       maxCopies: 3,
@@ -156,7 +178,7 @@ test('pregame loadout update applies selected class and strips class-locked card
   assert.equal(room.seatClasses[0], 'warleader')
   assert.equal(room.state.playerClasses?.[0], 'warleader')
   assert.equal(
-    room.state.units['stronghold-0']?.modifiers.some((modifier) => modifier.type === 'slow'),
+    room.state.units['leader-0']?.modifiers.some((modifier) => modifier.type === 'slow'),
     false
   )
 
@@ -173,7 +195,7 @@ test('room telemetry submission includes played cards and accumulated unplayed h
     settings: {
       boardRows: 6,
       boardCols: 6,
-      strongholdStrength: 5,
+      leaderStrength: 5,
       deckSize: 6,
       drawPerTurn: 2,
       maxCopies: 3,

@@ -41,7 +41,7 @@ let slowMoveUsage = new WeakMap<Unit, number>()
 export const DEFAULT_SETTINGS = {
   boardRows: DEFAULT_BOARD_SIZE,
   boardCols: DEFAULT_BOARD_SIZE,
-  strongholdStrength: 5,
+  leaderStrength: 5,
   deckSize: STARTING_DECK.length,
   drawPerTurn: 5,
   maxCopies: 3,
@@ -222,7 +222,7 @@ function getLeaderBaseModifiers(state: Pick<GameState, 'playerClasses'>, player:
 function hasCommanderLeaderAdjacencyStrong(state: GameState, unit: Unit): boolean {
   if (unit.kind !== 'unit') return false
   if (getPlayerLeaderClass(state, unit.owner) !== 'commander') return false
-  const leader = state.units[`stronghold-${unit.owner}`]
+  const leader = state.units[`leader-${unit.owner}`]
   if (!leader || leader.kind !== 'leader') return false
   return isAdjacentHex(unit.pos, leader.pos)
 }
@@ -386,7 +386,7 @@ function createDeckFromList(defIds: CardDefId[]): { id: string; defId: CardDefId
 
 function createLeader(state: Pick<GameState, 'playerClasses'>, owner: PlayerId, pos: Hex, strength: number, facing: Direction): Unit {
   return {
-    id: `stronghold-${owner}`,
+    id: `leader-${owner}`,
     owner,
     kind: 'leader',
     strength,
@@ -396,7 +396,7 @@ function createLeader(state: Pick<GameState, 'playerClasses'>, owner: PlayerId, 
   }
 }
 
-function getStrongholdPositions(rows: number, cols: number): [Hex, Hex] {
+function getLeaderPositions(rows: number, cols: number): [Hex, Hex] {
   const centerQ = Math.floor(cols / 2)
   return [
     { q: centerQ - 1, r: 0 },
@@ -424,7 +424,7 @@ export function createGameState(
   const rows = settings.boardRows
   const cols = settings.boardCols
   const tiles = createTiles(rows, cols)
-  const [topPos, bottomPos] = getStrongholdPositions(rows, cols)
+  const [topPos, bottomPos] = getLeaderPositions(rows, cols)
   const resolvedPlayerClasses: [PlayerClassId | null, PlayerClassId | null] = [
     playerClasses?.p1 ?? null,
     playerClasses?.p2 ?? null,
@@ -433,17 +433,17 @@ export function createGameState(
   const topFacing: Direction = 5
   const bottomFacing: Direction = 2
   const classContext: Pick<GameState, 'playerClasses'> = { playerClasses: resolvedPlayerClasses }
-  units['stronghold-0'] = createLeader(classContext, 0, bottomPos, settings.strongholdStrength, bottomFacing)
-  units['stronghold-1'] = createLeader(classContext, 1, topPos, settings.strongholdStrength, topFacing)
-  const p1Front = neighbor(units['stronghold-0'].pos, units['stronghold-0'].facing)
-  const p2Front = neighbor(units['stronghold-1'].pos, units['stronghold-1'].facing)
+  units['leader-0'] = createLeader(classContext, 0, bottomPos, settings.leaderStrength, bottomFacing)
+  units['leader-1'] = createLeader(classContext, 1, topPos, settings.leaderStrength, topFacing)
+  const p1Front = neighbor(units['leader-0'].pos, units['leader-0'].facing)
+  const p2Front = neighbor(units['leader-1'].pos, units['leader-1'].facing)
   if (inBounds(rows, cols, p1Front)) {
     const id = `u0-1`
-    units[id] = createUnit(0, p1Front, units['stronghold-0'].facing, 2, id)
+    units[id] = createUnit(0, p1Front, units['leader-0'].facing, 2, id)
   }
   if (inBounds(rows, cols, p2Front)) {
     const id = `u1-2`
-    units[id] = createUnit(1, p2Front, units['stronghold-1'].facing, 2, id)
+    units[id] = createUnit(1, p2Front, units['leader-1'].facing, 2, id)
   }
 
   const p1Deck = decks?.p1 ?? STARTING_DECK.slice(0, settings.deckSize)
@@ -477,8 +477,8 @@ export function createGameState(
     playerClasses: resolvedPlayerClasses,
     leaderMovedLastTurn: [true, true],
     turnStartLeaderPositions: [
-      { ...units['stronghold-0'].pos },
-      { ...units['stronghold-1'].pos },
+      { ...units['leader-0'].pos },
+      { ...units['leader-1'].pos },
     ],
     archmageBonusApplied: [0, 0],
   }
@@ -497,7 +497,7 @@ function getUsedActionPoints(state: GameState, player: PlayerId): number {
 }
 
 export function getSpawnTiles(state: GameState, player: PlayerId): Hex[] {
-  const [topPos, bottomPos] = getStrongholdPositions(state.boardRows, state.boardCols)
+  const [topPos, bottomPos] = getLeaderPositions(state.boardRows, state.boardCols)
   const anchor = player === 0 ? bottomPos : topPos
   const tiles: Hex[] = []
   tiles.push({ ...anchor })
@@ -536,7 +536,7 @@ export function isSpawnTile(state: GameState, player: PlayerId, hex: Hex): boole
 }
 
 function getCurrentLeaderPosition(state: GameState, player: PlayerId): Hex {
-  const leader = state.units[`stronghold-${player}`]
+  const leader = state.units[`leader-${player}`]
   if (!leader || leader.kind !== 'leader') return { q: -1, r: -1 }
   return { ...leader.pos }
 }
@@ -1105,14 +1105,17 @@ function validateOrderParams(
   const def = CARD_DEFS[defId]
   if (def.requires.unit) {
     if (!params.unitId) return false
+    const normalizedUnitId = normalizeLegacyLeaderUnitId(params.unitId)
     if (def.requires.unit === 'friendly') {
       const requireActingUnit = isActingUnitRequirement(defId)
-      if (isPlannedUnitReference(state, player, params.unitId)) {
+      if (isPlannedUnitReference(state, player, normalizedUnitId)) {
         if (!requireActingUnit) {
           // Planned spawn is allowed as a future unit reference.
         }
       } else {
-        const unit = state.units[params.unitId]
+        const resolvedUnitId = resolveUnitId(state, player, normalizedUnitId)
+        if (!resolvedUnitId) return false
+        const unit = state.units[resolvedUnitId]
         if (!unit) return false
         if (unit.owner !== player) return false
         if (requireActingUnit) {
@@ -1123,8 +1126,12 @@ function validateOrderParams(
         }
       }
     } else {
-      if (isPlannedUnitReference(state, player, params.unitId)) return false
-      const unit = state.units[params.unitId] ?? fallbackState?.units[params.unitId]
+      if (isPlannedUnitReference(state, player, normalizedUnitId)) return false
+      const resolvedUnitId = resolveUnitId(state, player, normalizedUnitId)
+      const unit =
+        (resolvedUnitId ? state.units[resolvedUnitId] : undefined) ??
+        fallbackState?.units[normalizedUnitId] ??
+        (resolvedUnitId ? fallbackState?.units[resolvedUnitId] : undefined)
       if (!unit) return false
       if (!isCardTargetUnitAllowedForPlayer(defId, player, unit)) return false
     }
@@ -1185,6 +1192,10 @@ function parsePlannedUnitReference(unitId: string): PlannedUnitReference | null 
   const spawnKey = raw.slice(separator + 1)
   if (!orderId || (spawnKey !== 'tile' && spawnKey !== 'tile2')) return null
   return { orderId, spawnKey }
+}
+
+function normalizeLegacyLeaderUnitId(unitId: string): UnitId {
+  return unitId.startsWith('stronghold-') ? (`leader-${unitId.slice('stronghold-'.length)}` as UnitId) : unitId
 }
 
 function isMappedPlannedSpawnEffect(
@@ -1268,7 +1279,7 @@ function spawnUnit(
 }
 
 function getDefaultSpawnFacing(state: GameState, player: PlayerId): Direction {
-  const leader = state.units[`stronghold-${player}`]
+  const leader = state.units[`leader-${player}`]
   if (leader && leader.kind === 'leader') {
     return leader.facing
   }
@@ -2062,7 +2073,13 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
 
     if (effect.type === 'markAdvanceToward') {
       if (!params.unitId) return false
-      const target = state.units[params.unitId] ?? fallbackState?.units[params.unitId]
+      const normalizedUnitId = normalizeLegacyLeaderUnitId(params.unitId)
+      const resolvedUnitId = resolveUnitId(state, order.player, normalizedUnitId)
+      const target =
+        state.units[normalizedUnitId] ??
+        (resolvedUnitId ? state.units[resolvedUnitId] : undefined) ??
+        fallbackState?.units[normalizedUnitId] ??
+        (resolvedUnitId ? fallbackState?.units[resolvedUnitId] : undefined)
       if (!target) return false
       if (!isCardTargetUnitAllowedForPlayer(order.defId, order.player, target)) return false
       continue
@@ -2110,8 +2127,9 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
 }
 
 function resolveUnitId(state: GameState, player: PlayerId, unitId: string): UnitId | null {
-  const plannedRef = parsePlannedUnitReference(unitId)
-  if (!plannedRef) return unitId.startsWith('planned:') ? null : unitId
+  const normalizedUnitId = normalizeLegacyLeaderUnitId(unitId)
+  const plannedRef = parsePlannedUnitReference(normalizedUnitId)
+  if (!plannedRef) return normalizedUnitId.startsWith('planned:') ? null : normalizedUnitId
   const scopedKey = plannedRef.spawnKey ? getSpawnMapKey(plannedRef.orderId, plannedRef.spawnKey) : plannedRef.orderId
   const mapped = state.spawnedByOrder[scopedKey]
   if (mapped) return mapped
@@ -2596,7 +2614,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       return
     }
     case 'markAdvanceToward': {
-      const targetUnit = params.unitId ? state.units[params.unitId] : null
+      const targetUnit = params.unitId ? state.units[normalizeLegacyLeaderUnitId(params.unitId)] : null
       if (!targetUnit) return
       if (!isCardTargetUnitAllowedForPlayer(order.defId, order.player, targetUnit)) return
       const targetPos = { ...targetUnit.pos }

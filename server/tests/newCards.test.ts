@@ -26,7 +26,7 @@ function readyAndResolve(state: GameState): void {
 
 function clearNonLeaderUnits(state: GameState): void {
   Object.keys(state.units).forEach((unitId) => {
-    if (!unitId.startsWith('stronghold-')) {
+    if (!unitId.startsWith('leader-')) {
       delete state.units[unitId]
     }
   })
@@ -34,8 +34,8 @@ function clearNonLeaderUnits(state: GameState): void {
 
 test('player 1 starts from the lower side of the board', () => {
   const state = createGameState()
-  const p1Leader = state.units['stronghold-0']
-  const p2Leader = state.units['stronghold-1']
+  const p1Leader = state.units['leader-0']
+  const p2Leader = state.units['leader-1']
   assert.ok(p1Leader)
   assert.ok(p2Leader)
   assert.equal(p1Leader.kind, 'leader')
@@ -52,7 +52,7 @@ test('leader has Slow and cannot move more than one tile per turn', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  const leader = state.units['stronghold-0']
+  const leader = state.units['leader-0']
   assert.ok(leader)
   assert.equal(leader.kind, 'leader')
   assert.ok(leader.modifiers.some((modifier) => modifier.type === 'slow'))
@@ -73,7 +73,7 @@ test('leader has Slow and cannot move more than one tile per turn', () => {
 
   readyAndResolve(state)
 
-  const leaderAfter = state.units['stronghold-0']
+  const leaderAfter = state.units['leader-0']
   assert.ok(leaderAfter)
   const expectedPos = neighbor(leaderStartPos, direction)
   assert.deepEqual(leaderAfter.pos, expectedPos)
@@ -93,7 +93,7 @@ test('commander leader grants adjacent friendly units +1 attack damage', () => {
   )
 
   clearNonLeaderUnits(state)
-  const leader = state.units['stronghold-0']
+  const leader = state.units['leader-0']
   assert.ok(leader && leader.kind === 'leader')
   leader.pos = { q: 2, r: 2 }
   leader.facing = 0
@@ -140,7 +140,7 @@ test('commander aura Strong is applied and removed based on adjacency', () => {
   )
 
   clearNonLeaderUnits(state)
-  const leader = state.units['stronghold-0']
+  const leader = state.units['leader-0']
   assert.ok(leader && leader.kind === 'leader')
   leader.pos = { q: 2, r: 2 }
   leader.facing = 0
@@ -183,7 +183,7 @@ test('warleader leader can move full distance without Slow restriction', () => {
   )
 
   clearNonLeaderUnits(state)
-  const leader = state.units['stronghold-0']
+  const leader = state.units['leader-0']
   assert.ok(leader && leader.kind === 'leader')
   assert.equal(leader.modifiers.some((modifier) => modifier.type === 'slow'), false)
   const leaderStart = { ...leader.pos }
@@ -210,7 +210,7 @@ test('warleader leader can move full distance without Slow restriction', () => {
   assert.ok(planOrder(state, 0, cardId, { unitId: leader.id, direction, distance: 3 }))
   readyAndResolve(state)
 
-  assert.deepEqual(state.units['stronghold-0']?.pos, expected)
+  assert.deepEqual(state.units['leader-0']?.pos, expected)
 })
 
 test('archmage leader gains +1 AP next turn when it stayed still last turn', () => {
@@ -230,7 +230,7 @@ test('archmage leader gains +1 AP next turn when it stayed still last turn', () 
   assert.equal(state.turn, 2)
   assert.equal(state.actionBudgets[0], 4)
 
-  const leader = state.units['stronghold-0']
+  const leader = state.units['leader-0']
   assert.ok(leader && leader.kind === 'leader')
   const moveDirection = ([0, 1, 2, 3, 4, 5] as Direction[]).find((direction) => {
     const target = neighbor(leader.pos, direction)
@@ -253,7 +253,7 @@ test('leader spell resistance halves spell damage rounded down', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  const enemyLeader = state.units['stronghold-1']
+  const enemyLeader = state.units['leader-1']
   assert.ok(enemyLeader)
   assert.equal(enemyLeader.kind, 'leader')
   assert.ok(enemyLeader.modifiers.some((modifier) => modifier.type === 'spellResistance'))
@@ -265,7 +265,7 @@ test('leader spell resistance halves spell damage rounded down', () => {
 
   readyAndResolve(state)
 
-  const leaderAfter = state.units['stronghold-1']
+  const leaderAfter = state.units['leader-1']
   assert.ok(leaderAfter)
   assert.equal(leaderAfter.strength, startStrength - 2)
 })
@@ -814,7 +814,7 @@ test('mass boost grants +2 to units and halved gain to leader', () => {
     facing: 0,
     modifiers: [],
   }
-  const leaderBefore = state.units['stronghold-0']?.strength ?? 0
+  const leaderBefore = state.units['leader-0']?.strength ?? 0
 
   const cardId = findCardId(state, 0, 'reinforce_mass_boost')
   assert.ok(planOrder(state, 0, cardId, {}))
@@ -822,7 +822,7 @@ test('mass boost grants +2 to units and halved gain to leader', () => {
 
   assert.equal(state.units['mb-a']?.strength, 4)
   assert.equal(state.units['mb-b']?.strength, 5)
-  assert.equal(state.units['stronghold-0']?.strength, leaderBefore + 1)
+  assert.equal(state.units['leader-0']?.strength, leaderBefore + 1)
 })
 
 test('train on a leader is halved and rounded down', () => {
@@ -832,13 +832,29 @@ test('train on a leader is halved and rounded down', () => {
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
   })
 
-  const leaderBefore = state.units['stronghold-0']?.strength ?? 0
+  const leaderBefore = state.units['leader-0']?.strength ?? 0
+  const cardId = findCardId(state, 0, 'reinforce_boost_spawn')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'leader-0' }))
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['leader-0']?.strength, leaderBefore + 1)
+})
+
+test('legacy stronghold leader ids still resolve for leader-targeting cards', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_boost_spawn'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  const leaderBefore = state.units['leader-0']?.strength ?? 0
   const cardId = findCardId(state, 0, 'reinforce_boost_spawn')
   assert.ok(planOrder(state, 0, cardId, { unitId: 'stronghold-0' }))
 
   readyAndResolve(state)
 
-  assert.equal(state.units['stronghold-0']?.strength, leaderBefore + 1)
+  assert.equal(state.units['leader-0']?.strength, leaderBefore + 1)
 })
 
 test('coordinated attack applies 2 damage from each friendly unit to the tile in front', () => {
@@ -939,7 +955,7 @@ test('tandem movement lets leader units follow after adjacent allies move away',
   })
 
   clearNonLeaderUnits(state)
-  const leader = state.units['stronghold-0']
+  const leader = state.units['leader-0']
   assert.ok(leader)
   leader.pos = { q: 2, r: 2 }
   leader.facing = 0
@@ -955,10 +971,10 @@ test('tandem movement lets leader units follow after adjacent allies move away',
   }
 
   const cardId = findCardId(state, 0, 'move_tandem')
-  assert.ok(planOrder(state, 0, cardId, { unitId: 'stronghold-0', direction: 0, distance: 3 }))
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'leader-0', direction: 0, distance: 3 }))
   readyAndResolve(state)
 
-  assert.deepEqual(state.units['stronghold-0']?.pos, { q: 3, r: 2 })
+  assert.deepEqual(state.units['leader-0']?.pos, { q: 3, r: 2 })
   assert.deepEqual(state.units['tm-front']?.pos, { q: 5, r: 2 })
 })
 
@@ -1618,7 +1634,7 @@ test('execute deals 3 damage to leaders in front', () => {
     facing: 0,
     modifiers: [],
   }
-  const leader = state.units['stronghold-1']
+  const leader = state.units['leader-1']
   assert.ok(leader && leader.kind === 'leader')
   leader.pos = { q: 3, r: 2 }
   const startStrength = leader.strength
@@ -1627,7 +1643,7 @@ test('execute deals 3 damage to leaders in front', () => {
   assert.ok(planOrder(state, 0, cardId, { unitId: 'exec-user' }))
   readyAndResolve(state)
 
-  const leaderAfter = state.units['stronghold-1']
+  const leaderAfter = state.units['leader-1']
   assert.ok(leaderAfter)
   assert.equal(leaderAfter.strength, startStrength - 3)
 })
@@ -1898,7 +1914,7 @@ test('whirlwind can damage and push enemy leader', () => {
   })
 
   clearNonLeaderUnits(state)
-  const enemyLeader = state.units['stronghold-1']
+  const enemyLeader = state.units['leader-1']
   assert.ok(enemyLeader && enemyLeader.kind === 'leader')
   const leaderStartPos = { ...enemyLeader.pos }
   const leaderStartStrength = enemyLeader.strength
@@ -1918,8 +1934,8 @@ test('whirlwind can damage and push enemy leader', () => {
     })
   assert.ok(setup)
 
-  state.units['ww-actor-stronghold'] = {
-    id: 'ww-actor-stronghold',
+  state.units['ww-actor-leader'] = {
+    id: 'ww-actor-leader',
     owner: 0,
     kind: 'unit',
     strength: 5,
@@ -1929,12 +1945,12 @@ test('whirlwind can damage and push enemy leader', () => {
   }
 
   const cardId = findCardId(state, 0, 'attack_whirlwind')
-  const planned = planOrder(state, 0, cardId, { unitId: 'ww-actor-stronghold' })
+  const planned = planOrder(state, 0, cardId, { unitId: 'ww-actor-leader' })
   assert.ok(planned)
 
   readyAndResolve(state)
 
-  const leaderAfter = state.units['stronghold-1']
+  const leaderAfter = state.units['leader-1']
   assert.ok(leaderAfter)
   assert.equal(leaderAfter.strength, leaderStartStrength - 3)
   assert.notDeepEqual(leaderAfter.pos, leaderStartPos)
@@ -2022,7 +2038,7 @@ test('roguelike elimination victory triggers when all enemy mobs are defeated', 
   readyAndResolve(state)
 
   assert.equal(state.winner, 0)
-  assert.ok(state.units['stronghold-1'])
+  assert.ok(state.units['leader-1'])
   assert.ok(state.log.some((entry) => entry === 'Player 1 wins by eliminating all enemy units.'))
 })
 

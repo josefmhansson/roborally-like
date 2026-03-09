@@ -19,7 +19,7 @@ type SimulatorOptions = {
   actionBudgetP2: number
   boardRows: number
   boardCols: number
-  strongholdStrength: number
+  leaderStrength: number
   printEvery: number
   dryRun: boolean
   logPath?: string
@@ -159,7 +159,7 @@ function buildSettings(options: SimulatorOptions): GameSettings {
   return {
     boardRows: options.boardRows,
     boardCols: options.boardCols,
-    strongholdStrength: options.strongholdStrength,
+    leaderStrength: options.leaderStrength,
     deckSize: options.deckSize,
     drawPerTurn: options.drawPerTurn,
     maxCopies: options.maxCopies,
@@ -190,7 +190,7 @@ function parseOptions(args: string[]): SimulatorOptions {
   const actionBudgetP2 = readInt(args, '--action-budget-p2', DEFAULT_SETTINGS.actionBudgetP2)
   const boardRows = readInt(args, '--board-rows', DEFAULT_SETTINGS.boardRows)
   const boardCols = readInt(args, '--board-cols', DEFAULT_SETTINGS.boardCols)
-  const strongholdStrength = readInt(args, '--stronghold-strength', DEFAULT_SETTINGS.strongholdStrength)
+  const leaderStrength = readInt(args, '--leader-strength', readInt(args, '--stronghold-strength', DEFAULT_SETTINGS.leaderStrength))
   const printEvery = readInt(args, '--print-every', Math.max(1, Math.floor(matches / 10)))
   const dryRun = hasFlag(args, '--dry-run')
   const logPath = readString(args, '--log-path')
@@ -208,7 +208,7 @@ function parseOptions(args: string[]): SimulatorOptions {
     actionBudgetP2: clamp(actionBudgetP2, 1, 10),
     boardRows: clamp(boardRows, 4, 20),
     boardCols: clamp(boardCols, 4, 20),
-    strongholdStrength: clamp(strongholdStrength, 1, 50),
+    leaderStrength: clamp(leaderStrength, 1, 50),
     printEvery: clamp(printEvery, 1, 10_000),
     dryRun,
     logPath,
@@ -231,7 +231,7 @@ function printHelp(): void {
   process.stdout.write('  --action-budget-p2 N     Action budget for seat 1\n')
   process.stdout.write('  --board-rows N           Board rows\n')
   process.stdout.write('  --board-cols N           Board cols\n')
-  process.stdout.write('  --stronghold-strength N  Stronghold strength\n')
+  process.stdout.write('  --leader-strength N     Leader strength\n')
   process.stdout.write('  --print-every N          Progress print interval (matches)\n')
   process.stdout.write('  --log-path PATH          Telemetry file path override\n')
   process.stdout.write('  --dry-run                Do not write telemetry entries\n')

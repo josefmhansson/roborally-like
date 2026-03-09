@@ -367,7 +367,7 @@ export type GameState = {
 export type GameSettings = {
   boardRows: number
   boardCols: number
-  strongholdStrength: number
+  leaderStrength: number
   deckSize: number
   drawPerTurn: number
   maxCopies: number

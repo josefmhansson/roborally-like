@@ -14,6 +14,7 @@
     "server:start": "tsx server/index.ts",
     "telemetry:cards": "tsx server/scripts/telemetryCards.ts",
     "telemetry:simulate": "tsx server/scripts/simulateBotMatches.ts",
+    "bot:tune": "tsx server/scripts/tuneBotParameters.ts",
     "test:server": "node --import tsx --test --test-concurrency=1 --experimental-test-isolation=none server/tests/*.test.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",

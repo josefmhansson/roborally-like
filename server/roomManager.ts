@@ -369,10 +369,11 @@ function clamp(value: number, min: number, max: number): number {
 function normalizeSettings(input?: GameSettings): GameSettings {
   if (!input) return { ...DEFAULT_SETTINGS }
   const defaults = DEFAULT_SETTINGS
+  const legacySettings = input as GameSettings & { strongholdStrength?: unknown }
   return {
     boardRows: toBoundedInt(input.boardRows, defaults.boardRows, 4, 14),
     boardCols: toBoundedInt(input.boardCols, defaults.boardCols, 4, 14),
-    strongholdStrength: toBoundedInt(input.strongholdStrength, defaults.strongholdStrength, 1, 20),
+    leaderStrength: toBoundedInt(legacySettings.leaderStrength ?? legacySettings.strongholdStrength, defaults.leaderStrength, 1, 20),
     deckSize: toBoundedInt(input.deckSize, defaults.deckSize, 5, 40),
     drawPerTurn: toBoundedInt(input.drawPerTurn, defaults.drawPerTurn, 1, 10),
     maxCopies: toBoundedInt(input.maxCopies, defaults.maxCopies, 1, 10),

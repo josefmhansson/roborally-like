@@ -462,7 +462,7 @@ function parseRoomSettings(value: unknown): RoomSetup['settings'] | null {
   if (!isObject(value)) return null
   const boardRows = parseFiniteNumber(value.boardRows)
   const boardCols = parseFiniteNumber(value.boardCols)
-  const strongholdStrength = parseFiniteNumber(value.strongholdStrength)
+  const leaderStrength = parseFiniteNumber(value.leaderStrength ?? value.strongholdStrength)
   const deckSize = parseFiniteNumber(value.deckSize)
   const drawPerTurn = parseFiniteNumber(value.drawPerTurn)
   const maxCopies = parseFiniteNumber(value.maxCopies)
@@ -471,7 +471,7 @@ function parseRoomSettings(value: unknown): RoomSetup['settings'] | null {
   if (
     boardRows === null ||
     boardCols === null ||
-    strongholdStrength === null ||
+    leaderStrength === null ||
     deckSize === null ||
     drawPerTurn === null ||
     maxCopies === null ||
@@ -483,7 +483,7 @@ function parseRoomSettings(value: unknown): RoomSetup['settings'] | null {
   return {
     boardRows,
     boardCols,
-    strongholdStrength,
+    leaderStrength,
     deckSize,
     drawPerTurn,
     maxCopies,

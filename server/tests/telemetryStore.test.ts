@@ -9,7 +9,7 @@ import type { MatchTelemetrySubmission } from '../../src/shared/telemetry'
 const BASE_SETTINGS = {
   boardRows: 6,
   boardCols: 6,
-  strongholdStrength: 5,
+  leaderStrength: 5,
   deckSize: 5,
   drawPerTurn: 3,
   maxCopies: 3,
@@ -108,4 +108,26 @@ test('telemetry store rejects malformed payloads', () => {
   if ('errorCode' in result) {
     assert.equal(result.errorCode, 'invalid_payload')
   }
+})
+
+test('telemetry store accepts legacy strongholdStrength settings', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'telemetry-store-legacy-'))
+  const store = new TelemetryStore(join(dir, 'match-logs.ndjson'))
+  const payload = {
+    ...createSubmission({ matchId: 'legacy-match', winner: 0 }),
+    settings: {
+      boardRows: 6,
+      boardCols: 6,
+      strongholdStrength: 7,
+      deckSize: 5,
+      drawPerTurn: 3,
+      maxCopies: 3,
+      actionBudgetP1: 3,
+      actionBudgetP2: 3,
+    },
+  }
+
+  const result = store.ingest(payload, 'client_report')
+  assert.equal(result.ok, true)
+  assert.equal(store.listRecentMatches(1)[0]?.settings.leaderStrength, 7)
 })

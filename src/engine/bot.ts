@@ -9,6 +9,86 @@ export type BotPlannerOptions = {
   maxCandidatesPerCard: number
 }
 
+export type BotScoringHeuristics = {
+  winValue: number
+  leaderStrengthDeltaWeight: number
+  unitStrengthDeltaWeight: number
+  unitCountDeltaWeight: number
+  pressureDeltaWeight: number
+  tacticalDeltaWeight: number
+  opponentHistoryRiskWeight: number
+  chainLightningOpportunityWeight: number
+  queueTimingRiskWeight: number
+}
+
+export type BotPressureHeuristics = {
+  distancePressureWindow: number
+}
+
+export type BotTacticalHeuristics = {
+  adjacentEnemyWeight: number
+  facingRayThreatWeight: number
+}
+
+export type BotHistoryPriorsHeuristics = {
+  attack_arrow: number
+  attack_line: number
+  attack_fwd_lr: number
+  spell_lightning: number
+  spell_meteor: number
+}
+
+export type BotHistoryHeuristics = {
+  fragileUnitThreshold: number
+  priors: BotHistoryPriorsHeuristics
+  arrowLeaderRayScale: number
+  lineRayScale: number
+  cleaveAdjacencyScale: number
+  lightningFragileScale: number
+  meteorClusterScale: number
+  meteorLeaderRayScale: number
+}
+
+export type BotChainLightningHeuristics = {
+  basePlayChance: number
+  adjacentTargetChance: number
+  reachableTargetChance: number
+  fragileTargetChance: number
+  leaderTargetChance: number
+  minPlayChance: number
+  maxPlayChance: number
+  guaranteedReachableTargets: number
+  guaranteedFragileTargets: number
+  isolatedDurableChanceScale: number
+}
+
+export type BotTimingHeuristics = {
+  lateOrderIndexRisk: number
+  slowTailExtraRisk: number
+  priorityRiskScale: number
+}
+
+export type BotHeuristics = {
+  scoring: BotScoringHeuristics
+  pressure: BotPressureHeuristics
+  tactical: BotTacticalHeuristics
+  history: BotHistoryHeuristics
+  chainLightning: BotChainLightningHeuristics
+  timing: BotTimingHeuristics
+}
+
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K]
+}
+
+export type BotHeuristicOverrides = DeepPartial<BotHeuristics>
+export type BotPlannerConfig = BotPlannerOptions & {
+  heuristics: BotHeuristics
+}
+export type BotPlannerOverrides = Partial<BotPlannerOptions> & {
+  heuristics?: BotHeuristicOverrides
+}
+
 export type BotPlannedOrder = {
   cardId: string
   params: OrderParams
@@ -37,16 +117,16 @@ type UnitRef = {
   snapshot: Unit
 }
 
-const DEFAULT_OPTIONS: BotPlannerOptions = {
+export const DEFAULT_BOT_PLANNER_OPTIONS: BotPlannerOptions = {
   thinkTimeMs: 50,
   beamWidth: 10,
   maxCandidatesPerCard: 12,
 }
 
-export const BOT_HEURISTICS = {
+export const BOT_HEURISTICS: BotHeuristics = {
   scoring: {
     winValue: 1_000_000,
-    strongholdDeltaWeight: 500,
+    leaderStrengthDeltaWeight: 500,
     unitStrengthDeltaWeight: 45,
     unitCountDeltaWeight: 22,
     pressureDeltaWeight: 8,
@@ -71,12 +151,12 @@ export const BOT_HEURISTICS = {
       spell_lightning: 0.12,
       spell_meteor: 0.08,
     },
-    arrowStrongholdRayScale: 1.1,
+    arrowLeaderRayScale: 1.1,
     lineRayScale: 0.75,
     cleaveAdjacencyScale: 0.45,
     lightningFragileScale: 0.35,
     meteorClusterScale: 0.32,
-    meteorStrongholdRayScale: 0.18,
+    meteorLeaderRayScale: 0.18,
   },
   chainLightning: {
     basePlayChance: 0.22,
@@ -95,25 +175,25 @@ export const BOT_HEURISTICS = {
     slowTailExtraRisk: 0.95,
     priorityRiskScale: 0.7,
   },
-} as const
+}
 
 const DIRECTIONS: Direction[] = [0, 1, 2, 3, 4, 5]
 
 export function buildBotPlan(
   inputState: GameState,
   player: PlayerId,
-  options: Partial<BotPlannerOptions> = {}
+  options: BotPlannerOverrides = {}
 ): BotPlanResult {
-  const opts = normalizeOptions(options)
+  const config = resolveBotPlannerConfig(options)
   const start = nowMs()
-  const deadline = start + opts.thinkTimeMs
+  const deadline = start + config.thinkTimeMs
   const evaluationCache = new Map<string, number>()
 
   const rootState = buildFairPlanningSnapshot(inputState, player)
   const depthLimit = Math.max(1, rootState.players[player].hand.length)
   const rootNode: BeamNode = {
     state: rootState,
-    score: evaluatePlanningState(rootState, player, evaluationCache),
+    score: evaluatePlanningState(rootState, player, config.heuristics, evaluationCache),
     signature: buildOrderSignature(rootState, player),
   }
 
@@ -131,14 +211,14 @@ export function buildBotPlan(
         bestNode = node
       }
 
-      const candidates = generateRankedCandidates(node.state, player, opts, deadline, evaluationCache)
+      const candidates = generateRankedCandidates(node.state, player, config, deadline, evaluationCache)
       for (const candidate of candidates) {
         if (nowMs() >= deadline) break
         const nextState = cloneGameState(node.state)
         const planned = planOrder(nextState, player, candidate.cardId, candidate.params)
         if (!planned) continue
 
-        const score = evaluatePlanningState(nextState, player, evaluationCache)
+        const score = evaluatePlanningState(nextState, player, config.heuristics, evaluationCache)
         const signature = buildOrderSignature(nextState, player)
         const nextNode: BeamNode = { state: nextState, score, signature }
         nextBeam.push(nextNode)
@@ -150,7 +230,7 @@ export function buildBotPlan(
     }
 
     if (nextBeam.length === 0) break
-    beam = pruneBeam(nextBeam, opts.beamWidth)
+    beam = pruneBeam(nextBeam, config.beamWidth)
   }
 
   const elapsedMs = nowMs() - start
@@ -162,22 +242,177 @@ export function buildBotPlan(
   return { orders, elapsedMs }
 }
 
+export function resolveBotPlannerConfig(input: BotPlannerOverrides = {}): BotPlannerConfig {
+  return {
+    ...normalizeOptions(input),
+    heuristics: normalizeHeuristics(input.heuristics),
+  }
+}
+
 function normalizeOptions(input: Partial<BotPlannerOptions>): BotPlannerOptions {
   return {
-    thinkTimeMs: clamp(Math.floor(input.thinkTimeMs ?? DEFAULT_OPTIONS.thinkTimeMs), 1, 500),
-    beamWidth: clamp(Math.floor(input.beamWidth ?? DEFAULT_OPTIONS.beamWidth), 1, 32),
+    thinkTimeMs: clamp(Math.floor(input.thinkTimeMs ?? DEFAULT_BOT_PLANNER_OPTIONS.thinkTimeMs), 1, 500),
+    beamWidth: clamp(Math.floor(input.beamWidth ?? DEFAULT_BOT_PLANNER_OPTIONS.beamWidth), 1, 32),
     maxCandidatesPerCard: clamp(
-      Math.floor(input.maxCandidatesPerCard ?? DEFAULT_OPTIONS.maxCandidatesPerCard),
+      Math.floor(input.maxCandidatesPerCard ?? DEFAULT_BOT_PLANNER_OPTIONS.maxCandidatesPerCard),
       1,
       40
     ),
   }
 }
 
+function normalizeHeuristics(overrides: BotHeuristicOverrides | undefined): BotHeuristics {
+  return {
+    scoring: {
+      winValue: readNumber(overrides?.scoring?.winValue, BOT_HEURISTICS.scoring.winValue, 1),
+      leaderStrengthDeltaWeight: readNumber(
+        overrides?.scoring?.leaderStrengthDeltaWeight,
+        BOT_HEURISTICS.scoring.leaderStrengthDeltaWeight
+      ),
+      unitStrengthDeltaWeight: readNumber(
+        overrides?.scoring?.unitStrengthDeltaWeight,
+        BOT_HEURISTICS.scoring.unitStrengthDeltaWeight
+      ),
+      unitCountDeltaWeight: readNumber(overrides?.scoring?.unitCountDeltaWeight, BOT_HEURISTICS.scoring.unitCountDeltaWeight),
+      pressureDeltaWeight: readNumber(overrides?.scoring?.pressureDeltaWeight, BOT_HEURISTICS.scoring.pressureDeltaWeight),
+      tacticalDeltaWeight: readNumber(overrides?.scoring?.tacticalDeltaWeight, BOT_HEURISTICS.scoring.tacticalDeltaWeight),
+      opponentHistoryRiskWeight: readNumber(
+        overrides?.scoring?.opponentHistoryRiskWeight,
+        BOT_HEURISTICS.scoring.opponentHistoryRiskWeight
+      ),
+      chainLightningOpportunityWeight: readNumber(
+        overrides?.scoring?.chainLightningOpportunityWeight,
+        BOT_HEURISTICS.scoring.chainLightningOpportunityWeight
+      ),
+      queueTimingRiskWeight: readNumber(
+        overrides?.scoring?.queueTimingRiskWeight,
+        BOT_HEURISTICS.scoring.queueTimingRiskWeight
+      ),
+    },
+    pressure: {
+      distancePressureWindow: readInt(
+        overrides?.pressure?.distancePressureWindow,
+        BOT_HEURISTICS.pressure.distancePressureWindow,
+        1,
+        50
+      ),
+    },
+    tactical: {
+      adjacentEnemyWeight: readNumber(
+        overrides?.tactical?.adjacentEnemyWeight,
+        BOT_HEURISTICS.tactical.adjacentEnemyWeight
+      ),
+      facingRayThreatWeight: readNumber(
+        overrides?.tactical?.facingRayThreatWeight,
+        BOT_HEURISTICS.tactical.facingRayThreatWeight
+      ),
+    },
+    history: {
+      fragileUnitThreshold: readInt(
+        overrides?.history?.fragileUnitThreshold,
+        BOT_HEURISTICS.history.fragileUnitThreshold,
+        0,
+        20
+      ),
+      priors: {
+        attack_arrow: readRatio(overrides?.history?.priors?.attack_arrow, BOT_HEURISTICS.history.priors.attack_arrow),
+        attack_line: readRatio(overrides?.history?.priors?.attack_line, BOT_HEURISTICS.history.priors.attack_line),
+        attack_fwd_lr: readRatio(overrides?.history?.priors?.attack_fwd_lr, BOT_HEURISTICS.history.priors.attack_fwd_lr),
+        spell_lightning: readRatio(
+          overrides?.history?.priors?.spell_lightning,
+          BOT_HEURISTICS.history.priors.spell_lightning
+        ),
+        spell_meteor: readRatio(overrides?.history?.priors?.spell_meteor, BOT_HEURISTICS.history.priors.spell_meteor),
+      },
+      arrowLeaderRayScale: readNumber(
+        overrides?.history?.arrowLeaderRayScale,
+        BOT_HEURISTICS.history.arrowLeaderRayScale,
+        0
+      ),
+      lineRayScale: readNumber(overrides?.history?.lineRayScale, BOT_HEURISTICS.history.lineRayScale, 0),
+      cleaveAdjacencyScale: readNumber(
+        overrides?.history?.cleaveAdjacencyScale,
+        BOT_HEURISTICS.history.cleaveAdjacencyScale,
+        0
+      ),
+      lightningFragileScale: readNumber(
+        overrides?.history?.lightningFragileScale,
+        BOT_HEURISTICS.history.lightningFragileScale,
+        0
+      ),
+      meteorClusterScale: readNumber(overrides?.history?.meteorClusterScale, BOT_HEURISTICS.history.meteorClusterScale, 0),
+      meteorLeaderRayScale: readNumber(
+        overrides?.history?.meteorLeaderRayScale,
+        BOT_HEURISTICS.history.meteorLeaderRayScale,
+        0
+      ),
+    },
+    chainLightning: {
+      basePlayChance: readRatio(
+        overrides?.chainLightning?.basePlayChance,
+        BOT_HEURISTICS.chainLightning.basePlayChance
+      ),
+      adjacentTargetChance: readRatio(
+        overrides?.chainLightning?.adjacentTargetChance,
+        BOT_HEURISTICS.chainLightning.adjacentTargetChance
+      ),
+      reachableTargetChance: readRatio(
+        overrides?.chainLightning?.reachableTargetChance,
+        BOT_HEURISTICS.chainLightning.reachableTargetChance
+      ),
+      fragileTargetChance: readRatio(
+        overrides?.chainLightning?.fragileTargetChance,
+        BOT_HEURISTICS.chainLightning.fragileTargetChance
+      ),
+      leaderTargetChance: readRatio(
+        overrides?.chainLightning?.leaderTargetChance,
+        BOT_HEURISTICS.chainLightning.leaderTargetChance
+      ),
+      minPlayChance: readRatio(overrides?.chainLightning?.minPlayChance, BOT_HEURISTICS.chainLightning.minPlayChance),
+      maxPlayChance: readRatio(overrides?.chainLightning?.maxPlayChance, BOT_HEURISTICS.chainLightning.maxPlayChance),
+      guaranteedReachableTargets: readInt(
+        overrides?.chainLightning?.guaranteedReachableTargets,
+        BOT_HEURISTICS.chainLightning.guaranteedReachableTargets,
+        1,
+        20
+      ),
+      guaranteedFragileTargets: readInt(
+        overrides?.chainLightning?.guaranteedFragileTargets,
+        BOT_HEURISTICS.chainLightning.guaranteedFragileTargets,
+        1,
+        20
+      ),
+      isolatedDurableChanceScale: readRatio(
+        overrides?.chainLightning?.isolatedDurableChanceScale,
+        BOT_HEURISTICS.chainLightning.isolatedDurableChanceScale
+      ),
+    },
+    timing: {
+      lateOrderIndexRisk: readNumber(overrides?.timing?.lateOrderIndexRisk, BOT_HEURISTICS.timing.lateOrderIndexRisk, 0),
+      slowTailExtraRisk: readNumber(overrides?.timing?.slowTailExtraRisk, BOT_HEURISTICS.timing.slowTailExtraRisk, 0),
+      priorityRiskScale: readNumber(overrides?.timing?.priorityRiskScale, BOT_HEURISTICS.timing.priorityRiskScale, 0, 2),
+    },
+  }
+}
+
+function readNumber(raw: number | undefined, fallback: number, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback
+  return clamp(raw, min, max)
+}
+
+function readInt(raw: number | undefined, fallback: number, min: number, max: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback
+  return clamp(Math.floor(raw), min, max)
+}
+
+function readRatio(raw: number | undefined, fallback: number): number {
+  return readNumber(raw, fallback, 0, 1)
+}
+
 function generateRankedCandidates(
   state: GameState,
   player: PlayerId,
-  options: BotPlannerOptions,
+  config: BotPlannerConfig,
   deadline: number,
   evaluationCache: Map<string, number>
 ): Candidate[] {
@@ -186,7 +421,7 @@ function generateRankedCandidates(
 
   const projected = simulatePlannedState(state, player)
   const allCandidates: Candidate[] = []
-  const maxTotal = Math.max(24, options.beamWidth * 5)
+  const maxTotal = Math.max(24, config.beamWidth * 5)
 
   for (const card of playerHand) {
     if (nowMs() >= deadline) break
@@ -208,14 +443,14 @@ function generateRankedCandidates(
       scored.push({
         cardId: card.id,
         params: cloneParams(params),
-        score: evaluatePlanningState(nextState, player, evaluationCache),
+        score: evaluatePlanningState(nextState, player, config.heuristics, evaluationCache),
         signature,
       })
     }
 
     if (scored.length === 0) continue
     scored.sort(compareCandidateScore)
-    allCandidates.push(...scored.slice(0, options.maxCandidatesPerCard))
+    allCandidates.push(...scored.slice(0, config.maxCandidatesPerCard))
   }
 
   if (allCandidates.length === 0) return []
@@ -597,7 +832,12 @@ function getFriendlyUnitRefs(
   return refs
 }
 
-function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCache?: Map<string, number>): number {
+function evaluatePlanningState(
+  state: GameState,
+  player: PlayerId,
+  heuristics: BotHeuristics,
+  evaluationCache?: Map<string, number>
+): number {
   const cacheKey = `${player}|${state.turn}|${buildOrderSignature(state, player)}`
   const cached = evaluationCache?.get(cacheKey)
   if (cached !== undefined) return cached
@@ -605,21 +845,21 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
   const projected = simulatePlannedState(state, player)
   const opponent: PlayerId = player === 0 ? 1 : 0
   if (projected.winner === player) {
-    const winningScore = BOT_HEURISTICS.scoring.winValue + deterministicJitter(state, player)
+    const winningScore = heuristics.scoring.winValue + deterministicJitter(state, player)
     evaluationCache?.set(cacheKey, winningScore)
     return winningScore
   }
   if (projected.winner === opponent) {
-    const losingScore = -BOT_HEURISTICS.scoring.winValue + deterministicJitter(state, player)
+    const losingScore = -heuristics.scoring.winValue + deterministicJitter(state, player)
     evaluationCache?.set(cacheKey, losingScore)
     return losingScore
   }
 
-  const ownStronghold = projected.units[`stronghold-${player}`]
-  const enemyStronghold = projected.units[`stronghold-${opponent}`]
+  const ownLeader = projected.units[`leader-${player}`]
+  const enemyLeader = projected.units[`leader-${opponent}`]
   const eliminateUnitsMode = projected.settings.victoryCondition === 'eliminate_units'
-  const ownStrongholdStrength = eliminateUnitsMode ? 0 : ownStronghold?.strength ?? 0
-  const enemyStrongholdStrength = eliminateUnitsMode ? 0 : enemyStronghold?.strength ?? 0
+  const ownLeaderStrength = eliminateUnitsMode ? 0 : ownLeader?.strength ?? 0
+  const enemyLeaderStrength = eliminateUnitsMode ? 0 : enemyLeader?.strength ?? 0
 
   const ownUnits = Object.values(projected.units).filter((unit) => unit.owner === player && unit.kind === 'unit')
   const enemyUnits = Object.values(projected.units).filter((unit) => unit.owner === opponent && unit.kind === 'unit')
@@ -628,26 +868,26 @@ function evaluatePlanningState(state: GameState, player: PlayerId, evaluationCac
   const ownStrength = ownUnits.reduce((sum, unit) => sum + unit.strength, 0)
   const enemyStrength = enemyUnits.reduce((sum, unit) => sum + unit.strength, 0)
 
-  const strongholdDelta = ownStrongholdStrength - enemyStrongholdStrength
+  const leaderStrengthDelta = ownLeaderStrength - enemyLeaderStrength
   const unitStrengthDelta = ownStrength - enemyStrength
   const unitCountDelta = ownUnits.length - enemyUnits.length
   const pressureDelta = eliminateUnitsMode
-    ? computeEliminationPressureDelta(ownUnits, enemyUnits)
-    : computePressureDelta(projected, player, ownUnits, enemyUnits)
-  const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownCombatants, enemyCombatants)
-  const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownCombatants, enemyCombatants)
-  const chainLightningOpportunity = computeChainLightningPlanningBonus(state, projected, player)
-  const queueTimingRisk = computeQueueTimingRisk(state, player)
+    ? computeEliminationPressureDelta(ownUnits, enemyUnits, heuristics)
+    : computePressureDelta(projected, player, ownUnits, enemyUnits, heuristics)
+  const tacticalDelta = computeImmediateTacticalDelta(projected, player, ownCombatants, enemyCombatants, heuristics)
+  const opponentHistoryRisk = computeOpponentHistoryRisk(projected, player, ownCombatants, enemyCombatants, heuristics)
+  const chainLightningOpportunity = computeChainLightningPlanningBonus(state, projected, player, heuristics)
+  const queueTimingRisk = computeQueueTimingRisk(state, player, heuristics)
 
   const score =
-    strongholdDelta * BOT_HEURISTICS.scoring.strongholdDeltaWeight +
-    unitStrengthDelta * BOT_HEURISTICS.scoring.unitStrengthDeltaWeight +
-    unitCountDelta * BOT_HEURISTICS.scoring.unitCountDeltaWeight +
-    pressureDelta * BOT_HEURISTICS.scoring.pressureDeltaWeight +
-    tacticalDelta * BOT_HEURISTICS.scoring.tacticalDeltaWeight +
-    opponentHistoryRisk * BOT_HEURISTICS.scoring.opponentHistoryRiskWeight +
-    chainLightningOpportunity * BOT_HEURISTICS.scoring.chainLightningOpportunityWeight +
-    queueTimingRisk * BOT_HEURISTICS.scoring.queueTimingRiskWeight +
+    leaderStrengthDelta * heuristics.scoring.leaderStrengthDeltaWeight +
+    unitStrengthDelta * heuristics.scoring.unitStrengthDeltaWeight +
+    unitCountDelta * heuristics.scoring.unitCountDeltaWeight +
+    pressureDelta * heuristics.scoring.pressureDeltaWeight +
+    tacticalDelta * heuristics.scoring.tacticalDeltaWeight +
+    opponentHistoryRisk * heuristics.scoring.opponentHistoryRiskWeight +
+    chainLightningOpportunity * heuristics.scoring.chainLightningOpportunityWeight +
+    queueTimingRisk * heuristics.scoring.queueTimingRiskWeight +
     deterministicJitter(state, player)
 
   evaluationCache?.set(cacheKey, score)
@@ -658,39 +898,40 @@ function computePressureDelta(
   state: GameState,
   player: PlayerId,
   ownUnits: Unit[],
-  enemyUnits: Unit[]
+  enemyUnits: Unit[],
+  heuristics: BotHeuristics
 ): number {
   const opponent: PlayerId = player === 0 ? 1 : 0
-  const ownStronghold = state.units[`stronghold-${player}`]
-  const enemyStronghold = state.units[`stronghold-${opponent}`]
-  if (!ownStronghold || !enemyStronghold) return 0
+  const ownLeader = state.units[`leader-${player}`]
+  const enemyLeader = state.units[`leader-${opponent}`]
+  if (!ownLeader || !enemyLeader) return 0
 
   const ownPressure = ownUnits.reduce((sum, unit) => {
-    const dist = hexDistance(unit.pos, enemyStronghold.pos)
-    return sum + Math.max(0, BOT_HEURISTICS.pressure.distancePressureWindow - dist)
+    const dist = hexDistance(unit.pos, enemyLeader.pos)
+    return sum + Math.max(0, heuristics.pressure.distancePressureWindow - dist)
   }, 0)
   const enemyPressure = enemyUnits.reduce((sum, unit) => {
-    const dist = hexDistance(unit.pos, ownStronghold.pos)
-    return sum + Math.max(0, BOT_HEURISTICS.pressure.distancePressureWindow - dist)
+    const dist = hexDistance(unit.pos, ownLeader.pos)
+    return sum + Math.max(0, heuristics.pressure.distancePressureWindow - dist)
   }, 0)
   return ownPressure - enemyPressure
 }
 
-function computeEliminationPressureDelta(ownUnits: Unit[], enemyUnits: Unit[]): number {
+function computeEliminationPressureDelta(ownUnits: Unit[], enemyUnits: Unit[], heuristics: BotHeuristics): number {
   if (ownUnits.length === 0 || enemyUnits.length === 0) return 0
 
   const ownPressure = ownUnits.reduce((sum, unit) => {
     const nearestEnemyDistance = enemyUnits.reduce((nearest, enemy) => {
       return Math.min(nearest, hexDistance(unit.pos, enemy.pos))
     }, Number.MAX_SAFE_INTEGER)
-    return sum + Math.max(0, BOT_HEURISTICS.pressure.distancePressureWindow - nearestEnemyDistance)
+    return sum + Math.max(0, heuristics.pressure.distancePressureWindow - nearestEnemyDistance)
   }, 0)
 
   const enemyPressure = enemyUnits.reduce((sum, unit) => {
     const nearestOwnDistance = ownUnits.reduce((nearest, own) => {
       return Math.min(nearest, hexDistance(unit.pos, own.pos))
     }, Number.MAX_SAFE_INTEGER)
-    return sum + Math.max(0, BOT_HEURISTICS.pressure.distancePressureWindow - nearestOwnDistance)
+    return sum + Math.max(0, heuristics.pressure.distancePressureWindow - nearestOwnDistance)
   }, 0)
 
   return ownPressure - enemyPressure
@@ -700,20 +941,21 @@ function computeImmediateTacticalDelta(
   state: GameState,
   player: PlayerId,
   ownUnits: Unit[],
-  enemyUnits: Unit[]
+  enemyUnits: Unit[],
+  heuristics: BotHeuristics
 ): number {
   const opponent: PlayerId = player === 0 ? 1 : 0
   let ownTactical = 0
   let enemyTactical = 0
 
   ownUnits.forEach((unit) => {
-    ownTactical += countAdjacentEnemies(state, unit.pos, opponent) * BOT_HEURISTICS.tactical.adjacentEnemyWeight
-    if (hasEnemyInFacingRay(state, unit, opponent)) ownTactical += BOT_HEURISTICS.tactical.facingRayThreatWeight
+    ownTactical += countAdjacentEnemies(state, unit.pos, opponent) * heuristics.tactical.adjacentEnemyWeight
+    if (hasEnemyInFacingRay(state, unit, opponent)) ownTactical += heuristics.tactical.facingRayThreatWeight
   })
 
   enemyUnits.forEach((unit) => {
-    enemyTactical += countAdjacentEnemies(state, unit.pos, player) * BOT_HEURISTICS.tactical.adjacentEnemyWeight
-    if (hasEnemyInFacingRay(state, unit, player)) enemyTactical += BOT_HEURISTICS.tactical.facingRayThreatWeight
+    enemyTactical += countAdjacentEnemies(state, unit.pos, player) * heuristics.tactical.adjacentEnemyWeight
+    if (hasEnemyInFacingRay(state, unit, player)) enemyTactical += heuristics.tactical.facingRayThreatWeight
   })
 
   return ownTactical - enemyTactical
@@ -723,7 +965,8 @@ function computeOpponentHistoryRisk(
   state: GameState,
   player: PlayerId,
   ownUnits: Unit[],
-  enemyUnits: Unit[]
+  enemyUnits: Unit[],
+  heuristics: BotHeuristics
 ): number {
   if (state.settings.victoryCondition === 'eliminate_units') return 0
   if (ownUnits.length === 0 || enemyUnits.length === 0) return 0
@@ -741,10 +984,10 @@ function computeOpponentHistoryRisk(
     return sum + 1
   }, 0)
 
-  const ownStronghold = state.units[`stronghold-${player}`]
-  const strongholdRayExposure = ownStronghold
+  const ownLeader = state.units[`leader-${player}`]
+  const leaderRayExposure = ownLeader
     ? enemyUnits.reduce((sum, unit) => {
-        return sum + (isHexInFacingRay(state, unit.pos, unit.facing, ownStronghold.pos) ? 1 : 0)
+        return sum + (isHexInFacingRay(state, unit.pos, unit.facing, ownLeader.pos) ? 1 : 0)
       }, 0)
     : 0
 
@@ -757,49 +1000,39 @@ function computeOpponentHistoryRisk(
   }, 0)
 
   const fragileUnits = ownUnits.reduce(
-    (sum, unit) => sum + (unit.strength <= BOT_HEURISTICS.history.fragileUnitThreshold ? 1 : 0),
+    (sum, unit) => sum + (unit.strength <= heuristics.history.fragileUnitThreshold ? 1 : 0),
     0
   )
 
-  const arrowLikelihood = cardHistoryLikelihood(
-    counts,
-    revealedCount,
-    'attack_arrow',
-    BOT_HEURISTICS.history.priors.attack_arrow
-  )
-  const lineLikelihood = cardHistoryLikelihood(
-    counts,
-    revealedCount,
-    'attack_line',
-    BOT_HEURISTICS.history.priors.attack_line
-  )
+  const arrowLikelihood = cardHistoryLikelihood(counts, revealedCount, 'attack_arrow', heuristics.history.priors.attack_arrow)
+  const lineLikelihood = cardHistoryLikelihood(counts, revealedCount, 'attack_line', heuristics.history.priors.attack_line)
   const cleaveLikelihood = cardHistoryLikelihood(
     counts,
     revealedCount,
     'attack_fwd_lr',
-    BOT_HEURISTICS.history.priors.attack_fwd_lr
+    heuristics.history.priors.attack_fwd_lr
   )
   const lightningLikelihood = cardHistoryLikelihood(
     counts,
     revealedCount,
     'spell_lightning',
-    BOT_HEURISTICS.history.priors.spell_lightning
+    heuristics.history.priors.spell_lightning
   )
   const meteorLikelihood = cardHistoryLikelihood(
     counts,
     revealedCount,
     'spell_meteor',
-    BOT_HEURISTICS.history.priors.spell_meteor
+    heuristics.history.priors.spell_meteor
   )
 
   return (
-    arrowLikelihood * (rayExposure + strongholdRayExposure * BOT_HEURISTICS.history.arrowStrongholdRayScale) +
-    lineLikelihood * (rayExposure * BOT_HEURISTICS.history.lineRayScale + strongholdRayExposure) +
-    cleaveLikelihood * adjacencyExposure * BOT_HEURISTICS.history.cleaveAdjacencyScale +
-    lightningLikelihood * fragileUnits * BOT_HEURISTICS.history.lightningFragileScale +
+    arrowLikelihood * (rayExposure + leaderRayExposure * heuristics.history.arrowLeaderRayScale) +
+    lineLikelihood * (rayExposure * heuristics.history.lineRayScale + leaderRayExposure) +
+    cleaveLikelihood * adjacencyExposure * heuristics.history.cleaveAdjacencyScale +
+    lightningLikelihood * fragileUnits * heuristics.history.lightningFragileScale +
     meteorLikelihood *
-      (clusterExposure * BOT_HEURISTICS.history.meteorClusterScale +
-        strongholdRayExposure * BOT_HEURISTICS.history.meteorStrongholdRayScale)
+      (clusterExposure * heuristics.history.meteorClusterScale +
+        leaderRayExposure * heuristics.history.meteorLeaderRayScale)
   )
 }
 
@@ -813,7 +1046,8 @@ type ChainLightningOpportunity = {
 function computeChainLightningPlanningBonus(
   planningState: GameState,
   projected: GameState,
-  player: PlayerId
+  player: PlayerId,
+  heuristics: BotHeuristics
 ): number {
   let bonus = 0
   planningState.players[player].orders.forEach((order) => {
@@ -822,7 +1056,7 @@ function computeChainLightningPlanningBonus(
     if (!caster) return
     const opportunity = evaluateChainLightningOpportunity(projected, player, caster)
     if (opportunity.reachableTargets <= 0) return
-    const playChance = computeChainLightningPlayChance(opportunity)
+    const playChance = computeChainLightningPlayChance(opportunity, heuristics)
     const roll = deterministicChainLightningRoll(planningState, player, order)
     if (roll > playChance) return
     bonus += computeChainLightningOpportunityValue(opportunity)
@@ -904,28 +1138,28 @@ function evaluateChainLightningOpportunity(
   }
 }
 
-function computeChainLightningPlayChance(opportunity: ChainLightningOpportunity): number {
-  const heuristics = BOT_HEURISTICS.chainLightning
+function computeChainLightningPlayChance(opportunity: ChainLightningOpportunity, heuristics: BotHeuristics): number {
+  const chainLightning = heuristics.chainLightning
   if (opportunity.reachableTargets <= 0) return 0
   if (
-    opportunity.reachableTargets >= heuristics.guaranteedReachableTargets ||
-    opportunity.fragileTargets >= heuristics.guaranteedFragileTargets
+    opportunity.reachableTargets >= chainLightning.guaranteedReachableTargets ||
+    opportunity.fragileTargets >= chainLightning.guaranteedFragileTargets
   ) {
     return 1
   }
 
   let chance =
-    heuristics.basePlayChance +
-    Math.max(0, opportunity.adjacentTargets - 1) * heuristics.adjacentTargetChance +
-    Math.max(0, opportunity.reachableTargets - 1) * heuristics.reachableTargetChance +
-    opportunity.fragileTargets * heuristics.fragileTargetChance +
-    opportunity.leaderTargets * heuristics.leaderTargetChance
+    chainLightning.basePlayChance +
+    Math.max(0, opportunity.adjacentTargets - 1) * chainLightning.adjacentTargetChance +
+    Math.max(0, opportunity.reachableTargets - 1) * chainLightning.reachableTargetChance +
+    opportunity.fragileTargets * chainLightning.fragileTargetChance +
+    opportunity.leaderTargets * chainLightning.leaderTargetChance
 
   if (opportunity.reachableTargets === 1 && opportunity.fragileTargets === 0 && opportunity.leaderTargets === 0) {
-    chance *= heuristics.isolatedDurableChanceScale
+    chance *= chainLightning.isolatedDurableChanceScale
   }
 
-  return clamp(chance, heuristics.minPlayChance, heuristics.maxPlayChance)
+  return clamp(chance, chainLightning.minPlayChance, chainLightning.maxPlayChance)
 }
 
 function deterministicChainLightningRoll(state: GameState, player: PlayerId, order: Order): number {
@@ -943,7 +1177,7 @@ function computeChainLightningOpportunityValue(opportunity: ChainLightningOpport
   )
 }
 
-function computeQueueTimingRisk(state: GameState, player: PlayerId): number {
+function computeQueueTimingRisk(state: GameState, player: PlayerId, heuristics: BotHeuristics): number {
   const orders = state.players[player].orders
   if (orders.length <= 1) return 0
   const slowTailOrderIds = getSlowTailOrderIds(orders)
@@ -953,12 +1187,12 @@ function computeQueueTimingRisk(state: GameState, player: PlayerId): number {
     const sensitivity = getOrderTimingSensitivity(order)
     if (sensitivity <= 0) return
 
-    let orderRisk = sensitivity * index * BOT_HEURISTICS.timing.lateOrderIndexRisk
+    let orderRisk = sensitivity * index * heuristics.timing.lateOrderIndexRisk
     if (slowTailOrderIds.has(order.id)) {
-      orderRisk += sensitivity * BOT_HEURISTICS.timing.slowTailExtraRisk
+      orderRisk += sensitivity * heuristics.timing.slowTailExtraRisk
     }
     if (isPriorityOrder(order)) {
-      orderRisk *= BOT_HEURISTICS.timing.priorityRiskScale
+      orderRisk *= heuristics.timing.priorityRiskScale
     }
     risk += orderRisk
   })

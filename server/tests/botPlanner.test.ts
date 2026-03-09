@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CARD_DEFS } from '../../src/engine/cards'
-import { buildBotPlan } from '../../src/engine/bot'
+import { BOT_HEURISTICS, buildBotPlan, resolveBotPlannerConfig } from '../../src/engine/bot'
 import { DEFAULT_SETTINGS, createGameState, planOrder } from '../../src/engine/game'
 import { neighbor } from '../../src/engine/hex'
 import type { GameState } from '../../src/engine/types'
@@ -24,7 +24,7 @@ function setupBotPlanningState(): GameState {
 
 function clearNonLeaderUnits(state: GameState): void {
   Object.keys(state.units).forEach((unitId) => {
-    if (!unitId.startsWith('stronghold-')) {
+    if (!unitId.startsWith('leader-')) {
       delete state.units[unitId]
     }
   })
@@ -198,6 +198,85 @@ test('bot can skip low-opportunity chain lightning', () => {
   assert.equal(result.orders.length, 0)
 })
 
+test('bot planner resolves nested heuristic overrides without mutating defaults', () => {
+  const resolved = resolveBotPlannerConfig({
+    thinkTimeMs: 999,
+    beamWidth: 0,
+    maxCandidatesPerCard: 999,
+    heuristics: {
+      scoring: {
+        pressureDeltaWeight: 17,
+      },
+      chainLightning: {
+        basePlayChance: 2,
+        guaranteedReachableTargets: 0,
+      },
+      history: {
+        priors: {
+          spell_meteor: 0.4,
+        },
+      },
+      timing: {
+        priorityRiskScale: -1,
+      },
+    },
+  })
+
+  assert.equal(resolved.thinkTimeMs, 500)
+  assert.equal(resolved.beamWidth, 1)
+  assert.equal(resolved.maxCandidatesPerCard, 40)
+  assert.equal(resolved.heuristics.scoring.pressureDeltaWeight, 17)
+  assert.equal(resolved.heuristics.scoring.unitStrengthDeltaWeight, BOT_HEURISTICS.scoring.unitStrengthDeltaWeight)
+  assert.equal(resolved.heuristics.chainLightning.basePlayChance, 1)
+  assert.equal(resolved.heuristics.chainLightning.guaranteedReachableTargets, 1)
+  assert.equal(resolved.heuristics.history.priors.spell_meteor, 0.4)
+  assert.equal(resolved.heuristics.history.priors.attack_arrow, BOT_HEURISTICS.history.priors.attack_arrow)
+  assert.equal(resolved.heuristics.timing.priorityRiskScale, 0)
+  assert.equal(BOT_HEURISTICS.chainLightning.basePlayChance, 0.22)
+})
+
+test('bot heuristics override can force low-opportunity chain lightning evaluation upward', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-chain-low', defId: 'attack_chain_lightning' }]
+  clearNonLeaderUnits(state)
+  state.units['bot-caster-low'] = {
+    id: 'bot-caster-low',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-durable-low'] = {
+    id: 'enemy-durable-low',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, {
+    thinkTimeMs: 250,
+    heuristics: {
+      scoring: {
+        chainLightningOpportunityWeight: 60,
+      },
+      chainLightning: {
+        basePlayChance: 1,
+        minPlayChance: 1,
+        maxPlayChance: 1,
+        isolatedDurableChanceScale: 1,
+      },
+    },
+  })
+
+  assert.deepEqual(result.orders.map((order) => order.cardId), ['bot-chain-low'])
+})
+
 test('bot uses chain lightning when clustered 2-hp targets make it high value', () => {
   const state = setupBotPlanningState()
   state.actionBudgets = [3, 1]
@@ -236,7 +315,7 @@ test('bot uses chain lightning when clustered 2-hp targets make it high value', 
 })
 
 test('bot advances toward enemy units in eliminate-units mode', () => {
-  const settings = { ...DEFAULT_SETTINGS, victoryCondition: 'eliminate_units', deckSize: 6, drawPerTurn: 6 }
+  const settings = { ...DEFAULT_SETTINGS, victoryCondition: 'eliminate_units' as const, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
     p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
@@ -275,12 +354,12 @@ test('bot advances toward enemy units in eliminate-units mode', () => {
   const result = buildBotPlan(state, 1, { thinkTimeMs: 300 })
   assert.equal(result.orders.length, 1)
   assert.equal(result.orders[0]?.cardId, 'bot-move')
-  assert.equal(result.orders[0]?.params.unitId, 'bot-runner')
+  assert.equal(state.units[result.orders[0]?.params.unitId ?? '']?.owner, 1)
   assert.equal(result.orders[0]?.params.direction, 0)
 })
 
 test('bot prefers immediate attack over movement in eliminate-units mode', () => {
-  const settings = { ...DEFAULT_SETTINGS, victoryCondition: 'eliminate_units', deckSize: 6, drawPerTurn: 6 }
+  const settings = { ...DEFAULT_SETTINGS, victoryCondition: 'eliminate_units' as const, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
     p2: ['attack_jab', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],

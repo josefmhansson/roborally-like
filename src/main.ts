@@ -192,7 +192,7 @@ app.innerHTML = `
           </label>
           <label>
             Leader strength
-            <input id="setting-stronghold" type="number" min="1" max="20" step="1" />
+            <input id="setting-leader-strength" type="number" min="1" max="20" step="1" />
           </label>
           <label>
             Cards in deck
@@ -328,7 +328,7 @@ const loadoutFilterButtons = document.querySelectorAll<HTMLButtonElement>('.filt
 const settingsBackButton = document.querySelector<HTMLButtonElement>('#settings-back')!
 const settingRows = document.querySelector<HTMLInputElement>('#setting-rows')!
 const settingCols = document.querySelector<HTMLInputElement>('#setting-cols')!
-const settingStronghold = document.querySelector<HTMLInputElement>('#setting-stronghold')!
+const settingLeaderStrength = document.querySelector<HTMLInputElement>('#setting-leader-strength')!
 const settingDeck = document.querySelector<HTMLInputElement>('#setting-deck')!
 const settingDraw = document.querySelector<HTMLInputElement>('#setting-draw')!
 
@@ -407,7 +407,7 @@ if (
   !settingsBackButton ||
   !settingRows ||
   !settingCols ||
-  !settingStronghold ||
+  !settingLeaderStrength ||
   !settingDeck ||
   !settingDraw ||
   !settingMaxCopies ||
@@ -799,10 +799,10 @@ const ONLINE_SESSION_VERSION = 1
 const ONLINE_RECONNECT_DELAY_MS = 2000
 const BOT_HUMAN_PLAYER: PlayerId = 0
 const BOT_PLAYER: PlayerId = 1
-const ROGUELIKE_STARTING_STRONGHOLD_HP = 20
+const ROGUELIKE_STARTING_LEADER_HP = 20
 const ROGUELIKE_BASE_AP_BUDGET = 3
 const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
-  strongholdHp: 34,
+  leaderHp: 34,
   extraDraw: 5,
   extraAp: 2,
   extraStartingUnit: 5,
@@ -835,7 +835,7 @@ type RoguelikeEncounterDef = {
 
 type RoguelikeRunState = {
   wins: number
-  strongholdHp: number
+  leaderHp: number
   deck: CardDefId[]
   playerClass: PlayerClassId
   bonusDrawPerTurn: number
@@ -1075,7 +1075,7 @@ function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClass
   const normalizedClass = normalizePlayerClassInput(playerClass, DEFAULT_PLAYER_CLASSES.p1)
   return {
     wins: 0,
-    strongholdHp: ROGUELIKE_STARTING_STRONGHOLD_HP,
+    leaderHp: ROGUELIKE_STARTING_LEADER_HP,
     deck: sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], normalizedClass),
     playerClass: normalizedClass,
     bonusDrawPerTurn: 0,
@@ -1092,9 +1092,40 @@ function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClass
   }
 }
 
+function normalizeLeaderUnitReference(unitId: string): string {
+  return unitId.startsWith('stronghold-') ? `leader-${unitId.slice('stronghold-'.length)}` : unitId
+}
+
+function normalizeGameSettingsInput(input: unknown): GameSettings {
+  if (!input || typeof input !== 'object') return { ...DEFAULT_SETTINGS }
+  const source = input as Partial<GameSettings> & { strongholdStrength?: unknown }
+  const { strongholdStrength: _legacyStrongholdStrength, ...rest } = source
+  const leaderStrength = Number(source.leaderStrength ?? source.strongholdStrength)
+  return {
+    ...DEFAULT_SETTINGS,
+    ...rest,
+    leaderStrength: Number.isFinite(leaderStrength) ? leaderStrength : DEFAULT_SETTINGS.leaderStrength,
+  }
+}
+
+function normalizeOrderParamsLeaderReferences(params: OrderParams): OrderParams {
+  return {
+    ...params,
+    unitId: params.unitId ? normalizeLeaderUnitReference(params.unitId) : undefined,
+    unitId2: params.unitId2 ? normalizeLeaderUnitReference(params.unitId2) : undefined,
+  }
+}
+
+function normalizeRoguelikeRewardInput(input: unknown): RoguelikeRandomReward | null {
+  const rewardKey = input === 'strongholdHp' ? 'leaderHp' : input
+  return typeof rewardKey === 'string' && rewardKey in ROGUELIKE_RANDOM_REWARD_WEIGHTS
+    ? (rewardKey as RoguelikeRandomReward)
+    : null
+}
+
 function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   if (!input || typeof input !== 'object') return null
-  const source = input as Partial<RoguelikeRunState>
+  const source = input as Partial<RoguelikeRunState> & { strongholdHp?: unknown }
   const playerClass = normalizePlayerClassInput(source.playerClass, playerClasses.p1)
   const deck = sanitizeDeckForCurrentClass(normalizeDeckInput(source.deck), playerClass)
   const uiStage =
@@ -1103,16 +1134,13 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     source.uiStage === 'run_over'
       ? source.uiStage
       : 'reward_choice'
-  const pendingRandomReward =
-    typeof source.pendingRandomReward === 'string' && source.pendingRandomReward in ROGUELIKE_RANDOM_REWARD_WEIGHTS
-      ? (source.pendingRandomReward as RoguelikeRandomReward)
-      : null
+  const pendingRandomReward = normalizeRoguelikeRewardInput(source.pendingRandomReward)
   const currentEncounterId = isRoguelikeEncounterId(source.currentEncounterId) ? source.currentEncounterId : null
   const currentMatchNumber = Math.max(1, Math.floor(Number(source.currentMatchNumber) || 1))
 
   return {
     wins: Math.max(0, Math.floor(Number(source.wins) || 0)),
-    strongholdHp: Math.max(1, Math.floor(Number(source.strongholdHp) || ROGUELIKE_STARTING_STRONGHOLD_HP)),
+    leaderHp: Math.max(1, Math.floor(Number(source.leaderHp ?? source.strongholdHp) || ROGUELIKE_STARTING_LEADER_HP)),
     deck:
       deck.length > 0
         ? deck
@@ -1179,7 +1207,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
     if (!parsed.state || !Array.isArray(parsed.state.tiles) || !Array.isArray(parsed.state.players)) return null
     if (!parsed.gameSettings || !parsed.loadouts) return null
 
-    gameSettings = { ...DEFAULT_SETTINGS, ...parsed.gameSettings }
+    gameSettings = normalizeGameSettingsInput(parsed.gameSettings)
     playerClasses =
       parsed.version === 4 ? normalizePlayerClassesInput(parsed.playerClasses) : { ...DEFAULT_PLAYER_CLASSES }
     loadouts = {
@@ -1197,7 +1225,7 @@ function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game'
       typeof parsed.pendingOrder.cardId === 'string' &&
       parsed.pendingOrder.params &&
       typeof parsed.pendingOrder.params === 'object'
-        ? { cardId: parsed.pendingOrder.cardId, params: parsed.pendingOrder.params }
+        ? { cardId: parsed.pendingOrder.cardId, params: normalizeOrderParamsLeaderReferences(parsed.pendingOrder.params) }
         : null
 
     if (typeof parsed.boardZoom === 'number') {
@@ -1923,6 +1951,26 @@ function mapViewToState(view: GameStateView): GameState {
 }
 
 function normalizeLeaderUnitsInState(sourceState: GameState): void {
+  sourceState.settings = normalizeGameSettingsInput(sourceState.settings)
+  const normalizedUnits: GameState['units'] = {}
+  Object.entries(sourceState.units).forEach(([unitId, unit]) => {
+    const normalizedUnitId = normalizeLeaderUnitReference(unitId)
+    normalizedUnits[normalizedUnitId] = {
+      ...unit,
+      id: normalizeLeaderUnitReference(unit.id),
+    }
+  })
+  sourceState.units = normalizedUnits
+  sourceState.players.forEach((playerState) => {
+    playerState.orders = playerState.orders.map((order) => ({
+      ...order,
+      params: normalizeOrderParamsLeaderReferences(order.params),
+    }))
+  })
+  sourceState.actionQueue = sourceState.actionQueue.map((order) => ({
+    ...order,
+    params: normalizeOrderParamsLeaderReferences(order.params),
+  }))
   const normalizedTraps = Array.isArray((sourceState as { traps?: unknown }).traps)
     ? (sourceState as { traps: unknown[] }).traps
         .filter((entry): entry is { id?: unknown; owner?: unknown; kind?: unknown; pos?: { q?: unknown; r?: unknown } } => {
@@ -1955,8 +2003,8 @@ function normalizeLeaderUnitsInState(sourceState: GameState): void {
   }
   if (!sourceState.turnStartLeaderPositions) {
     sourceState.turnStartLeaderPositions = [
-      { ...(sourceState.units['stronghold-0']?.pos ?? { q: -1, r: -1 }) },
-      { ...(sourceState.units['stronghold-1']?.pos ?? { q: -1, r: -1 }) },
+      { ...(sourceState.units['leader-0']?.pos ?? { q: -1, r: -1 }) },
+      { ...(sourceState.units['leader-1']?.pos ?? { q: -1, r: -1 }) },
     ]
   }
 
@@ -5856,7 +5904,7 @@ function renderLoadout(): void {
 function renderSettings(): void {
   settingRows.value = String(gameSettings.boardRows)
   settingCols.value = String(gameSettings.boardCols)
-  settingStronghold.value = String(gameSettings.strongholdStrength)
+  settingLeaderStrength.value = String(gameSettings.leaderStrength)
   settingDeck.value = String(gameSettings.deckSize)
   settingDraw.value = String(gameSettings.drawPerTurn)
   settingMaxCopies.value = String(gameSettings.maxCopies)
@@ -5926,7 +5974,7 @@ function updateSeedDisplay(): void {
 function applySeed(seed: string): void {
   invalidateBotPlanning()
   const payload = decodeSeed(seed)
-  gameSettings = { ...DEFAULT_SETTINGS, ...payload.settings }
+  gameSettings = normalizeGameSettingsInput(payload.settings)
   playerClasses = normalizePlayerClassesInput(payload.playerClasses)
   loadouts = {
     p1: [...(payload.loadouts?.p1 ?? [])],
@@ -6009,8 +6057,8 @@ function getUnitAtHex(sourceState: GameState, hex: Hex): Unit | null {
 }
 
 function addStartingUnit(sourceState: GameState, owner: PlayerId, strength: number): boolean {
-  const stronghold = sourceState.units[`stronghold-${owner}`]
-  if (!stronghold) return false
+  const leader = sourceState.units[`leader-${owner}`]
+  if (!leader) return false
   const spawnTiles = getSpawnTiles(sourceState, owner)
   for (const tile of spawnTiles) {
     if (getUnitAtHex(sourceState, tile)) continue
@@ -6022,7 +6070,7 @@ function addStartingUnit(sourceState: GameState, owner: PlayerId, strength: numb
       kind: 'unit',
       strength: Math.max(1, strength),
       pos: { ...tile },
-      facing: stronghold.facing,
+      facing: leader.facing,
       modifiers: [],
     }
     return true
@@ -6159,9 +6207,9 @@ function applyRoguelikeMatchModifiers(
   encounter: RoguelikeEncounterDef,
   matchNumber: number
 ): void {
-  const playerStronghold = sourceState.units[`stronghold-${BOT_HUMAN_PLAYER}`]
-  if (playerStronghold) {
-    playerStronghold.strength = Math.max(1, run.strongholdHp)
+  const playerLeader = sourceState.units[`leader-${BOT_HUMAN_PLAYER}`]
+  if (playerLeader) {
+    playerLeader.strength = Math.max(1, run.leaderHp)
   }
 
   let p1Budget = ROGUELIKE_BASE_AP_BUDGET
@@ -6209,7 +6257,7 @@ function startNextRoguelikeMatch(statusMessage: string): void {
   const encounterDeck = encounter.deck(matchNumber)
   const settings: GameSettings = {
     ...gameSettings,
-    strongholdStrength: ROGUELIKE_STARTING_STRONGHOLD_HP,
+    leaderStrength: ROGUELIKE_STARTING_LEADER_HP,
     victoryCondition: 'eliminate_units',
     roguelikeMatchNumber: matchNumber,
     roguelikeEncounterId: encounter.id,
@@ -6276,7 +6324,7 @@ function pickRandomCardOptions(count: number, classId: PlayerClassId): CardDefId
 
 function getRoguelikeRandomRewardLabel(reward: RoguelikeRandomReward): string {
   if (!roguelikeRun) return 'Reward'
-  if (reward === 'strongholdHp') {
+  if (reward === 'leaderHp') {
     return `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
   }
   if (reward === 'extraDraw') return '+1 extra card each hand'
@@ -6297,8 +6345,8 @@ function prepareRoguelikeRewardChoiceOptions(): void {
 
 function applyRoguelikeRandomReward(reward: RoguelikeRandomReward): void {
   if (!roguelikeRun) return
-  if (reward === 'strongholdHp') {
-    roguelikeRun.strongholdHp += 10
+  if (reward === 'leaderHp') {
+    roguelikeRun.leaderHp += 10
     showRoguelikeRewardNotice(`Reward gained: +10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP.`)
     return
   }
@@ -6359,8 +6407,8 @@ function handleRoguelikeMatchResultIfNeeded(): void {
   roguelikeRun.pendingRandomReward = null
 
   if (state.winner === BOT_HUMAN_PLAYER) {
-    const stronghold = state.units[`stronghold-${BOT_HUMAN_PLAYER}`]
-    roguelikeRun.strongholdHp = Math.max(1, stronghold?.strength ?? roguelikeRun.strongholdHp)
+    const leader = state.units[`leader-${BOT_HUMAN_PLAYER}`]
+    roguelikeRun.leaderHp = Math.max(1, leader?.strength ?? roguelikeRun.leaderHp)
     roguelikeRun.wins += 1
     roguelikeRun.uiStage = 'reward_choice'
     prepareRoguelikeRewardChoiceOptions()
@@ -6395,7 +6443,7 @@ function renderRoguelikeWinnerModal(): void {
     }
     prepareRoguelikeRewardChoiceOptions()
     winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
-    winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.strongholdHp}. Choose your reward for match ${nextMatch}.`
+    winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.leaderHp}. Choose your reward for match ${nextMatch}.`
     winnerMenuButton.textContent = 'End Run'
     winnerResetButton.classList.add('hidden')
     winnerRematchButton.classList.remove('hidden')
@@ -8595,8 +8643,9 @@ function stepInDirection(base: Hex, direction: Direction, distance: number): Hex
 
 function resolveSnapshotUnitId(snapshot: GameState, unitId: string, player: PlayerId): string | null {
   if (!unitId) return null
-  if (unitId.startsWith('planned:')) {
-    const orderRef = unitId.replace('planned:', '')
+  const normalizedUnitId = normalizeLeaderUnitReference(unitId)
+  if (normalizedUnitId.startsWith('planned:')) {
+    const orderRef = normalizedUnitId.replace('planned:', '')
     const resolved = snapshot.spawnedByOrder[orderRef]
     if (resolved && snapshot.units[resolved]) return resolved
     const separator = orderRef.indexOf(':')
@@ -8616,7 +8665,7 @@ function resolveSnapshotUnitId(snapshot: GameState, unitId: string, player: Play
     }
     return null
   }
-  return snapshot.units[unitId] ? unitId : null
+  return snapshot.units[normalizedUnitId] ? normalizedUnitId : null
 }
 
 function getUnitSnapshot(
@@ -9159,9 +9208,9 @@ settingCols.addEventListener('change', () => {
   renderSettings()
 })
 
-settingStronghold.addEventListener('change', () => {
-  const value = clamp(Number(settingStronghold.value), 1, 20)
-  gameSettings = { ...gameSettings, strongholdStrength: value }
+settingLeaderStrength.addEventListener('change', () => {
+  const value = clamp(Number(settingLeaderStrength.value), 1, 20)
+  gameSettings = { ...gameSettings, leaderStrength: value }
   renderSettings()
 })
 

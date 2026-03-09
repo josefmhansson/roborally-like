@@ -223,7 +223,7 @@ function parseSettings(input: unknown): GameSettings | null {
   if (!isObject(input)) return null
   const boardRows = parseFiniteNumber(input.boardRows)
   const boardCols = parseFiniteNumber(input.boardCols)
-  const strongholdStrength = parseFiniteNumber(input.strongholdStrength)
+  const leaderStrength = parseFiniteNumber(input.leaderStrength ?? input.strongholdStrength)
   const deckSize = parseFiniteNumber(input.deckSize)
   const drawPerTurn = parseFiniteNumber(input.drawPerTurn)
   const maxCopies = parseFiniteNumber(input.maxCopies)
@@ -232,7 +232,7 @@ function parseSettings(input: unknown): GameSettings | null {
   if (
     boardRows === null ||
     boardCols === null ||
-    strongholdStrength === null ||
+    leaderStrength === null ||
     deckSize === null ||
     drawPerTurn === null ||
     maxCopies === null ||
@@ -244,7 +244,7 @@ function parseSettings(input: unknown): GameSettings | null {
   return {
     boardRows,
     boardCols,
-    strongholdStrength,
+    leaderStrength,
     deckSize,
     drawPerTurn,
     maxCopies,
