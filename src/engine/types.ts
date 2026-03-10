@@ -306,6 +306,7 @@ export type CardEffect =
       direction: DirectionSource
       distance: number
       collisionDamage: number
+      impactDamage?: number
     }
   | {
       type: 'whirlwind'

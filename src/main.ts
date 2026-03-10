@@ -528,6 +528,7 @@ type TeleportAnimation = {
   duration: number
 }
 type ChainLightningAnimation = { type: 'chainLightning'; from: Hex; to: Hex; duration: number }
+type LightningFizzleAnimation = { type: 'lightningFizzle'; centers: Hex[]; duration: number }
 type SlimeLobAnimation = { type: 'slimeLob'; arcs: Array<{ from: Hex; to: Hex }>; duration: number }
 type VolleyAnimation = { type: 'volley'; shots: Array<{ from: Hex; to: Hex }>; duration: number }
 type PincerAnimation = {
@@ -573,6 +574,7 @@ type BoardAnimation =
   | StateSyncAnimation
   | TeleportAnimation
   | ChainLightningAnimation
+  | LightningFizzleAnimation
   | SlimeLobAnimation
   | VolleyAnimation
   | PincerAnimation
@@ -597,6 +599,7 @@ const WHIRLWIND_DURATION_MS = 340
 const ADJACENT_STRIKE_DURATION_MS = 220
 const TRAP_TRIGGER_DURATION_MS = 320
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
+const LIGHTNING_FIZZLE_DURATION_MS = 240
 const SLIME_LOB_DURATION_MS = 380
 const VOLLEY_DURATION_MS = 420
 const PINCER_DURATION_MS = 260
@@ -3705,6 +3708,73 @@ function drawChainLightningAnimation(animation: ChainLightningAnimation, progres
   drawLightningArc(projectHex(animation.from), projectHex(animation.to), progress)
 }
 
+function drawLightningFizzleAt(center: { x: number; y: number }, progress: number): void {
+  const pulse = Math.sin(progress * Math.PI)
+  const outerRadius = layout.size * (0.18 + pulse * 0.14)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.9 - progress * 0.45
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+
+  for (let index = 0; index < 7; index += 1) {
+    const angle = progress * Math.PI * 2.2 + (Math.PI * 2 * index) / 7
+    const inner = layout.size * (0.06 + (index % 2) * 0.02)
+    const mid = outerRadius * (0.56 + (index % 3) * 0.1)
+    const outer = outerRadius * (0.95 + (index % 2) * 0.08)
+    const midAngle = angle + (index % 2 === 0 ? 0.22 : -0.2)
+    const points = [
+      {
+        x: center.x + Math.cos(angle) * inner,
+        y: center.y + Math.sin(angle) * inner * BOARD_TILT,
+      },
+      {
+        x: center.x + Math.cos(midAngle) * mid,
+        y: center.y + Math.sin(midAngle) * mid * BOARD_TILT,
+      },
+      {
+        x: center.x + Math.cos(angle) * outer,
+        y: center.y + Math.sin(angle) * outer * BOARD_TILT,
+      },
+    ]
+
+    ctx.beginPath()
+    points.forEach((point, pointIndex) => {
+      if (pointIndex === 0) ctx.moveTo(point.x, point.y)
+      else ctx.lineTo(point.x, point.y)
+    })
+    ctx.strokeStyle = 'rgba(230, 245, 255, 0.96)'
+    ctx.lineWidth = 2.4
+    ctx.stroke()
+
+    ctx.beginPath()
+    points.forEach((point, pointIndex) => {
+      if (pointIndex === 0) ctx.moveTo(point.x, point.y)
+      else ctx.lineTo(point.x, point.y)
+    })
+    ctx.strokeStyle = 'rgba(120, 190, 255, 0.95)'
+    ctx.lineWidth = 1.2
+    ctx.stroke()
+  }
+
+  const glow = ctx.createRadialGradient(center.x, center.y, outerRadius * 0.1, center.x, center.y, outerRadius * 1.65)
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.88)')
+  glow.addColorStop(0.5, 'rgba(140, 205, 255, 0.52)')
+  glow.addColorStop(1, 'rgba(90, 150, 255, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, outerRadius * 1.28, outerRadius * BOARD_TILT * 1.08, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawLightningFizzleAnimation(animation: LightningFizzleAnimation, progress: number): void {
+  animation.centers.forEach((centerHex) => {
+    drawLightningFizzleAt(projectHex(centerHex), progress)
+  })
+}
+
 function drawSingleSlimeLobArc(fromTile: Hex, toTile: Hex, progress: number): void {
   const from = projectHex(fromTile)
   const to = projectHex(toTile)
@@ -4426,9 +4496,11 @@ function drawLightningBarrierAnimation(animation: LightningBarrierAnimation, pro
 
 function drawBrainFreezeAnimation(progress: number): void {
   const center = { x: layout.width / 2, y: layout.height * 0.36 }
-  const t = easeInOutCubic(progress)
-  const alpha = 0.72 * (1 - t * 0.55)
-  const size = Math.min(layout.width, layout.height) * (0.06 + t * 0.12)
+  const coverRadius = Math.hypot(layout.width * 0.72, layout.height * 0.72)
+  const fadeStart = 0.72
+  const fadeT = progress <= fadeStart ? 0 : (progress - fadeStart) / (1 - fadeStart)
+  const alpha = 0.82 * (1 - fadeT)
+  const size = layout.size * 0.55 + coverRadius * progress
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
@@ -4748,6 +4820,10 @@ function drawBoard(): void {
 
   if (currentAnimation?.type === 'chainLightning') {
     drawChainLightningAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'lightningFizzle') {
+    drawLightningFizzleAnimation(currentAnimation, animationProgress)
   }
 
   if (currentAnimation?.type === 'slimeLob') {
@@ -5711,7 +5787,7 @@ function renderOrderForm(): void {
   const def = CARD_DEFS[card.defId]
   const apCost = def.actionCost ?? 1
   const nextStep = getNextRequirement(def.id, activeOrder.params)
-  const summary = renderOrderSummary(activeOrder.params)
+  const summary = renderOrderSummary(def.id, activeOrder.params)
   const description = getCardDescriptionForMatch(def.id, def.description)
 
   orderFormEl.innerHTML = `
@@ -5725,19 +5801,34 @@ function renderOrderForm(): void {
   `
 }
 
-function renderOrderSummary(params: OrderParams): string {
+function renderOrderSummary(defId: CardDefId, params: OrderParams): string {
   const parts: string[] = []
-  if (params.unitId) {
-    parts.push(`Unit: ${renderUnitLabel(params.unitId)}`)
-  }
-  if (params.unitId2) {
-    parts.push(`Unit 2: ${renderUnitLabel(params.unitId2)}`)
-  }
-  if (params.tile) {
-    parts.push(`Tile: ${params.tile.q},${params.tile.r}`)
-  }
-  if (params.tile2) {
-    parts.push(`Tile 2: ${params.tile2.q},${params.tile2.r}`)
+  if (defId === 'move_double_steps') {
+    if (params.unitId) {
+      parts.push(`Unit: ${renderUnitLabel(params.unitId)}`)
+    }
+    if (params.tile) {
+      parts.push(`Move 1: ${params.tile.q},${params.tile.r}`)
+    }
+    if (params.unitId2) {
+      parts.push(`Unit 2: ${renderUnitLabel(params.unitId2)}`)
+    }
+    if (params.tile2) {
+      parts.push(`Move 2: ${params.tile2.q},${params.tile2.r}`)
+    }
+  } else {
+    if (params.unitId) {
+      parts.push(`Unit: ${renderUnitLabel(params.unitId)}`)
+    }
+    if (params.unitId2) {
+      parts.push(`Unit 2: ${renderUnitLabel(params.unitId2)}`)
+    }
+    if (params.tile) {
+      parts.push(`Tile: ${params.tile.q},${params.tile.r}`)
+    }
+    if (params.tile2) {
+      parts.push(`Tile 2: ${params.tile2.q},${params.tile2.r}`)
+    }
   }
   if (params.tile3) {
     parts.push(`Tile 3: ${params.tile3.q},${params.tile3.r}`)
@@ -7286,6 +7377,10 @@ function parseChainLightningPath(logEntries: string[]): string[] {
     .filter((value) => value.length > 0)
 }
 
+function parseChainLightningFizzles(logEntries: string[]): boolean {
+  return logEntries.some((line) => line === 'Chain lightning finds no adjacent targets.')
+}
+
 function parseUnitPositionUpdates(logEntries: string[]): Map<string, Hex> {
   const updates = new Map<string, Hex>()
   logEntries.forEach((entry) => {
@@ -7436,14 +7531,24 @@ function parseBurnDamageTargets(logEntries: string[]): string[] {
   return targets
 }
 
-function parseLightningBarrierEvents(logEntries: string[]): Array<{ sourceUnitId: string; targetUnitId: string }> {
-  const events: Array<{ sourceUnitId: string; targetUnitId: string }> = []
+function parseLightningBarrierEvents(logEntries: string[]): {
+  arcs: Array<{ sourceUnitId: string; targetUnitId: string }>
+  fizzles: string[]
+} {
+  const arcs: Array<{ sourceUnitId: string; targetUnitId: string }> = []
+  const fizzles: string[] = []
   logEntries.forEach((entry) => {
-    const match = entry.match(/^Lightning barrier arcs from unit (.+) to unit (.+)\.$/)
-    if (!match) return
-    events.push({ sourceUnitId: match[1], targetUnitId: match[2] })
+    const arcMatch = entry.match(/^Lightning barrier arcs from unit (.+) to unit (.+)\.$/)
+    if (arcMatch) {
+      arcs.push({ sourceUnitId: arcMatch[1], targetUnitId: arcMatch[2] })
+      return
+    }
+    const fizzleMatch = entry.match(/^Lightning barrier on unit (.+) crackles but finds no adjacent targets\.$/)
+    if (fizzleMatch) {
+      fizzles.push(fizzleMatch[1])
+    }
   })
-  return events
+  return { arcs, fizzles }
 }
 
 function snapshotCanActAsUnit(snapshot: Pick<UnitSnapshot, 'kind'>): boolean {
@@ -7646,6 +7751,8 @@ function buildAnimations(
     }
   }
 
+  let handledDoubleStepsMoveAnimation = false
+
   for (const effect of def.effects) {
     if (effect.type === 'spawn' || effect.type === 'spawnAdjacentFriendly') {
       const tile = getOrderTileParam(order.params, effect.tileParam)
@@ -7739,6 +7846,48 @@ function buildAnimations(
     }
 
     if (effect.type === 'moveToTile') {
+      if (order.defId === 'move_double_steps') {
+        if (handledDoubleStepsMoveAnimation) continue
+        handledDoubleStepsMoveAnimation = true
+
+        const formationMoves: Array<{ unitId: string; from: Hex; to: Hex; index: number }> = []
+        ;(['unitId', 'unitId2'] as const).forEach((unitParam) => {
+          const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder, unitParam)
+          if (!resolvedId) return
+          const beforeUnit = before[resolvedId]
+          if (!beforeUnit) return
+
+          const from = animatedPositions.get(resolvedId) ?? beforeUnit.pos
+          const consumedMoveAttempt = consumeLoggedMoveAttempt(resolvedId)
+          if (consumedMoveAttempt && !consumedMoveAttempt.moved) return
+          const consumedMove = consumedMoveAttempt?.moved ? consumeLoggedMove(resolvedId) : consumeLoggedMove(resolvedId)
+          const destination = consumedMove?.pos ?? consumedMoveAttempt?.pos
+          const index = consumedMove?.index ?? consumedMoveAttempt?.index
+          if (!destination || index === undefined) return
+          if (from.q === destination.q && from.r === destination.r) return
+          formationMoves.push({
+            unitId: resolvedId,
+            from: { ...from },
+            to: { ...destination },
+            index,
+          })
+        })
+
+        formationMoves.sort((a, b) => a.index - b.index)
+        if (formationMoves.length > 0) {
+          enqueueDestroyedUpTo(formationMoves[0].index - 1)
+          lastConsumedLogIndex = Math.max(lastConsumedLogIndex, formationMoves[formationMoves.length - 1].index)
+          animations.push({
+            type: 'teamMove',
+            moves: formationMoves.map((move) => ({ unitId: move.unitId, from: move.from, to: move.to })),
+            duration: MOVE_DURATION_MS,
+          })
+          formationMoves.forEach((move) => {
+            animatedPositions.set(move.unitId, { ...move.to })
+          })
+          queueStateSync(formationMoves[formationMoves.length - 1].index)
+        }
+      }
       continue
     }
 
@@ -8082,18 +8231,12 @@ function buildAnimations(
       if (!beforeUnit || !afterUnit) continue
       const direction = afterUnit.facing
       const target = findFirstUnitInLine(before, beforeUnit.pos, direction, effect.maxRange)
-      if (!target) continue
-      animations.push({
-        type: 'lunge',
-        unitId: resolvedId,
-        from: afterUnit.pos,
-        dir: direction,
-        duration: LUNGE_DURATION_MS,
-      })
+      const destination = target ? { ...target.pos } : findLineEndHex(beforeUnit.pos, direction, effect.maxRange)
+      if (!destination) continue
       animations.push({
         type: 'fireball',
         from: beforeUnit.pos,
-        to: { ...target.pos },
+        to: destination,
         duration: FIREBALL_DURATION_MS,
       })
       continue
@@ -8118,6 +8261,13 @@ function buildAnimations(
         })
         currentFrom = targetPos
       })
+      if (path.length === 0 && parseChainLightningFizzles(logEntries)) {
+        animations.push({
+          type: 'lightningFizzle',
+          centers: [{ ...actingUnit.pos }],
+          duration: LIGHTNING_FIZZLE_DURATION_MS,
+        })
+      }
     }
 
     if (effect.type === 'volley') {
@@ -8556,18 +8706,36 @@ function resolveNextActionAnimated(): void {
     if (!order) {
       const turnEndLogs = state.log.slice(logStart)
       const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
-      const lightningBarrierAnimations = parseLightningBarrierEvents(turnEndLogs)
-        .map((event) => {
-          const from = before[event.sourceUnitId]?.pos ?? state.units[event.sourceUnitId]?.pos
-          const to = turnEndPositions.get(event.targetUnitId) ?? state.units[event.targetUnitId]?.pos ?? before[event.targetUnitId]?.pos
-          if (!from || !to) return null
-          return {
+      const lightningBarrierEvents = parseLightningBarrierEvents(turnEndLogs)
+      const groupedBarrierArcs = new Map<string, Array<{ from: Hex; to: Hex }>>()
+      lightningBarrierEvents.arcs.forEach((event) => {
+        const from = before[event.sourceUnitId]?.pos ?? state.units[event.sourceUnitId]?.pos
+        const to =
+          turnEndPositions.get(event.targetUnitId) ?? state.units[event.targetUnitId]?.pos ?? before[event.targetUnitId]?.pos
+        if (!from || !to) return
+        const arcs = groupedBarrierArcs.get(event.sourceUnitId) ?? []
+        arcs.push({ from: { ...from }, to: { ...to } })
+        groupedBarrierArcs.set(event.sourceUnitId, arcs)
+      })
+      const lightningBarrierAnimations = [...groupedBarrierArcs.values()].map(
+        (arcs) =>
+          ({
             type: 'lightningBarrier',
-            arcs: [{ from: { ...from }, to: { ...to } }],
+            arcs,
             duration: LIGHTNING_BARRIER_DURATION_MS,
-          } as BoardAnimation
+          }) as BoardAnimation
+      )
+      const lightningBarrierFizzles = lightningBarrierEvents.fizzles
+        .map((unitId) => before[unitId]?.pos ?? state.units[unitId]?.pos)
+        .filter((center): center is Hex => center !== undefined)
+      const lightningFizzleAnimations: BoardAnimation[] = []
+      if (lightningBarrierFizzles.length > 0) {
+        lightningFizzleAnimations.push({
+          type: 'lightningFizzle',
+          centers: lightningBarrierFizzles.map((center) => ({ ...center })),
+          duration: LIGHTNING_FIZZLE_DURATION_MS,
         })
-        .filter((animation): animation is BoardAnimation => animation !== null)
+      }
       const burnAnimations = parseBurnDamageTargets(turnEndLogs)
         .map((unitId) => {
           const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
@@ -8579,8 +8747,8 @@ function resolveNextActionAnimated(): void {
           } as BoardAnimation
         })
         .filter((animation): animation is BoardAnimation => animation !== null)
-      if (lightningBarrierAnimations.length > 0 || burnAnimations.length > 0) {
-        animationQueue.push(...lightningBarrierAnimations, ...burnAnimations)
+      if (lightningBarrierAnimations.length > 0 || lightningFizzleAnimations.length > 0 || burnAnimations.length > 0) {
+        animationQueue.push(...lightningBarrierAnimations, ...lightningFizzleAnimations, ...burnAnimations)
         if (!currentAnimation) runNextAnimation()
         return
       }
@@ -8819,6 +8987,12 @@ function resolveDistanceClick(
 
 function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionStep | null {
   const def = CARD_DEFS[defId]
+  if (defId === 'move_double_steps') {
+    if (!params.unitId) return 'unit'
+    if (!params.tile) return 'tile'
+    if (!params.unitId2) return 'unit2'
+    if (!params.tile2) return 'tile2'
+  }
   if (def.requires.unit && !params.unitId) return 'unit'
   if (def.requires.unit2 && params.unitId && !params.unitId2) return 'unit2'
   if (defId === 'reinforce_boost' && params.unitId && !params.unitId2) {
@@ -8944,12 +9118,16 @@ function getCustomTileSelectionTargets(
     return getAdjacentTileSelectionTargets(snapshot, params.unitId ?? '', player, false)
   }
   if (defId === 'move_double_steps' && step === 'tile2') {
-    return getAdjacentTileSelectionTargets(snapshot, params.unitId2 ?? '', player, false)
+    return getAdjacentTileSelectionTargets(snapshot, params.unitId2 ?? '', player, false).filter((hex) => {
+      if (!params.tile) return true
+      return hex.q !== params.tile.q || hex.r !== params.tile.r
+    })
   }
   if (defId === 'attack_volley' && step === 'tile') {
     const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
     if (!unitSnapshot) return []
-    return getTilesWithinRadius(snapshot, unitSnapshot.pos, 3)
+    const volleyEffect = CARD_DEFS[defId].effects.find((effect) => effect.type === 'volley')
+    return getTilesWithinRadius(snapshot, unitSnapshot.pos, volleyEffect?.radius ?? 2)
   }
   return null
 }

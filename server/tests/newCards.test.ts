@@ -10,7 +10,7 @@ import {
   startActionPhase,
 } from '../../src/engine/game'
 import { CARD_DEFS } from '../../src/engine/cards'
-import { neighbor } from '../../src/engine/hex'
+import { neighbor, offsetToAxial } from '../../src/engine/hex'
 import type { CardDefId, Direction, GameState, PlayerId } from '../../src/engine/types'
 
 function findCardId(state: GameState, player: PlayerId, defId: CardDefId): string {
@@ -31,6 +31,15 @@ function clearNonLeaderUnits(state: GameState): void {
       delete state.units[unitId]
     }
   })
+}
+
+function hexDistanceBetween(a: { q: number; r: number }, b: { q: number; r: number }): number {
+  const aAxial = offsetToAxial(a)
+  const bAxial = offsetToAxial(b)
+  const dq = aAxial.q - bAxial.q
+  const dr = aAxial.r - bAxial.r
+  const ds = -aAxial.q - aAxial.r - (-bAxial.q - bAxial.r)
+  return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2
 }
 
 test('player 1 starts from the lower side of the board', () => {
@@ -229,6 +238,59 @@ test('joint attack only counts other adjacent friendly units', () => {
   assert.equal(state.units['joint-target']?.strength, 4)
 })
 
+test('joint attack uses adjacent allies as individual damage sources', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_joint_attack'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  const targetTile = { q: 3, r: 2 }
+  state.units['joint-user'] = {
+    id: 'joint-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [{ type: 'strong', turnsRemaining: 1 }],
+  }
+  state.units['joint-ally-a'] = {
+    id: 'joint-ally-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 1),
+    facing: 0,
+    modifiers: [{ type: 'strong', turnsRemaining: 1 }],
+  }
+  state.units['joint-ally-b'] = {
+    id: 'joint-ally-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 5),
+    facing: 0,
+    modifiers: [{ type: 'disarmed', turnsRemaining: 1 }],
+  }
+  state.units['joint-target'] = {
+    id: 'joint-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 10,
+    pos: targetTile,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_joint_attack')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'joint-user', tile: targetTile }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['joint-target']?.strength, 4)
+})
+
 test('double steps moves two different units to chosen adjacent tiles', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -370,6 +432,85 @@ test('volley deals 1 damage from the acting unit and each adjacent friendly unit
   readyAndResolve(state)
 
   assert.equal(state.units['volley-target']?.strength, 3)
+})
+
+test('volley uses each participant as an individual damage source', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_volley'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['volley-user'] = {
+    id: 'volley-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [{ type: 'disarmed', turnsRemaining: 1 }],
+  }
+  state.units['volley-ally-a'] = {
+    id: 'volley-ally-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor({ q: 2, r: 2 }, 1),
+    facing: 0,
+    modifiers: [{ type: 'strong', turnsRemaining: 1 }],
+  }
+  state.units['volley-ally-b'] = {
+    id: 'volley-ally-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor({ q: 2, r: 2 }, 5),
+    facing: 0,
+    modifiers: [{ type: 'strong', turnsRemaining: 1 }],
+  }
+  state.units['volley-target'] = {
+    id: 'volley-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 10,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_volley')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'volley-user', tile: { q: 4, r: 2 } }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['volley-target']?.strength, 6)
+})
+
+test('volley cannot target tiles beyond 2 range', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_volley'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['volley-user'] = {
+    id: 'volley-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const outOfRangeTile = state.tiles
+    .map((tile) => ({ q: tile.q, r: tile.r }))
+    .find((tile) => hexDistanceBetween(state.units['volley-user'].pos, tile) === 3)
+  assert.ok(outOfRangeTile)
+
+  const cardId = findCardId(state, 0, 'attack_volley')
+  assert.equal(planOrder(state, 0, cardId, { unitId: 'volley-user', tile: outOfRangeTile }), null)
 })
 
 test('converge moves friendly units one tile toward the chosen tile and faces the moved direction', () => {
@@ -1020,6 +1161,31 @@ test('lightning barrier damages adjacent enemies at the end of each turn', () =>
   assert.equal(state.units['barrier-b']?.strength, 1)
 })
 
+test('lightning barrier logs a fizzle when no adjacent enemies are present', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_lightning_barrier'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['barrier-user'] = {
+    id: 'barrier-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'reinforce_lightning_barrier')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'barrier-user' }))
+  readyAndResolve(state)
+
+  assert.ok(state.log.some((entry) => entry === 'Lightning barrier on unit barrier-user crackles but finds no adjacent targets.'))
+})
+
 test('brain freeze makes opponent cards slow next turn and cancels priority on affected cards', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
   const state = createGameState(settings, {
@@ -1493,6 +1659,59 @@ test('coordinated attack applies 2 damage from each friendly unit to the tile in
 
   assert.equal(state.units['co-target-a']?.strength, 1)
   assert.equal(state.units['co-target-b']?.strength, 1)
+})
+
+test('coordinated attack uses each attacker modifier individually', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_coordinated'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['co-a'] = {
+    id: 'co-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [{ type: 'strong', turnsRemaining: 1 }],
+  }
+  state.units['co-b'] = {
+    id: 'co-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 3 },
+    facing: 0,
+    modifiers: [{ type: 'disarmed', turnsRemaining: 1 }],
+  }
+  state.units['co-target-a'] = {
+    id: 'co-target-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['co-target-b'] = {
+    id: 'co-target-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 3 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_coordinated')
+  assert.ok(planOrder(state, 0, cardId, {}))
+  readyAndResolve(state)
+
+  assert.equal(state.units['co-target-a']?.strength, 2)
+  assert.equal(state.units['co-target-b']?.strength, 4)
 })
 
 test('tandem movement moves the selected unit and adjacent friendlies in one direction', () => {
@@ -2158,7 +2377,7 @@ test('berserk grants strong for the turn and destroys the unit at turn end', () 
   assert.equal(state.units['berserk-target']?.strength, 2)
 })
 
-test('roundhouse kick pushes the target back up to 3 tiles after dealing damage', () => {
+test('roundhouse kick pushes the target back up to 3 tiles before dealing damage', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'attack_roundhouse_kick'),
@@ -2193,6 +2412,45 @@ test('roundhouse kick pushes the target back up to 3 tiles after dealing damage'
   assert.ok(targetAfter)
   assert.equal(targetAfter.strength, 2)
   assert.deepEqual(targetAfter.pos, { q: 5, r: 2 })
+})
+
+test('roundhouse kick still pushes before lethal damage is applied', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_roundhouse_kick'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['roundhouse-user'] = {
+    id: 'roundhouse-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['roundhouse-target'] = {
+    id: 'roundhouse-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_roundhouse_kick')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'roundhouse-user', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['roundhouse-target'], undefined)
+  const pushLogIndex = state.log.findIndex((entry) => entry === 'Unit roundhouse-target is pushed to 5,2.')
+  const destroyedLogIndex = state.log.findIndex((entry) => entry === 'Unit roundhouse-target is destroyed.')
+  assert.notEqual(pushLogIndex, -1)
+  assert.notEqual(destroyedLogIndex, -1)
+  assert.ok(pushLogIndex < destroyedLogIndex)
 })
 
 test('roundhouse kick deals collision damage after a partial push into a blocker', () => {
@@ -2353,6 +2611,33 @@ test('priority card leads even when opponent is active player', () => {
   assert.deepEqual(
     state.actionQueue.map((order) => `${order.player}:${order.defId}`),
     ['0:attack_jab', '1:move_any']
+  )
+})
+
+test('pivot now resolves with priority', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  const p1Unit = Object.values(state.units).find((unit) => unit.owner === 0 && unit.kind === 'unit')
+  const p2Unit = Object.values(state.units).find((unit) => unit.owner === 1 && unit.kind === 'unit')
+  assert.ok(p1Unit)
+  assert.ok(p2Unit)
+
+  const pivotId = findCardId(state, 0, 'move_pivot')
+  const moveId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, pivotId, { unitId: p1Unit.id, direction: 1 }))
+  assert.ok(planOrder(state, 1, moveId, { unitId: p2Unit.id, direction: 3, distance: 1 }))
+
+  state.activePlayer = 1
+  state.ready = [true, true]
+  startActionPhase(state)
+
+  assert.deepEqual(
+    state.actionQueue.map((order) => `${order.player}:${order.defId}`),
+    ['0:move_pivot', '1:move_any']
   )
 })
 

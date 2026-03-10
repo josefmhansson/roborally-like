@@ -791,23 +791,25 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   }
 
   if (defId === 'attack_volley') {
+    const volleyEffect = CARD_DEFS[defId].effects.find((effect) => effect.type === 'volley')
+    const radius = volleyEffect?.radius ?? 2
     refs.forEach((ref) => {
       const candidates = new Map<string, Hex>()
       Object.values(projected.units)
         .filter((unit) => unit.owner !== player)
         .forEach((unit) => {
-          if (hexDistance(ref.snapshot.pos, unit.pos) > 3) return
+          if (hexDistance(ref.snapshot.pos, unit.pos) > radius) return
           addHexCandidate(candidates, unit.pos)
           DIRECTIONS.forEach((direction) => {
             const tile = neighbor(unit.pos, direction)
-            if (hexDistance(ref.snapshot.pos, tile) > 3) return
+            if (hexDistance(ref.snapshot.pos, tile) > radius) return
             addHexCandidate(candidates, tile)
           })
         })
       if (candidates.size === 0) {
         projected.tiles.forEach((tile) => {
           const hex = { q: tile.q, r: tile.r }
-          if (hexDistance(ref.snapshot.pos, hex) > 3) return
+          if (hexDistance(ref.snapshot.pos, hex) > radius) return
           addHexCandidate(candidates, hex)
         })
       }

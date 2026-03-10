@@ -1178,14 +1178,19 @@ function tickUnitModifiers(state: GameState): void {
       afterDamage.modifiers = afterDamage.modifiers.filter((modifier) => modifier.type !== 'burn' || modifier === firstBurn)
     }
     if (hasUnitModifier(afterDamage, 'lightningBarrier')) {
+      let hitAnyTarget = false
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const targetTile = neighbor(afterDamage.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
         const target = getUnitAt(state, targetTile)
         if (!target || target.owner === afterDamage.owner || !isDamageableUnit(target)) continue
+        hitAnyTarget = true
         state.log.push(`Lightning barrier arcs from unit ${afterDamage.id} to unit ${target.id}.`)
         applyDamage(state, target, 1, afterDamage)
         if (!state.units[afterDamage.id]) return
+      }
+      if (!hitAnyTarget) {
+        state.log.push(`Lightning barrier on unit ${afterDamage.id} crackles but finds no adjacent targets.`)
       }
     }
     if (hasUnitModifier(afterDamage, 'berserk')) {
@@ -1312,6 +1317,15 @@ function validateOrderParams(
   if (def.requires.distanceOptions && params.distance === undefined) return false
   if (def.requires.distanceOptions && params.distance !== undefined) {
     if (!def.requires.distanceOptions.includes(params.distance)) return false
+  }
+  for (const effect of def.effects) {
+    if (effect.type !== 'volley') continue
+    const resolvedUnitId = params.unitId ? resolveUnitId(state, player, params.unitId) : null
+    const tile = getOrderTileParam(params, effect.tileParam)
+    if (!resolvedUnitId || !tile) return false
+    const unit = state.units[resolvedUnitId]
+    if (!unit || !canActAsUnit(unit)) return false
+    if (hexDistance(unit.pos, tile) > effect.radius) return false
   }
   return true
 }
@@ -1656,6 +1670,29 @@ function applyDamage(
     }
     checkVictoryConditions(state)
   }
+}
+
+function getLiveDamageSourceUnit(state: GameState, sourceUnit: Unit | null | undefined): Unit | null {
+  if (!sourceUnit) return null
+  const liveSourceUnit = state.units[sourceUnit.id]
+  if (!liveSourceUnit || !canActAsUnit(liveSourceUnit)) return null
+  return liveSourceUnit
+}
+
+function applyRepeatedUnitSourcedDamage(
+  state: GameState,
+  sourceUnits: Unit[],
+  damage: number,
+  sourceDefId: CardDefId,
+  getTargetForSource: (liveSourceUnit: Unit) => Unit | null
+): void {
+  sourceUnits.forEach((sourceUnit) => {
+    const liveSourceUnit = getLiveDamageSourceUnit(state, sourceUnit)
+    if (!liveSourceUnit) return
+    const target = getTargetForSource(liveSourceUnit)
+    if (!target) return
+    applyDamage(state, target, damage, liveSourceUnit, sourceDefId)
+  })
 }
 
 function triggerTrapAtCurrentTile(state: GameState, unit: Unit): { stopMovement: boolean } {
@@ -2676,10 +2713,10 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!actingUnit || !canActAsUnit(actingUnit)) return
       if (getDirectionToAdjacentTile(actingUnit.pos, tile) === null) return
       const participants = getCommanderSupportParticipants(state, order.player, tile, actingUnit.id)
-      participants.forEach((participant) => {
+      applyRepeatedUnitSourcedDamage(state, participants, effect.damagePerAdjacentAlly, order.defId, () => {
         const target = getUnitAt(state, tile)
-        if (!target || !canCardTargetUnit(order.defId, target)) return
-        applyDamage(state, target, effect.damagePerAdjacentAlly, participant, order.defId)
+        if (!target || !canCardTargetUnit(order.defId, target)) return null
+        return target
       })
       return
     }
@@ -2707,27 +2744,30 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       getCommanderSupportParticipants(state, order.player, actingUnit.pos).forEach((participant) => {
         participants.set(participant.id, participant)
       })
-      ;[...participants.values()]
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .forEach((participant) => {
+      const damageSources = [...participants.values()].sort((a, b) => a.id.localeCompare(b.id))
+      applyRepeatedUnitSourcedDamage(
+        state,
+        damageSources,
+        effect.damage,
+        order.defId,
+        () => {
           const target = getUnitAt(state, tile)
-          if (!target || !canCardTargetUnit(order.defId, target)) return
-          applyDamage(state, target, effect.damage, participant, order.defId)
-        })
+          if (!target || !canCardTargetUnit(order.defId, target)) return null
+          return target
+        }
+      )
       return
     }
     case 'teamAttackForward': {
-      const attackerIds = Object.values(state.units)
+      const attackers = Object.values(state.units)
         .filter((unit) => unit.owner === order.player && canActAsUnit(unit) && !hasUnitModifier(unit, 'stunned'))
-        .map((unit) => unit.id)
-      attackerIds.forEach((attackerId) => {
-        const attacker = state.units[attackerId]
-        if (!attacker || !canActAsUnit(attacker)) return
-        const targetHex = neighbor(attacker.pos, attacker.facing)
-        if (!inBounds(state.boardRows, state.boardCols, targetHex)) return
+        .sort((a, b) => a.id.localeCompare(b.id))
+      applyRepeatedUnitSourcedDamage(state, attackers, effect.damage, order.defId, (liveSourceUnit) => {
+        const targetHex = neighbor(liveSourceUnit.pos, liveSourceUnit.facing)
+        if (!inBounds(state.boardRows, state.boardCols, targetHex)) return null
         const target = getUnitAt(state, targetHex)
-        if (!target || !canCardTargetUnit(order.defId, target)) return
-        applyDamage(state, target, effect.damage, attacker)
+        if (!target || !canCardTargetUnit(order.defId, target)) return null
+        return target
       })
       return
     }
@@ -2942,22 +2982,28 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
 
       if (pushedDistance <= 0 && !blocker) {
         state.log.push(`Unit ${target.id} cannot be pushed.`)
-        return
       }
 
       if (pushedDistance > 0) {
         pushUnit(state, target, direction, pushedDistance)
       }
 
+      const impactDamage = effect.impactDamage ?? 0
       if (blocker) {
         const pushedTarget = state.units[target.id]
         if (!pushedTarget || !isAdjacentHex(pushedTarget.pos, blocker.pos)) return
         state.log.push(`Unit ${pushedTarget.id} collides with ${blocker.id}.`)
-        applyDamage(state, pushedTarget, effect.collisionDamage, actingUnit)
+        applyDamage(state, pushedTarget, effect.collisionDamage + impactDamage, actingUnit, order.defId)
         const remainingBlocker = state.units[blocker.id]
         if (remainingBlocker) {
-          applyDamage(state, remainingBlocker, effect.collisionDamage, actingUnit)
+          applyDamage(state, remainingBlocker, effect.collisionDamage, actingUnit, order.defId)
         }
+        return
+      }
+
+      const pushedTarget = state.units[target.id]
+      if (impactDamage > 0 && pushedTarget) {
+        applyDamage(state, pushedTarget, impactDamage, actingUnit, order.defId)
       }
       return
     }

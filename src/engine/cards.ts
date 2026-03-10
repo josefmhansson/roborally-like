@@ -899,7 +899,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   attack_roundhouse_kick: {
     id: 'attack_roundhouse_kick',
     name: 'Roundhouse Kick',
-    description: 'Face a direction, deal 2 damage, then push an adjacent unit back up to 3 tiles.',
+    description: 'Face a direction, then kick an adjacent unit back up to 3 tiles. Deal 2 damage after the push, or 5 if it collides with another unit.',
     type: 'attack',
     classId: 'warleader',
     actionCost: 2,
@@ -911,25 +911,19 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         directionParam: 'direction',
       },
       {
-        type: 'attack',
-        unitParam: 'unitId',
-        mode: 'nearest',
-        directions: 'facing',
-        damage: 2,
-      },
-      {
         type: 'shove',
         unitParam: 'unitId',
         direction: 'facing',
         distance: 3,
         collisionDamage: 3,
+        impactDamage: 2,
       },
     ],
   },
   attack_volley: {
     id: 'attack_volley',
     name: 'Volley',
-    description: 'A unit and all adjacent friendly units each deal 1 damage to a chosen tile within 3 tiles.',
+    description: 'A unit and all adjacent friendly units each deal 1 damage to a chosen tile within 2 tiles.',
     type: 'attack',
     classId: 'commander',
     requires: { unit: 'friendly', tile: 'any' },
@@ -938,7 +932,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'volley',
         unitParam: 'unitId',
         tileParam: 'tile',
-        radius: 3,
+        radius: 2,
         damage: 1,
       },
     ],
@@ -1172,6 +1166,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     description: 'Change a unit’s facing to any direction.',
     type: 'movement',
     actionCost: 0,
+    keywords: ['Priority'],
     requires: { unit: 'friendly', direction: true },
     effects: [
       {
