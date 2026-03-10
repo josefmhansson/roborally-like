@@ -47,6 +47,10 @@ export type UnitModifierType =
   | 'disarmed'
   | 'vulnerable'
   | 'strong'
+  | 'undying'
+  | 'spikes'
+  | 'berserk'
+  | 'lightningBarrier'
 
 export type UnitModifierSource = 'commanderAura'
 
@@ -90,19 +94,33 @@ export type CardDefId =
   | 'reinforce_quick_boost'
   | 'reinforce_battlefield_recruitment'
   | 'reinforce_mass_boost'
+  | 'reinforce_shrug_off'
+  | 'reinforce_spikes'
+  | 'reinforce_berserk'
+  | 'reinforce_lightning_barrier'
   | 'move_forward'
   | 'move_any'
   | 'move_forward_face'
   | 'move_quickstep'
   | 'move_tandem'
+  | 'move_double_steps'
+  | 'move_converge'
+  | 'move_dash'
   | 'move_teleport'
   | 'attack_line'
   | 'attack_chain_lightning'
+  | 'attack_joint_attack'
+  | 'attack_bash'
+  | 'attack_ice_bolt'
   | 'attack_disarm'
   | 'attack_bleed'
   | 'attack_fwd_lr'
   | 'attack_fwd'
   | 'attack_arrow'
+  | 'attack_fireball'
+  | 'attack_pincer_attack'
+  | 'attack_roundhouse_kick'
+  | 'attack_volley'
   | 'attack_harpoon'
   | 'attack_execute'
   | 'attack_blade_dance'
@@ -118,7 +136,10 @@ export type CardDefId =
   | 'reinforce_rage'
   | 'reinforce_bolster'
   | 'spell_lightning'
+  | 'spell_petrify'
+  | 'spell_brain_freeze'
   | 'spell_meteor'
+  | 'spell_blizzard'
   | 'spell_invest'
   | 'spell_trip'
   | 'spell_snare'
@@ -229,16 +250,27 @@ export type CardEffect =
       unitParam: 'unitId'
     }
   | {
+      type: 'clearUnitDebuffs'
+      unitParam: 'unitId'
+    }
+  | {
       type: 'applyPlayerModifier'
-      modifier: 'extraDraw'
+      modifier: 'extraDraw' | 'brainFreeze'
       amount: number
       turns: ModifierDuration
+      target?: 'self' | 'opponent'
     }
   | {
       type: 'move'
       unitParam: 'unitId'
       direction: DirectionSource
       distance: number | { type: 'param'; key: 'distance' }
+    }
+  | {
+      type: 'moveToTile'
+      unitParam: 'unitId' | 'unitId2'
+      tileParam: 'tile' | 'tile2'
+      faceMovedDirection?: boolean
     }
   | {
       type: 'teleport'
@@ -257,6 +289,7 @@ export type CardEffect =
       mode: 'nearest' | 'line' | 'ray'
       directions: DirectionSource
       damage: number | { type: 'unitStrength' }
+      maxRange?: number
     }
   | {
       type: 'attackModifier'
@@ -265,6 +298,7 @@ export type CardEffect =
       directions: DirectionSource
       modifier: UnitModifierType
       turns: ModifierDuration
+      maxRange?: number
     }
   | {
       type: 'shove'
@@ -292,9 +326,48 @@ export type CardEffect =
       damagePerAdjacent: number
     }
   | {
+      type: 'lineSplash'
+      unitParam: 'unitId'
+      directions: DirectionSource
+      damage: number
+      splashRadius: number
+      maxRange?: number
+    }
+  | {
+      type: 'jointAttack'
+      unitParam: 'unitId'
+      tileParam: 'tile'
+      damagePerAdjacentAlly: number
+    }
+  | {
+      type: 'pincerAttack'
+      damage: number
+    }
+  | {
+      type: 'volley'
+      unitParam: 'unitId'
+      tileParam: 'tile'
+      radius: number
+      damage: number
+    }
+  | {
       type: 'markAdvanceToward'
       targetUnitParam: 'unitId'
       distance: number
+    }
+  | {
+      type: 'convergeTowardTile'
+      tileParam: 'tile'
+      distance: number
+      faceMovedDirection?: boolean
+    }
+  | {
+      type: 'damageRadius'
+      tileParam: 'tile'
+      radius: number
+      amount: number
+      modifier?: UnitModifierType
+      turns?: ModifierDuration
     }
 
 export type CardInstance = {
@@ -330,7 +403,7 @@ export type PlayerState = {
   modifiers: PlayerModifier[]
 }
 
-export type PlayerModifierType = 'extraDraw'
+export type PlayerModifierType = 'extraDraw' | 'brainFreeze'
 
 export type PlayerModifier = {
   type: PlayerModifierType

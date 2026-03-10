@@ -513,7 +513,14 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
     return getFriendlyUnitRefs(state, projected, player, true).map((ref) => ({ unitId: ref.refId }))
   }
 
-  if (defId === 'reinforce_rage' || defId === 'reinforce_bolster') {
+  if (
+    defId === 'reinforce_rage' ||
+    defId === 'reinforce_bolster' ||
+    defId === 'reinforce_shrug_off' ||
+    defId === 'reinforce_spikes' ||
+    defId === 'reinforce_berserk' ||
+    defId === 'reinforce_lightning_barrier'
+  ) {
     return getFriendlyUnitRefs(state, projected, player).map((ref) => ({ unitId: ref.refId }))
   }
 
@@ -597,6 +604,16 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
     return refs.map((ref) => ({ unitId: ref.refId }))
   }
 
+  if (defId === 'move_dash') {
+    const params: OrderParams[] = []
+    refs.forEach((ref) => {
+      ;[1, 2].forEach((distance) => {
+        params.push({ unitId: ref.refId, distance })
+      })
+    })
+    return params
+  }
+
   if (defId === 'move_tandem') {
     const distances = CARD_DEFS[defId].requires.distanceOptions ?? [1, 2, 3]
     const params: OrderParams[] = []
@@ -612,6 +629,48 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
       })
     })
     return params
+  }
+
+  if (defId === 'move_double_steps') {
+    const params: OrderParams[] = []
+    for (let firstIndex = 0; firstIndex < refs.length; firstIndex += 1) {
+      for (let secondIndex = firstIndex + 1; secondIndex < refs.length; secondIndex += 1) {
+        const first = refs[firstIndex]
+        const second = refs[secondIndex]
+        const firstTargets = getAdjacentOpenTiles(projected, first.snapshot.pos)
+        const secondTargets = getAdjacentOpenTiles(projected, second.snapshot.pos)
+        firstTargets.forEach((tile) => {
+          secondTargets.forEach((tile2) => {
+            if (tile.q === tile2.q && tile.r === tile2.r) return
+            params.push({
+              unitId: first.refId,
+              unitId2: second.refId,
+              tile: { ...tile },
+              tile2: { ...tile2 },
+            })
+          })
+        })
+      }
+    }
+    return params
+  }
+
+  if (defId === 'move_converge') {
+    const candidates = new Map<string, Hex>()
+    const enemyUnits = Object.values(projected.units).filter((unit) => unit.owner !== player)
+    enemyUnits.forEach((unit) => {
+      addHexCandidate(candidates, unit.pos)
+      DIRECTIONS.forEach((direction) => addHexCandidate(candidates, neighbor(unit.pos, direction)))
+    })
+    if (candidates.size === 0) {
+      addHexCandidate(candidates, {
+        q: Math.floor(projected.boardCols / 2),
+        r: Math.floor(projected.boardRows / 2),
+      })
+    }
+    return [...candidates.values()]
+      .filter((hex) => inBounds(projected, hex))
+      .map((tile) => ({ tile: { ...tile } }))
   }
 
   if (defId === 'move_teleport') {
@@ -634,7 +693,7 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
 }
 
 function generateAttackParams(state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
-  if (defId === 'attack_coordinated') {
+  if (defId === 'attack_coordinated' || defId === 'attack_pincer_attack') {
     return [{}]
   }
   const refs = getFriendlyUnitRefs(state, projected, player)
@@ -695,7 +754,11 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   if (
     defId === 'attack_fwd' ||
     defId === 'attack_jab' ||
+    defId === 'attack_bash' ||
+    defId === 'attack_ice_bolt' ||
     defId === 'attack_shove' ||
+    defId === 'attack_roundhouse_kick' ||
+    defId === 'attack_fireball' ||
     defId === 'attack_disarm' ||
     defId === 'attack_bleed'
   ) {
@@ -716,6 +779,47 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
     return params
   }
 
+  if (defId === 'attack_joint_attack') {
+    refs.forEach((ref) => {
+      DIRECTIONS.forEach((direction) => {
+        const tile = neighbor(ref.snapshot.pos, direction)
+        if (!inBounds(projected, tile)) return
+        params.push({ unitId: ref.refId, tile: { ...tile } })
+      })
+    })
+    return params
+  }
+
+  if (defId === 'attack_volley') {
+    refs.forEach((ref) => {
+      const candidates = new Map<string, Hex>()
+      Object.values(projected.units)
+        .filter((unit) => unit.owner !== player)
+        .forEach((unit) => {
+          if (hexDistance(ref.snapshot.pos, unit.pos) > 3) return
+          addHexCandidate(candidates, unit.pos)
+          DIRECTIONS.forEach((direction) => {
+            const tile = neighbor(unit.pos, direction)
+            if (hexDistance(ref.snapshot.pos, tile) > 3) return
+            addHexCandidate(candidates, tile)
+          })
+        })
+      if (candidates.size === 0) {
+        projected.tiles.forEach((tile) => {
+          const hex = { q: tile.q, r: tile.r }
+          if (hexDistance(ref.snapshot.pos, hex) > 3) return
+          addHexCandidate(candidates, hex)
+        })
+      }
+      ;[...candidates.values()]
+        .filter((tile) => inBounds(projected, tile))
+        .forEach((tile) => {
+          params.push({ unitId: ref.refId, tile: { ...tile } })
+        })
+    })
+    return params
+  }
+
   refs.forEach((ref) => {
     params.push({ unitId: ref.refId })
   })
@@ -723,7 +827,7 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
 }
 
 function generateSpellParams(_state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
-  if (defId === 'spell_invest' || defId === 'spell_divination') return [{}]
+  if (defId === 'spell_invest' || defId === 'spell_divination' || defId === 'spell_brain_freeze') return [{}]
 
   if (defId === 'spell_pitfall_trap' || defId === 'spell_explosive_trap') {
     return getBarricadeSpawnTiles(projected, player).map((tile) => ({ tile: { ...tile } }))
@@ -731,6 +835,7 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
 
   if (
     defId === 'spell_lightning' ||
+    defId === 'spell_petrify' ||
     defId === 'spell_burn' ||
     defId === 'spell_trip' ||
     defId === 'spell_snare' ||
@@ -769,6 +874,25 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
       .map((tile) => ({ tile: { ...tile } }))
   }
 
+  if (defId === 'spell_blizzard') {
+    const candidates = new Map<string, Hex>()
+    Object.values(projected.units)
+      .filter((unit) => unit.owner !== player)
+      .forEach((unit) => {
+        addHexCandidate(candidates, unit.pos)
+        DIRECTIONS.forEach((direction) => addHexCandidate(candidates, neighbor(unit.pos, direction)))
+      })
+    if (candidates.size === 0) {
+      addHexCandidate(candidates, {
+        q: Math.floor(projected.boardCols / 2),
+        r: Math.floor(projected.boardRows / 2),
+      })
+    }
+    return [...candidates.values()]
+      .filter((hex) => inBounds(projected, hex))
+      .map((tile) => ({ tile: { ...tile } }))
+  }
+
   return [{}]
 }
 
@@ -790,6 +914,12 @@ function getDirectionalAttackTarget(state: GameState, unit: Unit, defId: CardDef
 
 function addHexCandidate(map: Map<string, Hex>, hex: Hex): void {
   map.set(hexKey(hex), { ...hex })
+}
+
+function getAdjacentOpenTiles(state: GameState, origin: Hex): Hex[] {
+  return DIRECTIONS.map((direction) => neighbor(origin, direction))
+    .filter((hex) => inBounds(state, hex))
+    .filter((hex) => getUnitAt(state, hex) === null)
 }
 
 function getFriendlyUnitRefs(
@@ -1180,7 +1310,7 @@ function computeChainLightningOpportunityValue(opportunity: ChainLightningOpport
 function computeQueueTimingRisk(state: GameState, player: PlayerId, heuristics: BotHeuristics): number {
   const orders = state.players[player].orders
   if (orders.length <= 1) return 0
-  const slowTailOrderIds = getSlowTailOrderIds(orders)
+  const slowTailOrderIds = getSlowTailOrderIds(state, orders)
   let risk = 0
 
   orders.forEach((order, index) => {
@@ -1191,7 +1321,7 @@ function computeQueueTimingRisk(state: GameState, player: PlayerId, heuristics: 
     if (slowTailOrderIds.has(order.id)) {
       orderRisk += sensitivity * heuristics.timing.slowTailExtraRisk
     }
-    if (isPriorityOrder(order)) {
+    if (isPriorityOrder(state, order)) {
       orderRisk *= heuristics.timing.priorityRiskScale
     }
     risk += orderRisk
@@ -1219,19 +1349,37 @@ function getOrderTimingSensitivity(order: Order): number {
   return 0.2
 }
 
-function isPriorityOrder(order: Order): boolean {
-  return CARD_DEFS[order.defId].keywords?.includes('Priority') ?? false
+function hasActivePlayerModifier(state: GameState, player: PlayerId, modifierType: GameState['players'][number]['modifiers'][number]['type']): boolean {
+  return state.players[player].modifiers.some((modifier) => {
+    if (modifier.type !== modifierType) return false
+    return modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0
+  })
 }
 
-function isSlowOrder(order: Order): boolean {
-  return CARD_DEFS[order.defId].keywords?.includes('Slow') ?? false
+function getEffectiveOrderKeywords(state: GameState, order: Order): { priority: boolean; slow: boolean } {
+  const baseKeywords = CARD_DEFS[order.defId].keywords ?? []
+  const basePriority = baseKeywords.includes('Priority')
+  const baseSlow = baseKeywords.includes('Slow')
+  const addedSlow = hasActivePlayerModifier(state, order.player, 'brainFreeze')
+  const priority = basePriority
+  const slow = baseSlow || addedSlow
+  if (priority && slow) return { priority: false, slow: false }
+  return { priority, slow }
 }
 
-function getSlowTailOrderIds(orders: Order[]): Set<string> {
+function isPriorityOrder(state: GameState, order: Order): boolean {
+  return getEffectiveOrderKeywords(state, order).priority
+}
+
+function isSlowOrder(state: GameState, order: Order): boolean {
+  return getEffectiveOrderKeywords(state, order).slow
+}
+
+function getSlowTailOrderIds(state: GameState, orders: Order[]): Set<string> {
   const slowTail = new Set<string>()
   let seenSlow = false
   orders.forEach((order) => {
-    if (!seenSlow && isSlowOrder(order)) {
+    if (!seenSlow && isSlowOrder(state, order)) {
       seenSlow = true
     }
     if (seenSlow) {

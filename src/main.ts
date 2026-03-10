@@ -529,6 +529,12 @@ type TeleportAnimation = {
 }
 type ChainLightningAnimation = { type: 'chainLightning'; from: Hex; to: Hex; duration: number }
 type SlimeLobAnimation = { type: 'slimeLob'; arcs: Array<{ from: Hex; to: Hex }>; duration: number }
+type VolleyAnimation = { type: 'volley'; shots: Array<{ from: Hex; to: Hex }>; duration: number }
+type PincerAnimation = {
+  type: 'pincer'
+  strikes: Array<{ from: Hex; to: Hex; snapshot: UnitSnapshot; alpha: number }>
+  duration: number
+}
 type HarpoonAnimation = {
   type: 'harpoon'
   from: Hex
@@ -541,7 +547,12 @@ type HarpoonAnimation = {
     snapshot: UnitSnapshot
   }
 }
-type DeathRayAnimation = { type: 'deathRay'; from: Hex; targets: Hex[]; duration: number }
+type FlameThrowerAnimation = { type: 'flameThrower'; from: Hex; to: Hex; duration: number }
+type IceBoltAnimation = { type: 'iceBolt'; from: Hex; to: Hex; target?: Hex; duration: number }
+type FireballAnimation = { type: 'fireball'; from: Hex; to: Hex; duration: number }
+type BlizzardAnimation = { type: 'blizzard'; target: Hex; radius: number; duration: number }
+type LightningBarrierAnimation = { type: 'lightningBarrier'; arcs: Array<{ from: Hex; to: Hex }>; duration: number }
+type BrainFreezeAnimation = { type: 'brainFreeze'; duration: number }
 type BoardAnimation =
   | MoveAnimation
   | TeamMoveAnimation
@@ -563,8 +574,15 @@ type BoardAnimation =
   | TeleportAnimation
   | ChainLightningAnimation
   | SlimeLobAnimation
+  | VolleyAnimation
+  | PincerAnimation
   | HarpoonAnimation
-  | DeathRayAnimation
+  | FlameThrowerAnimation
+  | IceBoltAnimation
+  | FireballAnimation
+  | BlizzardAnimation
+  | LightningBarrierAnimation
+  | BrainFreezeAnimation
 
 const MOVE_DURATION_MS = 300
 const SHOVE_DURATION_MS = 520
@@ -580,11 +598,18 @@ const ADJACENT_STRIKE_DURATION_MS = 220
 const TRAP_TRIGGER_DURATION_MS = 320
 const CHAIN_LIGHTNING_HOP_DURATION_MS = 170
 const SLIME_LOB_DURATION_MS = 380
+const VOLLEY_DURATION_MS = 420
+const PINCER_DURATION_MS = 260
 const METEOR_DURATION_MS = 1600
 const ARROW_DURATION_MS = 300
 const TELEPORT_DURATION_MS = 320
 const HARPOON_DURATION_MS = 500
-const DEATH_RAY_DURATION_MS = 340
+const FLAME_THROWER_DURATION_MS = 420
+const ICE_BOLT_DURATION_MS = 340
+const FIREBALL_DURATION_MS = 620
+const BLIZZARD_DURATION_MS = 680
+const LIGHTNING_BARRIER_DURATION_MS = 260
+const BRAIN_FREEZE_DURATION_MS = 650
 const CARD_TRANSFER_DURATION_MS = 800
 const RESOLUTION_CARD_APPROACH_DURATION_MS = 360
 const RESOLUTION_CARD_HOLD_DURATION_MS = 250
@@ -3367,6 +3392,18 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'strong') {
     return { label: 'Strong', kind: 'buff' }
   }
+  if (modifier.type === 'undying') {
+    return { label: 'Undying', kind: 'buff' }
+  }
+  if (modifier.type === 'spikes') {
+    return { label: 'Spikes', kind: 'buff' }
+  }
+  if (modifier.type === 'berserk') {
+    return { label: 'Berserk', kind: 'buff' }
+  }
+  if (modifier.type === 'lightningBarrier') {
+    return { label: 'Lightning barrier', kind: 'buff' }
+  }
   return { label: modifier.type, kind: 'debuff' }
 }
 
@@ -3703,6 +3740,112 @@ function drawSlimeLobAnimation(animation: SlimeLobAnimation, progress: number): 
   animation.arcs.forEach((arc) => {
     drawSingleSlimeLobArc(arc.from, arc.to, progress)
   })
+}
+
+function drawSingleVolleyArc(fromTile: Hex, toTile: Hex, progress: number): void {
+  const from = projectHex(fromTile)
+  const to = projectHex(toTile)
+  const t = easeInOutCubic(progress)
+  const arcHeight = layout.size * 0.82
+  const center = {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t - Math.sin(t * Math.PI) * arcHeight,
+  }
+  const leadT = Math.min(1, t + 0.04)
+  const ahead = {
+    x: from.x + (to.x - from.x) * leadT,
+    y: from.y + (to.y - from.y) * leadT - Math.sin(leadT * Math.PI) * arcHeight,
+  }
+  const dx = ahead.x - center.x
+  const dy = (ahead.y - center.y) / BOARD_TILT
+  const len = Math.hypot(dx, dy) || 1
+  const nx = dx / len
+  const ny = dy / len
+  const perpX = -ny
+  const perpY = nx
+  const headLength = layout.size * 0.22
+  const baseWidth = layout.size * 0.07
+  const tailLength = layout.size * 0.26
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.strokeStyle = 'rgba(255, 228, 182, 0.95)'
+  ctx.lineWidth = 2
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(center.x - nx * tailLength, center.y - ny * tailLength)
+  ctx.lineTo(center.x, center.y)
+  ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(center.x, center.y)
+  ctx.lineTo(center.x - nx * headLength + perpX * baseWidth, center.y - ny * headLength + perpY * baseWidth)
+  ctx.lineTo(center.x - nx * headLength - perpX * baseWidth, center.y - ny * headLength - perpY * baseWidth)
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(255, 245, 210, 0.96)'
+  ctx.fill()
+
+  const glowRadius = layout.size * 0.16
+  const glow = ctx.createRadialGradient(center.x, center.y, glowRadius * 0.2, center.x, center.y, glowRadius)
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
+  glow.addColorStop(0.55, 'rgba(255, 206, 132, 0.88)')
+  glow.addColorStop(1, 'rgba(255, 150, 80, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.arc(center.x, center.y, glowRadius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawVolleyAnimation(animation: VolleyAnimation, progress: number): void {
+  animation.shots.forEach((shot) => {
+    drawSingleVolleyArc(shot.from, shot.to, progress)
+  })
+}
+
+function drawPincerAnimation(animation: PincerAnimation, progress: number): void {
+  const t = easeInOutCubic(progress)
+  const lunge = Math.sin(t * Math.PI) * 0.34
+  const targetKeys = new Set<string>()
+
+  animation.strikes.forEach((strike) => {
+    targetKeys.add(`${strike.to.q},${strike.to.r}`)
+    const from = projectHex(strike.from)
+    const to = projectHex(strike.to)
+    const center = {
+      x: from.x + (to.x - from.x) * lunge,
+      y: from.y + (to.y - from.y) * lunge,
+    }
+    const snapshotUnit = {
+      id: strike.snapshot.id,
+      owner: strike.snapshot.owner,
+      kind: strike.snapshot.kind,
+      strength: strike.snapshot.strength,
+      pos: { ...strike.snapshot.pos },
+      facing: strike.snapshot.facing,
+      modifiers: strike.snapshot.modifiers.map((modifier) => ({ ...modifier })),
+      roguelikeRole: strike.snapshot.roguelikeRole,
+    } as Unit
+    drawUnit(snapshotUnit, center, strike.alpha)
+  })
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.42 + Math.sin(progress * Math.PI) * 0.35
+  targetKeys.forEach((key) => {
+    const [q, r] = key.split(',').map(Number)
+    const center = projectHex({ q, r })
+    const radius = layout.size * (0.22 + 0.18 * Math.sin(progress * Math.PI))
+    const glow = ctx.createRadialGradient(center.x, center.y, radius * 0.2, center.x, center.y, radius * 1.4)
+    glow.addColorStop(0, 'rgba(255, 255, 255, 0.9)')
+    glow.addColorStop(0.55, 'rgba(255, 150, 110, 0.82)')
+    glow.addColorStop(1, 'rgba(255, 70, 40, 0)')
+    ctx.fillStyle = glow
+    ctx.beginPath()
+    ctx.arc(center.x, center.y, radius * 1.2, 0, Math.PI * 2)
+    ctx.fill()
+  })
+  ctx.restore()
 }
 
 function drawBurnDamageAnimation(target: Hex, progress: number): void {
@@ -4071,67 +4214,257 @@ function drawHarpoonAnimation(animation: HarpoonAnimation, progress: number): vo
   }
 }
 
-function drawDeathRay(from: Hex, targets: Hex[], progress: number): void {
-  if (targets.length === 0) return
+function drawFlameThrower(from: Hex, to: Hex, progress: number): void {
   const start = projectHex(from)
+  const end = projectHex(to)
   const t = easeInOutCubic(progress)
-  const alpha = 1 - progress * 0.35
+  const current = {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t,
+  }
+  const dx = current.x - start.x
+  const dy = current.y - start.y
+  const len = Math.hypot(dx, dy) || 1
+  const nx = dx / len
+  const ny = dy / len
+  const perpX = -ny
+  const perpY = nx
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.lineCap = 'round'
 
-  targets.forEach((targetHex) => {
-    const end = projectHex(targetHex)
-    const current = {
-      x: start.x + (end.x - start.x) * t,
-      y: start.y + (end.y - start.y) * t,
+  for (let layer = 0; layer < 4; layer += 1) {
+    ctx.globalAlpha = 0.28 + 0.16 * (1 - layer / 4)
+    ctx.strokeStyle = layer < 2 ? 'rgba(255, 110, 40, 0.95)' : 'rgba(255, 225, 160, 0.9)'
+    ctx.lineWidth = Math.max(2, layout.size * (0.28 - layer * 0.04))
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    for (let segment = 1; segment <= 7; segment += 1) {
+      const segT = segment / 7
+      const jitter = Math.sin((segT * 8 + progress * 9 + layer) * Math.PI) * layout.size * (0.08 - layer * 0.012)
+      ctx.lineTo(start.x + dx * segT + perpX * jitter, start.y + dy * segT + perpY * jitter)
     }
-
-    ctx.globalAlpha = 0.72 * alpha
-    ctx.strokeStyle = 'rgba(255, 35, 35, 0.95)'
-    ctx.lineWidth = Math.max(3.5, layout.size * 0.22)
-    ctx.beginPath()
-    ctx.moveTo(start.x, start.y)
-    ctx.lineTo(current.x, current.y)
     ctx.stroke()
+  }
 
-    ctx.globalAlpha = 0.96 * alpha
-    ctx.strokeStyle = 'rgba(255, 220, 220, 0.95)'
-    ctx.lineWidth = Math.max(1.2, layout.size * 0.08)
+  for (let ember = 0; ember < 7; ember += 1) {
+    const emberT = Math.max(0, t - ember * 0.08)
+    const center = {
+      x: start.x + (end.x - start.x) * emberT,
+      y: start.y + (end.y - start.y) * emberT,
+    }
+    const radius = layout.size * (0.07 + 0.05 * Math.sin((progress + ember * 0.14) * Math.PI))
+    const glow = ctx.createRadialGradient(center.x, center.y, radius * 0.15, center.x, center.y, radius * 1.8)
+    glow.addColorStop(0, 'rgba(255, 255, 220, 0.95)')
+    glow.addColorStop(0.5, 'rgba(255, 175, 90, 0.88)')
+    glow.addColorStop(1, 'rgba(255, 85, 35, 0)')
+    ctx.globalAlpha = 0.42 + 0.38 * (1 - ember / 7)
+    ctx.fillStyle = glow
     ctx.beginPath()
-    ctx.moveTo(start.x, start.y)
-    ctx.lineTo(current.x, current.y)
-    ctx.stroke()
-
-    const flareRadius = layout.size * (0.12 + 0.22 * t)
-    const flare = ctx.createRadialGradient(
-      current.x,
-      current.y,
-      flareRadius * 0.2,
-      current.x,
-      current.y,
-      flareRadius
-    )
-    flare.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
-    flare.addColorStop(0.45, 'rgba(255, 90, 90, 0.9)')
-    flare.addColorStop(1, 'rgba(255, 0, 0, 0)')
-    ctx.globalAlpha = alpha
-    ctx.fillStyle = flare
-    ctx.beginPath()
-    ctx.arc(current.x, current.y, flareRadius, 0, Math.PI * 2)
+    ctx.arc(center.x, center.y, radius * 1.45, 0, Math.PI * 2)
     ctx.fill()
-  })
+  }
+  ctx.restore()
+}
 
-  const coreRadius = layout.size * (0.1 + 0.15 * Math.sin(t * Math.PI))
-  const coreGlow = ctx.createRadialGradient(start.x, start.y, coreRadius * 0.2, start.x, start.y, coreRadius)
-  coreGlow.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
-  coreGlow.addColorStop(0.5, 'rgba(255, 90, 90, 0.9)')
-  coreGlow.addColorStop(1, 'rgba(255, 0, 0, 0)')
-  ctx.globalAlpha = alpha
-  ctx.fillStyle = coreGlow
+function drawIceBoltAnimation(animation: IceBoltAnimation, progress: number): void {
+  const from = projectHex(animation.from)
+  const to = projectHex(animation.to)
+  const t = easeInOutCubic(progress)
+  const current = {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t,
+  }
+  const dx = to.x - from.x
+  const dy = (to.y - from.y) / BOARD_TILT
+  const len = Math.hypot(dx, dy) || 1
+  const nx = dx / len
+  const ny = dy / len
+  const perpX = -ny
+  const perpY = nx
+  const headLength = layout.size * 0.28
+  const baseWidth = layout.size * 0.1
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.95
+  ctx.strokeStyle = 'rgba(180, 235, 255, 0.95)'
+  ctx.lineWidth = 2
   ctx.beginPath()
-  ctx.arc(start.x, start.y, coreRadius, 0, Math.PI * 2)
+  ctx.moveTo(current.x - nx * headLength * 0.95, current.y - ny * headLength * 0.95)
+  ctx.lineTo(current.x, current.y)
+  ctx.stroke()
+
+  ctx.beginPath()
+  ctx.moveTo(current.x, current.y)
+  ctx.lineTo(current.x - nx * headLength + perpX * baseWidth, current.y - ny * headLength + perpY * baseWidth)
+  ctx.lineTo(current.x - nx * headLength * 0.3, current.y - ny * headLength * 0.3)
+  ctx.lineTo(current.x - nx * headLength - perpX * baseWidth, current.y - ny * headLength - perpY * baseWidth)
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(205, 245, 255, 0.96)'
+  ctx.fill()
+
+  const glowRadius = layout.size * 0.22
+  const glow = ctx.createRadialGradient(current.x, current.y, glowRadius * 0.15, current.x, current.y, glowRadius)
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
+  glow.addColorStop(0.55, 'rgba(130, 205, 255, 0.88)')
+  glow.addColorStop(1, 'rgba(78, 150, 255, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.arc(current.x, current.y, glowRadius, 0, Math.PI * 2)
+  ctx.fill()
+
+  if (animation.target) {
+    const target = projectHex(animation.target)
+    const tint = Math.max(0, 1 - Math.abs(progress - 0.72) / 0.28)
+    if (tint > 0) {
+      const radius = layout.size * (0.42 + tint * 0.12)
+      const frost = ctx.createRadialGradient(target.x, target.y, radius * 0.15, target.x, target.y, radius)
+      frost.addColorStop(0, 'rgba(220, 248, 255, 0.8)')
+      frost.addColorStop(0.55, 'rgba(120, 190, 255, 0.48)')
+      frost.addColorStop(1, 'rgba(70, 120, 220, 0)')
+      ctx.globalAlpha = tint * 0.95
+      ctx.fillStyle = frost
+      ctx.beginPath()
+      ctx.ellipse(target.x, target.y, radius, radius * BOARD_TILT, 0, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+  ctx.restore()
+}
+
+function drawFireballAnimation(animation: FireballAnimation, progress: number): void {
+  const from = projectHex(animation.from)
+  const to = projectHex(animation.to)
+  const travelT = Math.min(1, progress / 0.72)
+  const orb = {
+    x: from.x + (to.x - from.x) * easeInOutCubic(travelT),
+    y: from.y + (to.y - from.y) * easeInOutCubic(travelT),
+  }
+  const radius = layout.size * (0.18 + 0.06 * Math.sin(progress * Math.PI))
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  const trail = ctx.createLinearGradient(from.x, from.y, orb.x, orb.y)
+  trail.addColorStop(0, 'rgba(255, 120, 40, 0)')
+  trail.addColorStop(1, 'rgba(255, 188, 90, 0.82)')
+  ctx.strokeStyle = trail
+  ctx.lineWidth = Math.max(2, layout.size * 0.11)
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(orb.x, orb.y)
+  ctx.stroke()
+
+  const glow = ctx.createRadialGradient(orb.x, orb.y, radius * 0.15, orb.x, orb.y, radius * 1.8)
+  glow.addColorStop(0, 'rgba(255, 255, 225, 0.95)')
+  glow.addColorStop(0.45, 'rgba(255, 180, 70, 0.95)')
+  glow.addColorStop(1, 'rgba(220, 78, 18, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.arc(orb.x, orb.y, radius * 1.6, 0, Math.PI * 2)
+  ctx.fill()
+
+  if (progress > 0.66) {
+    const burstT = (progress - 0.66) / 0.34
+    const burstRadius = layout.size * (0.28 + burstT * 1.35)
+    ctx.globalAlpha = Math.max(0.12, 0.88 - burstT * 0.58)
+    ctx.strokeStyle = 'rgba(255, 165, 90, 0.95)'
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.arc(to.x, to.y, burstRadius, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function drawBlizzardAnimation(animation: BlizzardAnimation, progress: number): void {
+  const center = projectHex(animation.target)
+  const pulse = Math.sin(progress * Math.PI)
+  const radius = layout.size * (0.62 + animation.radius * 0.55 + pulse * 0.18)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.34 + pulse * 0.38
+  const glow = ctx.createRadialGradient(center.x, center.y, radius * 0.2, center.x, center.y, radius * 1.2)
+  glow.addColorStop(0, 'rgba(245, 250, 255, 0.82)')
+  glow.addColorStop(0.55, 'rgba(170, 215, 255, 0.5)')
+  glow.addColorStop(1, 'rgba(120, 170, 235, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, radius, radius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.strokeStyle = 'rgba(225, 245, 255, 0.92)'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, radius * 0.95, radius * 0.95 * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.stroke()
+
+  for (let i = 0; i < 12; i += 1) {
+    const angle = (Math.PI * 2 * i) / 12 + progress * Math.PI
+    const dist = radius * (0.2 + ((i % 4) / 4) * 0.7)
+    const snowX = center.x + Math.cos(angle) * dist
+    const snowY = center.y + Math.sin(angle) * dist * BOARD_TILT
+    const size = layout.size * 0.05
+    ctx.beginPath()
+    ctx.moveTo(snowX - size, snowY)
+    ctx.lineTo(snowX + size, snowY)
+    ctx.moveTo(snowX, snowY - size)
+    ctx.lineTo(snowX, snowY + size)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function drawLightningBarrierAnimation(animation: LightningBarrierAnimation, progress: number): void {
+  animation.arcs.forEach((arc) => {
+    drawLightningArc(projectHex(arc.from), projectHex(arc.to), progress)
+  })
+}
+
+function drawBrainFreezeAnimation(progress: number): void {
+  const center = { x: layout.width / 2, y: layout.height * 0.36 }
+  const t = easeInOutCubic(progress)
+  const alpha = 0.72 * (1 - t * 0.55)
+  const size = Math.min(layout.width, layout.height) * (0.06 + t * 0.12)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = alpha
+  ctx.strokeStyle = 'rgba(220, 245, 255, 0.96)'
+  ctx.lineWidth = 3
+  for (let arm = 0; arm < 6; arm += 1) {
+    const angle = (Math.PI * 2 * arm) / 6
+    const innerX = center.x + Math.cos(angle) * size * 0.12
+    const innerY = center.y + Math.sin(angle) * size * 0.12
+    const outerX = center.x + Math.cos(angle) * size
+    const outerY = center.y + Math.sin(angle) * size
+    ctx.beginPath()
+    ctx.moveTo(innerX, innerY)
+    ctx.lineTo(outerX, outerY)
+    ctx.stroke()
+
+    const branchBaseX = center.x + Math.cos(angle) * size * 0.62
+    const branchBaseY = center.y + Math.sin(angle) * size * 0.62
+    const left = angle - Math.PI / 6
+    const right = angle + Math.PI / 6
+    ctx.beginPath()
+    ctx.moveTo(branchBaseX, branchBaseY)
+    ctx.lineTo(branchBaseX + Math.cos(left) * size * 0.2, branchBaseY + Math.sin(left) * size * 0.2)
+    ctx.moveTo(branchBaseX, branchBaseY)
+    ctx.lineTo(branchBaseX + Math.cos(right) * size * 0.2, branchBaseY + Math.sin(right) * size * 0.2)
+    ctx.stroke()
+  }
+
+  const glow = ctx.createRadialGradient(center.x, center.y, size * 0.08, center.x, center.y, size * 1.25)
+  glow.addColorStop(0, 'rgba(255, 255, 255, 0.75)')
+  glow.addColorStop(0.6, 'rgba(170, 220, 255, 0.32)')
+  glow.addColorStop(1, 'rgba(120, 170, 255, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, size * 1.08, size * 0.92, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 }
@@ -4405,12 +4738,28 @@ function drawBoard(): void {
     drawArrowTrail(currentAnimation.from, currentAnimation.to, animationProgress)
   }
 
+  if (currentAnimation?.type === 'iceBolt') {
+    drawIceBoltAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'fireball') {
+    drawFireballAnimation(currentAnimation, animationProgress)
+  }
+
   if (currentAnimation?.type === 'chainLightning') {
     drawChainLightningAnimation(currentAnimation, animationProgress)
   }
 
   if (currentAnimation?.type === 'slimeLob') {
     drawSlimeLobAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'volley') {
+    drawVolleyAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'pincer') {
+    drawPincerAnimation(currentAnimation, animationProgress)
   }
 
   if (currentAnimation?.type === 'teleport') {
@@ -4421,8 +4770,20 @@ function drawBoard(): void {
     drawHarpoonAnimation(currentAnimation, animationProgress)
   }
 
-  if (currentAnimation?.type === 'deathRay') {
-    drawDeathRay(currentAnimation.from, currentAnimation.targets, animationProgress)
+  if (currentAnimation?.type === 'flameThrower') {
+    drawFlameThrower(currentAnimation.from, currentAnimation.to, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'blizzard') {
+    drawBlizzardAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'lightningBarrier') {
+    drawLightningBarrierAnimation(currentAnimation, animationProgress)
+  }
+
+  if (currentAnimation?.type === 'brainFreeze') {
+    drawBrainFreezeAnimation(animationProgress)
   }
 
   if (currentAnimation?.type === 'death') {
@@ -5404,7 +5765,7 @@ function stepHint(step: SelectionStep): string {
     case 'unit':
       return 'Click a unit (or planned spawn) on the board.'
     case 'unit2':
-      return 'Click a different unit (or planned spawn) for the second boost.'
+      return 'Click a different unit (or planned spawn) for the second selection.'
     case 'tile':
       return 'Click a highlighted tile.'
     case 'tile2':
@@ -6811,6 +7172,24 @@ function applyAnimationBoardSyncUpTo(upToLogIndex: number): void {
       continue
     }
 
+    const clearDebuffsMatch = entry.match(/^Unit (.+) has debuffs removed\.$/)
+    if (clearDebuffsMatch) {
+      const unit = animationRenderUnits[clearDebuffsMatch[1]]
+      if (unit) {
+        unit.modifiers = unit.modifiers.filter(
+          (modifier) =>
+            modifier.type !== 'cannotMove' &&
+            modifier.type !== 'stunned' &&
+            modifier.type !== 'slow' &&
+            modifier.type !== 'reinforcementPenalty' &&
+            modifier.type !== 'burn' &&
+            modifier.type !== 'disarmed' &&
+            modifier.type !== 'vulnerable'
+        )
+      }
+      continue
+    }
+
     const destroyedMatch = entry.match(/^Unit (.+) is destroyed\.$/)
     if (destroyedMatch) {
       delete animationRenderUnits[destroyedMatch[1]]
@@ -6854,10 +7233,18 @@ function findSnapshotUnitAt(before: Record<string, UnitSnapshot>, hex: Hex): Uni
   return entry ?? null
 }
 
-function findFirstUnitInLine(before: Record<string, UnitSnapshot>, origin: Hex, dir: Direction): UnitSnapshot | null {
+function findFirstUnitInLine(
+  before: Record<string, UnitSnapshot>,
+  origin: Hex,
+  dir: Direction,
+  maxRange?: number
+): UnitSnapshot | null {
   let cursor = { ...origin }
+  let steps = 0
   for (;;) {
     cursor = neighbor(cursor, dir)
+    steps += 1
+    if (typeof maxRange === 'number' && steps > maxRange) break
     if (!isTile(cursor)) break
     const target = findSnapshotUnitAt(before, cursor)
     if (target) return target
@@ -6865,23 +7252,14 @@ function findFirstUnitInLine(before: Record<string, UnitSnapshot>, origin: Hex, 
   return null
 }
 
-function findAllUnitsInLine(before: Record<string, UnitSnapshot>, origin: Hex, dir: Direction): UnitSnapshot[] {
-  const targets: UnitSnapshot[] = []
-  let cursor = { ...origin }
-  for (;;) {
-    cursor = neighbor(cursor, dir)
-    if (!isTile(cursor)) break
-    const target = findSnapshotUnitAt(before, cursor)
-    if (target) targets.push(target)
-  }
-  return targets
-}
-
-function findLineEndHex(origin: Hex, dir: Direction): Hex | null {
+function findLineEndHex(origin: Hex, dir: Direction, maxRange?: number): Hex | null {
   let cursor = { ...origin }
   let lastValid: Hex | null = null
+  let steps = 0
   for (;;) {
     cursor = neighbor(cursor, dir)
+    steps += 1
+    if (typeof maxRange === 'number' && steps > maxRange) break
     if (!isTile(cursor)) break
     lastValid = { ...cursor }
   }
@@ -7036,9 +7414,9 @@ function parseSlimeSplitEvents(
 function parseTrapTriggers(logEntries: string[]): Array<{ index: number; unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }> {
   const triggers: Array<{ index: number; unitId: string; trapKind: 'pitfall' | 'explosive'; tile?: Hex }> = []
   logEntries.forEach((entry, index) => {
-    const match = entry.match(/^Unit (.+) triggers a (pitfall|explosive) trap(?: at (-?\d+),(-?\d+))?\.$/)
+    const match = entry.match(/^Unit (.+) triggers a (bear|pitfall|explosive) trap(?: at (-?\d+),(-?\d+))?\.$/)
     if (!match) return
-    const trapKind = match[2] as 'pitfall' | 'explosive'
+    const trapKind = (match[2] === 'bear' ? 'pitfall' : match[2]) as 'pitfall' | 'explosive'
     const tile =
       match[3] !== undefined && match[4] !== undefined
         ? { q: Number(match[3]), r: Number(match[4]) }
@@ -7056,6 +7434,47 @@ function parseBurnDamageTargets(logEntries: string[]): string[] {
     targets.push(match[1])
   })
   return targets
+}
+
+function parseLightningBarrierEvents(logEntries: string[]): Array<{ sourceUnitId: string; targetUnitId: string }> {
+  const events: Array<{ sourceUnitId: string; targetUnitId: string }> = []
+  logEntries.forEach((entry) => {
+    const match = entry.match(/^Lightning barrier arcs from unit (.+) to unit (.+)\.$/)
+    if (!match) return
+    events.push({ sourceUnitId: match[1], targetUnitId: match[2] })
+  })
+  return events
+}
+
+function snapshotCanActAsUnit(snapshot: Pick<UnitSnapshot, 'kind'>): boolean {
+  return snapshot.kind === 'unit' || snapshot.kind === 'leader'
+}
+
+function snapshotHasModifier(
+  snapshot: Pick<UnitSnapshot, 'modifiers'>,
+  type: Unit['modifiers'][number]['type']
+): boolean {
+  return snapshot.modifiers.some(
+    (modifier) => modifier.type === type && (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
+  )
+}
+
+function getCommanderAnimationParticipants(
+  before: Record<string, UnitSnapshot>,
+  player: PlayerId,
+  tile: Hex,
+  excludeUnitId?: string
+): UnitSnapshot[] {
+  return Object.values(before)
+    .filter(
+      (unit) =>
+        unit.owner === player &&
+        unit.id !== excludeUnitId &&
+        snapshotCanActAsUnit(unit) &&
+        !snapshotHasModifier(unit, 'stunned') &&
+        hexDistance(unit.pos, tile) === 1
+    )
+    .sort((a, b) => a.id.localeCompare(b.id))
 }
 
 function parseDamageEvents(logEntries: string[]): { index: number; unitId: string; amount: number }[] {
@@ -7319,7 +7738,45 @@ function buildAnimations(
       }
     }
 
+    if (effect.type === 'moveToTile') {
+      continue
+    }
+
     if (effect.type === 'moveAdjacentFriendlyGroup' && order.defId === 'move_tandem') {
+      const formationMoves: Array<{ unitId: string; from: Hex; to: Hex; index: number }> = []
+      loggedMoveEvents.forEach((entries, unitId) => {
+        if (entries.length === 0) return
+        const beforeUnit = before[unitId]
+        if (!beforeUnit) return
+        const from = animatedPositions.get(unitId) ?? beforeUnit.pos
+        const [firstMove] = entries.splice(0, 1)
+        if (!firstMove) return
+        if (from.q === firstMove.pos.q && from.r === firstMove.pos.r) return
+        formationMoves.push({
+          unitId,
+          from: { ...from },
+          to: { ...firstMove.pos },
+          index: firstMove.index,
+        })
+      })
+      formationMoves.sort((a, b) => a.index - b.index)
+      if (formationMoves.length > 0) {
+        enqueueDestroyedUpTo(formationMoves[0].index - 1)
+        lastConsumedLogIndex = Math.max(lastConsumedLogIndex, formationMoves[formationMoves.length - 1].index)
+        animations.push({
+          type: 'teamMove',
+          moves: formationMoves.map((move) => ({ unitId: move.unitId, from: move.from, to: move.to })),
+          duration: MOVE_DURATION_MS,
+        })
+        formationMoves.forEach((move) => {
+          animatedPositions.set(move.unitId, { ...move.to })
+        })
+        queueStateSync(formationMoves[formationMoves.length - 1].index)
+      }
+      continue
+    }
+
+    if (effect.type === 'convergeTowardTile') {
       const formationMoves: Array<{ unitId: string; from: Hex; to: Hex; index: number }> = []
       loggedMoveEvents.forEach((entries, unitId) => {
         if (entries.length === 0) return
@@ -7526,6 +7983,31 @@ function buildAnimations(
       animatedPositions.set(resolvedId, { ...afterUnit.pos })
     }
 
+    if (effect.type === 'jointAttack') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      const tile = getOrderTileParam(order.params, effect.tileParam)
+      if (!resolvedId || !tile) continue
+      const participants = getCommanderAnimationParticipants(before, order.player, tile, resolvedId)
+        .map((participant) => {
+          const dir = getDirectionToNeighbor(participant.pos, tile)
+          if (dir === null) return null
+          return {
+            unitId: participant.id,
+            from: { ...participant.pos },
+            dir,
+          }
+        })
+        .filter((entry): entry is { unitId: string; from: Hex; dir: Direction } => entry !== null)
+      if (participants.length > 0) {
+        animations.push({
+          type: 'teamLunge',
+          lunges: participants,
+          duration: LUNGE_DURATION_MS,
+        })
+      }
+      continue
+    }
+
     if (effect.type === 'attack') {
       const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
       if (!resolvedId) continue
@@ -7566,18 +8048,55 @@ function buildAnimations(
               duration: ARROW_DURATION_MS,
             })
           }
-        } else if (order.defId === 'attack_line') {
-          const targets = findAllUnitsInLine(before, beforeUnit.pos, dir).map((target) => ({ ...target.pos }))
-          if (targets.length > 0) {
+        } else if (order.defId === 'attack_ice_bolt') {
+          const target = findFirstUnitInLine(before, beforeUnit.pos, dir)
+          const end = target ? { ...target.pos } : findLineEndHex(beforeUnit.pos, dir)
+          if (end) {
             animations.push({
-              type: 'deathRay',
+              type: 'iceBolt',
               from: beforeUnit.pos,
-              targets,
-              duration: DEATH_RAY_DURATION_MS,
+              to: end,
+              target: target ? { ...target.pos } : undefined,
+              duration: ICE_BOLT_DURATION_MS,
+            })
+          }
+        } else if (order.defId === 'attack_line') {
+          const end = findLineEndHex(beforeUnit.pos, dir, effect.maxRange)
+          if (end) {
+            animations.push({
+              type: 'flameThrower',
+              from: beforeUnit.pos,
+              to: end,
+              duration: FLAME_THROWER_DURATION_MS,
             })
           }
         }
       })
+    }
+
+    if (effect.type === 'lineSplash') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      if (!resolvedId) continue
+      const beforeUnit = before[resolvedId]
+      const afterUnit = state.units[resolvedId]
+      if (!beforeUnit || !afterUnit) continue
+      const direction = afterUnit.facing
+      const target = findFirstUnitInLine(before, beforeUnit.pos, direction, effect.maxRange)
+      if (!target) continue
+      animations.push({
+        type: 'lunge',
+        unitId: resolvedId,
+        from: afterUnit.pos,
+        dir: direction,
+        duration: LUNGE_DURATION_MS,
+      })
+      animations.push({
+        type: 'fireball',
+        from: beforeUnit.pos,
+        to: { ...target.pos },
+        duration: FIREBALL_DURATION_MS,
+      })
+      continue
     }
 
     if (effect.type === 'chainLightning') {
@@ -7599,6 +8118,28 @@ function buildAnimations(
         })
         currentFrom = targetPos
       })
+    }
+
+    if (effect.type === 'volley') {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
+      const tile = getOrderTileParam(order.params, effect.tileParam)
+      const actingUnit = resolvedId ? before[resolvedId] ?? state.units[resolvedId] : null
+      if (!actingUnit || !tile) continue
+      const shots = [
+        { from: { ...actingUnit.pos }, to: { ...tile } },
+        ...getCommanderAnimationParticipants(before, order.player, actingUnit.pos, actingUnit.id).map((participant) => ({
+          from: { ...participant.pos },
+          to: { ...tile },
+        })),
+      ]
+      if (shots.length > 0) {
+        animations.push({
+          type: 'volley',
+          shots,
+          duration: VOLLEY_DURATION_MS,
+        })
+      }
+      continue
     }
 
     if (effect.type === 'harpoon') {
@@ -7654,8 +8195,27 @@ function buildAnimations(
       if (!target) continue
 
       const attemptedTile = neighbor(target.pos, direction)
+      const afterTargetPos = state.units[target.id]?.pos ?? loggedPositions.get(target.id)
       const collision = consumeShoveCollision(target.id)
       if (collision) {
+        if (
+          afterTargetPos &&
+          (afterTargetPos.q !== target.pos.q || afterTargetPos.r !== target.pos.r)
+        ) {
+          enqueueDestroyedUpTo(collision.index - 1)
+          lastConsumedLogIndex = Math.max(lastConsumedLogIndex, collision.index)
+          animations.push({
+            type: 'shove',
+            targetUnitId: target.id,
+            from: { ...target.pos },
+            to: { ...afterTargetPos },
+            collision: false,
+            duration: SHOVE_DURATION_MS,
+          })
+          animatedPositions.set(target.id, { ...afterTargetPos })
+          queueStateSync(collision.index)
+          continue
+        }
         if (isTile(attemptedTile)) {
           enqueueDestroyedUpTo(collision.index - 1)
           lastConsumedLogIndex = Math.max(lastConsumedLogIndex, collision.index)
@@ -7672,7 +8232,6 @@ function buildAnimations(
         continue
       }
 
-      const afterTargetPos = state.units[target.id]?.pos ?? loggedPositions.get(target.id)
       if (!afterTargetPos) continue
       if (afterTargetPos.q === target.pos.q && afterTargetPos.r === target.pos.r) continue
       animations.push({
@@ -7701,6 +8260,39 @@ function buildAnimations(
           duration: LUNGE_DURATION_MS,
         })
       }
+    }
+
+    if (effect.type === 'pincerAttack') {
+      const attackedTargets = damageEvents
+        .filter((event) => event.amount > 0)
+        .map((event) => before[event.unitId] ?? state.units[event.unitId])
+        .filter((target): target is UnitSnapshot => target !== undefined)
+      const strikeCounts = new Map<string, number>()
+      attackedTargets.forEach((target) => {
+        getCommanderAnimationParticipants(before, order.player, target.pos).forEach((participant) => {
+          strikeCounts.set(participant.id, (strikeCounts.get(participant.id) ?? 0) + 1)
+        })
+      })
+      const strikes = attackedTargets.flatMap((target) =>
+        getCommanderAnimationParticipants(before, order.player, target.pos).map((participant) => ({
+          from: { ...participant.pos },
+          to: { ...target.pos },
+          snapshot: {
+            ...participant,
+            pos: { ...participant.pos },
+            modifiers: participant.modifiers.map((modifier) => ({ ...modifier })),
+          },
+          alpha: (strikeCounts.get(participant.id) ?? 0) > 1 ? 0.52 : 0.86,
+        }))
+      )
+      if (strikes.length > 0) {
+        animations.push({
+          type: 'pincer',
+          strikes,
+          duration: PINCER_DURATION_MS,
+        })
+      }
+      continue
     }
 
     if (effect.type === 'boost') {
@@ -7744,11 +8336,29 @@ function buildAnimations(
       })
     }
 
+    if (effect.type === 'applyPlayerModifier' && order.defId === 'spell_brain_freeze') {
+      animations.push({
+        type: 'brainFreeze',
+        duration: BRAIN_FREEZE_DURATION_MS,
+      })
+    }
+
     if (effect.type === 'damageTileArea' && order.defId === 'spell_meteor' && order.params.tile) {
       animations.push({
         type: 'meteor',
         target: { ...order.params.tile },
         duration: METEOR_DURATION_MS,
+      })
+    }
+
+    if (effect.type === 'damageRadius' && order.defId === 'spell_blizzard') {
+      const tile = getOrderTileParam(order.params, effect.tileParam)
+      if (!tile) continue
+      animations.push({
+        type: 'blizzard',
+        target: { ...tile },
+        radius: effect.radius,
+        duration: BLIZZARD_DURATION_MS,
       })
     }
   }
@@ -7946,6 +8556,18 @@ function resolveNextActionAnimated(): void {
     if (!order) {
       const turnEndLogs = state.log.slice(logStart)
       const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
+      const lightningBarrierAnimations = parseLightningBarrierEvents(turnEndLogs)
+        .map((event) => {
+          const from = before[event.sourceUnitId]?.pos ?? state.units[event.sourceUnitId]?.pos
+          const to = turnEndPositions.get(event.targetUnitId) ?? state.units[event.targetUnitId]?.pos ?? before[event.targetUnitId]?.pos
+          if (!from || !to) return null
+          return {
+            type: 'lightningBarrier',
+            arcs: [{ from: { ...from }, to: { ...to } }],
+            duration: LIGHTNING_BARRIER_DURATION_MS,
+          } as BoardAnimation
+        })
+        .filter((animation): animation is BoardAnimation => animation !== null)
       const burnAnimations = parseBurnDamageTargets(turnEndLogs)
         .map((unitId) => {
           const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
@@ -7957,8 +8579,8 @@ function resolveNextActionAnimated(): void {
           } as BoardAnimation
         })
         .filter((animation): animation is BoardAnimation => animation !== null)
-      if (burnAnimations.length > 0) {
-        animationQueue.push(...burnAnimations)
+      if (lightningBarrierAnimations.length > 0 || burnAnimations.length > 0) {
+        animationQueue.push(...lightningBarrierAnimations, ...burnAnimations)
         if (!currentAnimation) runNextAnimation()
         return
       }
@@ -8198,6 +8820,7 @@ function resolveDistanceClick(
 function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionStep | null {
   const def = CARD_DEFS[defId]
   if (def.requires.unit && !params.unitId) return 'unit'
+  if (def.requires.unit2 && params.unitId && !params.unitId2) return 'unit2'
   if (defId === 'reinforce_boost' && params.unitId && !params.unitId2) {
     const selectionState = simulatePlannedState(state, planningPlayer)
     if (hasSecondaryBoostTarget(selectionState, planningPlayer, params.unitId)) return 'unit2'
@@ -8283,6 +8906,52 @@ function getTeleportSelectionTargets(
       if (occupied) return false
       return true
     })
+}
+
+function getAdjacentTileSelectionTargets(
+  snapshot: GameState,
+  unitId: string,
+  player: PlayerId,
+  allowOccupied: boolean
+): Hex[] {
+  const unitSnapshot = getUnitSnapshot(snapshot, unitId, player)
+  if (!unitSnapshot) return []
+  return DIRECTIONS.map((_, index) => neighbor(unitSnapshot.pos, index as Direction))
+    .filter((hex) => isTile(hex))
+    .filter((hex) => {
+      if (allowOccupied) return true
+      return !Object.values(snapshot.units).some((unit) => unit.pos.q === hex.q && unit.pos.r === hex.r)
+    })
+}
+
+function getTilesWithinRadius(snapshot: GameState, origin: Hex, radius: number): Hex[] {
+  return snapshot.tiles
+    .map((tile) => ({ q: tile.q, r: tile.r }))
+    .filter((tile) => hexDistance(origin, tile) <= radius)
+}
+
+function getCustomTileSelectionTargets(
+  snapshot: GameState,
+  defId: CardDefId,
+  params: OrderParams,
+  player: PlayerId,
+  step: TileSelectionParam
+): Hex[] | null {
+  if (defId === 'attack_joint_attack' && step === 'tile') {
+    return getAdjacentTileSelectionTargets(snapshot, params.unitId ?? '', player, true)
+  }
+  if (defId === 'move_double_steps' && step === 'tile') {
+    return getAdjacentTileSelectionTargets(snapshot, params.unitId ?? '', player, false)
+  }
+  if (defId === 'move_double_steps' && step === 'tile2') {
+    return getAdjacentTileSelectionTargets(snapshot, params.unitId2 ?? '', player, false)
+  }
+  if (defId === 'attack_volley' && step === 'tile') {
+    const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
+    if (!unitSnapshot) return []
+    return getTilesWithinRadius(snapshot, unitSnapshot.pos, 3)
+  }
+  return null
 }
 
 type TileSelectionParam = 'tile' | 'tile2' | 'tile3'
@@ -8510,17 +9179,36 @@ function getSelectableHexes(
   }
 
   if (step === 'unit2') {
+    const requirement = CARD_DEFS[defId].requires.unit2 ?? 'friendly'
     const units = Object.values(snapshot.units).filter(
-      (unit) => unit.owner === player && canCardSelectUnit(defId, unit)
+      (unit) =>
+        (requirement === 'friendly'
+          ? unit.owner === player
+          : requirement === 'enemy'
+            ? unit.owner !== player
+            : true) && canCardSelectUnit(defId, unit)
     )
-    const unitHexes = units.map((unit) => ({ ...unit.pos }))
-    const planned = getPlannedSpawnTiles(player)
+    const currentUnits = Object.values(state.units).filter(
+      (unit) =>
+        (requirement === 'friendly'
+          ? unit.owner === player
+          : requirement === 'enemy'
+            ? unit.owner !== player
+            : true) && canCardSelectUnit(defId, unit)
+    )
     const selected = params.unitId ? getUnitSnapshot(snapshot, params.unitId, player) : null
-    if (!selected) return [...unitHexes, ...planned]
-    return [...unitHexes, ...planned].filter((hex) => hex.q !== selected.pos.q || hex.r !== selected.pos.r)
+    const unitHexes = dedupeHexes([
+      ...units.map((unit) => ({ ...unit.pos })),
+      ...currentUnits.map((unit) => ({ ...unit.pos })),
+      ...(requirement === 'friendly' ? getPlannedSpawnTiles(player) : []),
+    ])
+    if (!selected) return unitHexes
+    return unitHexes.filter((hex) => hex.q !== selected.pos.q || hex.r !== selected.pos.r)
   }
 
   if (step === 'tile') {
+    const customTargets = getCustomTileSelectionTargets(snapshot, defId, params, player, 'tile')
+    if (customTargets) return customTargets
     const chainedMoveTargets = getMoveToTileSelectionTargets(snapshot, defId, params, player, 'tile')
     if (chainedMoveTargets) return chainedMoveTargets
     if (CARD_DEFS[defId].requires.tile === 'any') {
@@ -8536,6 +9224,8 @@ function getSelectableHexes(
   }
 
   if (step === 'tile2') {
+    const customTargets = getCustomTileSelectionTargets(snapshot, defId, params, player, 'tile2')
+    if (customTargets) return customTargets
     const chainedMoveTargets = getMoveToTileSelectionTargets(snapshot, defId, params, player, 'tile2')
     if (chainedMoveTargets) return chainedMoveTargets
     if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
@@ -8856,86 +9546,114 @@ function handleBoardClick(hex: Hex): void {
   }
 
   if (nextStep === 'unit2') {
-    const selectionId = resolveSelectableUnitId(selectionState, defId, hex, planningPlayer, 'friendly')
+    const requirement = CARD_DEFS[defId].requires.unit2 ?? 'friendly'
+    const selectionId = resolveSelectableUnitId(selectionState, defId, hex, planningPlayer, requirement)
     if (!selectionId) {
-      statusEl.textContent = 'Select a different unit or planned spawn.'
+      statusEl.textContent =
+        requirement === 'enemy'
+          ? 'Select a different enemy unit.'
+          : requirement === 'any'
+            ? 'Select a different unit.'
+            : 'Select a different unit or planned spawn.'
     } else if (selectionId === activeOrder.params.unitId) {
       statusEl.textContent = 'Select a different unit.'
     } else {
       activeOrder.params.unitId2 = selectionId
-      statusEl.textContent = selectionId.startsWith('planned:') ? 'Second planned spawn selected.' : 'Second unit selected.'
+      statusEl.textContent =
+        selectionId.startsWith('planned:') ? 'Second planned spawn selected.' : 'Second unit selected.'
     }
   }
 
   if (nextStep === 'tile') {
-    const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile')
-    if (chainedMoveTargets) {
-      if (
-        chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
-        applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile', hex)
-      ) {
-        clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile')
-        statusEl.textContent = 'Move target selected.'
+    const customTargets = getCustomTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile')
+    if (customTargets) {
+      if (customTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+        activeOrder.params.tile = hex
+        statusEl.textContent = 'Tile selected.'
       } else {
-        statusEl.textContent = 'Select a highlighted move target.'
+        statusEl.textContent = 'Select a highlighted tile.'
       }
     } else {
-      const tileRequirement = CARD_DEFS[defId].requires.tile
-      if (tileRequirement === 'any') {
-        const validTiles =
-          defId === 'move_teleport'
-            ? getTeleportSelectionTargets(selectionState, activeOrder.params, planningPlayer, 3)
-            : selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
-        if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-          activeOrder.params.tile = hex
-          statusEl.textContent = defId === 'move_teleport' ? 'Teleport destination selected.' : 'Tile selected.'
+      const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile')
+      if (chainedMoveTargets) {
+        if (
+          chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
+          applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile', hex)
+        ) {
+          clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile')
+          statusEl.textContent = 'Move target selected.'
         } else {
-          statusEl.textContent = defId === 'move_teleport' ? 'Select a valid teleport destination.' : 'Select a tile.'
+          statusEl.textContent = 'Select a highlighted move target.'
         }
       } else {
-        const validTiles =
-          tileRequirement === 'barricade'
-            ? getBarricadeSpawnTiles(selectionState, planningPlayer)
-            : getSpawnTiles(selectionState, planningPlayer)
-        if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-          activeOrder.params.tile = hex
-          statusEl.textContent = tileRequirement === 'barricade' ? 'Barricade tile selected.' : 'Spawn tile selected.'
+        const tileRequirement = CARD_DEFS[defId].requires.tile
+        if (tileRequirement === 'any') {
+          const validTiles =
+            defId === 'move_teleport'
+              ? getTeleportSelectionTargets(selectionState, activeOrder.params, planningPlayer, 3)
+              : selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+          if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+            activeOrder.params.tile = hex
+            statusEl.textContent = defId === 'move_teleport' ? 'Teleport destination selected.' : 'Tile selected.'
+          } else {
+            statusEl.textContent = defId === 'move_teleport' ? 'Select a valid teleport destination.' : 'Select a tile.'
+          }
         } else {
-          statusEl.textContent = tileRequirement === 'barricade' ? 'Select a valid barricade tile.' : 'Select a spawn tile.'
+          const validTiles =
+            tileRequirement === 'barricade'
+              ? getBarricadeSpawnTiles(selectionState, planningPlayer)
+              : getSpawnTiles(selectionState, planningPlayer)
+          if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+            activeOrder.params.tile = hex
+            statusEl.textContent = tileRequirement === 'barricade' ? 'Barricade tile selected.' : 'Spawn tile selected.'
+          } else {
+            statusEl.textContent =
+              tileRequirement === 'barricade' ? 'Select a valid barricade tile.' : 'Select a spawn tile.'
+          }
         }
       }
     }
   }
 
   if (nextStep === 'tile2') {
-    const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile2')
-    if (chainedMoveTargets) {
-      if (
-        chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
-        applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile2', hex)
-      ) {
-        clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile2')
-        statusEl.textContent = 'Second move target selected.'
-      } else {
-        statusEl.textContent = 'Select a highlighted second move target.'
-      }
-    } else if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
-      const validTiles = getBarricadeSpawnTiles(selectionState, planningPlayer)
-      if (!validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
-        statusEl.textContent = 'Select a valid second barricade tile.'
-      } else if (activeOrder.params.tile && activeOrder.params.tile.q === hex.q && activeOrder.params.tile.r === hex.r) {
-        statusEl.textContent = 'Second tile must be different.'
-      } else {
-        activeOrder.params.tile2 = hex
-        statusEl.textContent = 'Second barricade tile selected.'
-      }
-    } else if (CARD_DEFS[defId].requires.tile2 === 'any') {
-      const validTiles = selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
-      if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+    const customTargets = getCustomTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile2')
+    if (customTargets) {
+      if (customTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile2 = hex
         statusEl.textContent = 'Second tile selected.'
       } else {
-        statusEl.textContent = 'Select a valid second tile.'
+        statusEl.textContent = 'Select a highlighted second tile.'
+      }
+    } else {
+      const chainedMoveTargets = getMoveToTileSelectionTargets(selectionState, defId, activeOrder.params, planningPlayer, 'tile2')
+      if (chainedMoveTargets) {
+        if (
+          chainedMoveTargets.some((tile) => tile.q === hex.q && tile.r === hex.r) &&
+          applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile2', hex)
+        ) {
+          clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile2')
+          statusEl.textContent = 'Second move target selected.'
+        } else {
+          statusEl.textContent = 'Select a highlighted second move target.'
+        }
+      } else if (CARD_DEFS[defId].requires.tile2 === 'barricade') {
+        const validTiles = getBarricadeSpawnTiles(selectionState, planningPlayer)
+        if (!validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+          statusEl.textContent = 'Select a valid second barricade tile.'
+        } else if (activeOrder.params.tile && activeOrder.params.tile.q === hex.q && activeOrder.params.tile.r === hex.r) {
+          statusEl.textContent = 'Second tile must be different.'
+        } else {
+          activeOrder.params.tile2 = hex
+          statusEl.textContent = 'Second barricade tile selected.'
+        }
+      } else if (CARD_DEFS[defId].requires.tile2 === 'any') {
+        const validTiles = selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
+        if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
+          activeOrder.params.tile2 = hex
+          statusEl.textContent = 'Second tile selected.'
+        } else {
+          statusEl.textContent = 'Select a valid second tile.'
+        }
       }
     }
   }

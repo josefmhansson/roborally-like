@@ -9,6 +9,7 @@ import {
   resolveAllActions,
   startActionPhase,
 } from '../../src/engine/game'
+import { CARD_DEFS } from '../../src/engine/cards'
 import { neighbor } from '../../src/engine/hex'
 import type { CardDefId, Direction, GameState, PlayerId } from '../../src/engine/types'
 
@@ -171,6 +172,243 @@ test('commander aura Strong is applied and removed based on adjacency', () => {
   assert.equal(state.units['cmd-aura-unit']?.modifiers.some((modifier) => modifier.type === 'strong'), false)
 })
 
+test('pitfall trap card is renamed to bear trap', () => {
+  assert.equal(CARD_DEFS.spell_pitfall_trap.name, 'Bear Trap')
+})
+
+test('joint attack only counts other adjacent friendly units', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_joint_attack'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  const targetTile = { q: 3, r: 2 }
+  state.units['joint-user'] = {
+    id: 'joint-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['joint-ally-a'] = {
+    id: 'joint-ally-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 1),
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['joint-ally-b'] = {
+    id: 'joint-ally-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 5),
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['joint-target'] = {
+    id: 'joint-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 10,
+    pos: targetTile,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_joint_attack')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'joint-user', tile: targetTile }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['joint-target']?.strength, 4)
+})
+
+test('double steps moves two different units to chosen adjacent tiles', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_double_steps'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['double-a'] = {
+    id: 'double-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['double-b'] = {
+    id: 'double-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 4 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_double_steps')
+  assert.ok(
+    planOrder(state, 0, cardId, {
+      unitId: 'double-a',
+      unitId2: 'double-b',
+      tile: { q: 2, r: 2 },
+      tile2: { q: 2, r: 4 },
+    })
+  )
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['double-a']?.pos, { q: 2, r: 2 })
+  assert.deepEqual(state.units['double-b']?.pos, { q: 2, r: 4 })
+  assert.equal(state.units['double-a']?.facing, 0)
+  assert.equal(state.units['double-b']?.facing, 3)
+})
+
+test('pincer attack damages surrounded enemy units only', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 3 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_pincer_attack'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  const surroundedTile = { q: 2, r: 2 }
+  state.units['pincer-target'] = {
+    id: 'pincer-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 6,
+    pos: surroundedTile,
+    facing: 3,
+    modifiers: [],
+  }
+  ;([0, 1, 2, 3, 4, 5] as Direction[]).forEach((direction, index) => {
+    state.units[`pincer-ally-${index}`] = {
+      id: `pincer-ally-${index}`,
+      owner: 0,
+      kind: 'unit',
+      strength: 4,
+      pos: neighbor(surroundedTile, direction),
+      facing: 0,
+      modifiers: [],
+    }
+  })
+  state.units['pincer-open-target'] = {
+    id: 'pincer-open-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_pincer_attack')
+  assert.ok(planOrder(state, 0, cardId, {}))
+  readyAndResolve(state)
+
+  assert.equal(state.units['pincer-target']?.strength, 2)
+  assert.equal(state.units['pincer-open-target']?.strength, 6)
+})
+
+test('volley deals 1 damage from the acting unit and each adjacent friendly unit', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_volley'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['volley-user'] = {
+    id: 'volley-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['volley-ally-a'] = {
+    id: 'volley-ally-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor({ q: 2, r: 2 }, 1),
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['volley-ally-b'] = {
+    id: 'volley-ally-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor({ q: 2, r: 2 }, 5),
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['volley-target'] = {
+    id: 'volley-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_volley')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'volley-user', tile: { q: 4, r: 2 } }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['volley-target']?.strength, 3)
+})
+
+test('converge moves friendly units one tile toward the chosen tile and faces the moved direction', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_converge'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['converge-left'] = {
+    id: 'converge-left',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 0, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['converge-right'] = {
+    id: 'converge-right',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 4, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_converge')
+  assert.ok(planOrder(state, 0, cardId, { tile: { q: 2, r: 2 } }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['converge-left']?.pos, { q: 1, r: 2 })
+  assert.equal(state.units['converge-left']?.facing, 0)
+  assert.deepEqual(state.units['converge-right']?.pos, { q: 3, r: 2 })
+  assert.equal(state.units['converge-right']?.facing, 3)
+})
+
 test('warleader leader can move full distance without Slow restriction', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
   const state = createGameState(
@@ -290,7 +528,7 @@ test('barricade card spawns two barricade units on valid tiles', () => {
   assert.equal(barricades.length, 2)
 })
 
-test('pitfall trap triggers on movement, deals 2 damage, snares, and stops movement', () => {
+test('bear trap triggers on movement, deals 2 damage, snares, and stops movement', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'spell_pitfall_trap'),
@@ -335,7 +573,7 @@ test('pitfall trap triggers on movement, deals 2 damage, snares, and stops movem
   assert.equal(state.traps.length, 0)
 })
 
-test('pitfall trap triggers on friendly movement by default', () => {
+test('bear trap triggers on friendly movement by default', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: ['spell_pitfall_trap', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
@@ -467,7 +705,7 @@ test('explosive trap triggers on movement and does not stop movement', () => {
   assert.equal(state.traps.length, 0)
 })
 
-test('pitfall trap kill still records move destination in the log', () => {
+test('bear trap kill still records move destination in the log', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'spell_pitfall_trap'),
@@ -504,7 +742,7 @@ test('pitfall trap kill still records move destination in the log', () => {
 
   assert.equal(state.units['kill-target'], undefined)
   assert.ok(state.log.some((entry) => entry === 'Unit kill-target moves to 3,2.'))
-  assert.ok(state.log.some((entry) => entry === 'Unit kill-target triggers a pitfall trap at 3,2.'))
+  assert.ok(state.log.some((entry) => entry === 'Unit kill-target triggers a bear trap at 3,2.'))
 })
 
 test('spawning onto an enemy trap triggers the trap immediately', () => {
@@ -547,7 +785,7 @@ test('spawning onto an enemy trap triggers the trap immediately', () => {
   )
   assert.equal(spawned, undefined)
   assert.equal(state.traps.length, 0)
-  assert.ok(state.log.some((entry) => entry.includes('triggers a pitfall trap at 3,2.')))
+  assert.ok(state.log.some((entry) => entry.includes('triggers a bear trap at 3,2.')))
 })
 
 test('teleport moves within range without triggering traps on intermediate tiles', () => {
@@ -638,6 +876,353 @@ test('chain lightning jumps across adjacent unique units and never hits the orig
   assert.equal(state.units['cl-a']?.strength, 1)
   assert.equal(state.units['cl-b']?.strength, 1)
   assert.equal(state.units['cl-c']?.strength, 1)
+})
+
+test('archmage card renames and flame thrower range updates apply', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_line'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  assert.equal(CARD_DEFS.attack_line.name, 'Flame Thrower')
+  assert.equal(CARD_DEFS.spell_lightning.name, 'Lightning Strike')
+
+  clearNonLeaderUnits(state)
+  state.units['flame-user'] = {
+    id: 'flame-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['flame-a'] = {
+    id: 'flame-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['flame-b'] = {
+    id: 'flame-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['flame-c'] = {
+    id: 'flame-c',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 5, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_line')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'flame-user' }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['flame-a']?.strength, 2)
+  assert.equal(state.units['flame-b']?.strength, 2)
+  assert.equal(state.units['flame-c']?.strength, 4)
+})
+
+test('petrify stuns a unit for 2 turns and blocks its actions', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_petrify'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['pet-target'] = {
+    id: 'pet-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const petrifyId = findCardId(state, 0, 'spell_petrify')
+  const moveIdTurnOne = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, petrifyId, { unitId: 'pet-target' }))
+  assert.ok(planOrder(state, 1, moveIdTurnOne, { unitId: 'pet-target', direction: 3, distance: 1 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['pet-target']?.pos, { q: 3, r: 2 })
+  assert.equal(state.units['pet-target']?.modifiers.some((modifier) => modifier.type === 'stunned'), true)
+
+  const moveIdTurnTwo = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 1, moveIdTurnTwo, { unitId: 'pet-target', direction: 3, distance: 1 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['pet-target']?.pos, { q: 3, r: 2 })
+  assert.equal(state.units['pet-target']?.modifiers.some((modifier) => modifier.type === 'stunned'), false)
+})
+
+test('lightning barrier damages adjacent enemies at the end of each turn', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_lightning_barrier'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['barrier-user'] = {
+    id: 'barrier-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['barrier-a'] = {
+    id: 'barrier-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: neighbor({ q: 2, r: 2 }, 0),
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['barrier-b'] = {
+    id: 'barrier-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: neighbor({ q: 2, r: 2 }, 1),
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'reinforce_lightning_barrier')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'barrier-user' }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['barrier-a']?.strength, 2)
+  assert.equal(state.units['barrier-b']?.strength, 2)
+  assert.ok(state.units['barrier-user']?.modifiers.some((modifier) => modifier.type === 'lightningBarrier'))
+
+  readyAndResolve(state)
+
+  assert.equal(state.units['barrier-a']?.strength, 1)
+  assert.equal(state.units['barrier-b']?.strength, 1)
+})
+
+test('brain freeze makes opponent cards slow next turn and cancels priority on affected cards', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 8, drawPerTurn: 8 }
+  const state = createGameState(settings, {
+    p1: ['spell_brain_freeze', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: ['attack_jab', 'move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['bf-p1'] = {
+    id: 'bf-p1',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['bf-p2'] = {
+    id: 'bf-p2',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const brainFreezeId = findCardId(state, 0, 'spell_brain_freeze')
+  assert.ok(planOrder(state, 0, brainFreezeId, {}))
+  readyAndResolve(state)
+
+  assert.ok(state.players[1].modifiers.some((modifier) => modifier.type === 'brainFreeze'))
+
+  state.activePlayer = 0
+  const p1Move = findCardId(state, 0, 'move_any')
+  const p2Jab = findCardId(state, 1, 'attack_jab')
+  const p2Move = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, p1Move, { unitId: 'bf-p1', direction: 0, distance: 1 }))
+  assert.ok(planOrder(state, 1, p2Jab, { unitId: 'bf-p2', direction: 3 }))
+  assert.ok(planOrder(state, 1, p2Move, { unitId: 'bf-p2', direction: 3, distance: 1 }))
+
+  state.ready = [true, true]
+  startActionPhase(state)
+
+  assert.deepEqual(
+    state.actionQueue.map((order) => `${order.player}:${order.defId}`),
+    ['0:move_any', '1:attack_jab', '1:move_any']
+  )
+  assert.equal(state.players[1].modifiers.some((modifier) => modifier.type === 'brainFreeze'), false)
+})
+
+test('ice bolt deals damage and limits movement with Slow for 2 turns', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_ice_bolt'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['ice-user'] = {
+    id: 'ice-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['ice-target'] = {
+    id: 'ice-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const iceBoltId = findCardId(state, 0, 'attack_ice_bolt')
+  assert.ok(planOrder(state, 0, iceBoltId, { unitId: 'ice-user', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['ice-target']?.strength, 2)
+  assert.equal(state.units['ice-target']?.modifiers.some((modifier) => modifier.type === 'slow'), true)
+
+  const moveId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 1, moveId, { unitId: 'ice-target', direction: 0, distance: 3 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['ice-target']?.pos, { q: 4, r: 2 })
+})
+
+test('fireball damages the first unit in line and adjacent tiles around it', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_fireball'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['fireball-user'] = {
+    id: 'fireball-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 0, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  const center = { q: 2, r: 2 }
+  state.units['fireball-center'] = {
+    id: 'fireball-center',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: center,
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['fireball-adj-a'] = {
+    id: 'fireball-adj-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(center, 1),
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['fireball-adj-b'] = {
+    id: 'fireball-adj-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(center, 5),
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['fireball-far'] = {
+    id: 'fireball-far',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 5, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_fireball')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'fireball-user', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['fireball-center']?.strength, 2)
+  assert.equal(state.units['fireball-adj-a']?.strength, 2)
+  assert.equal(state.units['fireball-adj-b']?.strength, 2)
+  assert.equal(state.units['fireball-far']?.strength, 4)
+})
+
+test('blizzard damages and slows all units within a 3 tile radius', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_blizzard'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['bliz-a'] = {
+    id: 'bliz-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['bliz-b'] = {
+    id: 'bliz-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 5, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['bliz-outside'] = {
+    id: 'bliz-outside',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 5, r: 5 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'spell_blizzard')
+  assert.ok(planOrder(state, 0, cardId, { tile: { q: 2, r: 2 } }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['bliz-a']?.strength, 3)
+  assert.equal(state.units['bliz-b']?.strength, 3)
+  assert.equal(state.units['bliz-outside']?.strength, 5)
+  assert.equal(state.units['bliz-a']?.modifiers.some((modifier) => modifier.type === 'slow'), true)
+  assert.equal(state.units['bliz-b']?.modifiers.some((modifier) => modifier.type === 'slow'), true)
+  assert.equal(state.units['bliz-outside']?.modifiers.some((modifier) => modifier.type === 'slow'), false)
 })
 
 test('battlefield recruitment spawns a 1-strength unit adjacent to a friendly unit', () => {
@@ -1406,6 +1991,283 @@ test('rage and bolster share strong logic with stacking and turn duration', () =
   const targetAfterTurnTwo = state.units['p2-target']
   assert.ok(targetAfterTurnTwo)
   assert.equal(targetAfterTurnTwo.strength, 3)
+})
+
+test('bash deals damage and prevents the target from acting later that turn', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_bash'),
+    p2: ['move_any', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['bash-user'] = {
+    id: 'bash-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['bash-target'] = {
+    id: 'bash-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const bashCardId = findCardId(state, 0, 'attack_bash')
+  const moveCardId = findCardId(state, 1, 'move_any')
+  assert.ok(planOrder(state, 0, bashCardId, { unitId: 'bash-user', direction: 0 }))
+  assert.ok(planOrder(state, 1, moveCardId, { unitId: 'bash-target', direction: 0, distance: 1 }))
+
+  state.activePlayer = 1
+  readyAndResolve(state)
+
+  const targetAfter = state.units['bash-target']
+  assert.ok(targetAfter)
+  assert.equal(targetAfter.strength, 2)
+  assert.deepEqual(targetAfter.pos, { q: 3, r: 2 })
+  assert.ok(state.log.some((entry) => entry === 'Unit bash-target is stunned and cannot act this turn.'))
+})
+
+test('shrug off removes debuffs and prevents damage and new debuffs this turn', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_shrug_off'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_bleed'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['shrug-target'] = {
+    id: 'shrug-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [
+      { type: 'cannotMove', turnsRemaining: 2 },
+      { type: 'burn', turnsRemaining: 'indefinite' },
+    ],
+  }
+  state.units['shrug-attacker'] = {
+    id: 'shrug-attacker',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const shrugCardId = findCardId(state, 0, 'reinforce_shrug_off')
+  const bleedCardId = findCardId(state, 1, 'attack_bleed')
+  assert.ok(planOrder(state, 0, shrugCardId, { unitId: 'shrug-target' }))
+  assert.ok(planOrder(state, 1, bleedCardId, { unitId: 'shrug-attacker', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfter = state.units['shrug-target']
+  assert.ok(targetAfter)
+  assert.equal(targetAfter.strength, 5)
+  assert.deepEqual(targetAfter.modifiers, [])
+  assert.ok(state.log.some((entry) => entry === 'Unit shrug-target is protected by Undying.'))
+})
+
+test('spikes reflects damage back to the attacker for 2 turns', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'reinforce_spikes'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_bleed'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['spike-target'] = {
+    id: 'spike-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['spike-attacker'] = {
+    id: 'spike-attacker',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const spikesCardId = findCardId(state, 0, 'reinforce_spikes')
+  const bleedCardId = findCardId(state, 1, 'attack_bleed')
+  assert.ok(planOrder(state, 0, spikesCardId, { unitId: 'spike-target' }))
+  assert.ok(planOrder(state, 1, bleedCardId, { unitId: 'spike-attacker', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfter = state.units['spike-target']
+  const attackerAfter = state.units['spike-attacker']
+  assert.ok(targetAfter)
+  assert.ok(attackerAfter)
+  assert.equal(targetAfter.strength, 4)
+  assert.equal(attackerAfter.strength, 3)
+  assert.ok(targetAfter.modifiers.some((modifier) => modifier.type === 'spikes' && modifier.turnsRemaining === 1))
+  assert.ok(state.log.some((entry) => entry === 'Spikes reflect 1 damage to unit spike-attacker.'))
+})
+
+test('berserk grants strong for the turn and destroys the unit at turn end', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: ['reinforce_berserk', 'attack_jab', 'move_pivot', 'move_pivot', 'move_pivot', 'move_pivot'],
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['berserk-user'] = {
+    id: 'berserk-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['berserk-target'] = {
+    id: 'berserk-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const berserkCardId = findCardId(state, 0, 'reinforce_berserk')
+  const jabCardId = findCardId(state, 0, 'attack_jab')
+  assert.ok(planOrder(state, 0, berserkCardId, { unitId: 'berserk-user' }))
+  assert.ok(planOrder(state, 0, jabCardId, { unitId: 'berserk-user', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['berserk-user'], undefined)
+  assert.equal(state.units['berserk-target']?.strength, 2)
+})
+
+test('roundhouse kick pushes the target back up to 3 tiles after dealing damage', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_roundhouse_kick'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['roundhouse-user'] = {
+    id: 'roundhouse-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['roundhouse-target'] = {
+    id: 'roundhouse-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_roundhouse_kick')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'roundhouse-user', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfter = state.units['roundhouse-target']
+  assert.ok(targetAfter)
+  assert.equal(targetAfter.strength, 2)
+  assert.deepEqual(targetAfter.pos, { q: 5, r: 2 })
+})
+
+test('roundhouse kick deals collision damage after a partial push into a blocker', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_roundhouse_kick'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['roundhouse-user'] = {
+    id: 'roundhouse-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 0, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['roundhouse-target'] = {
+    id: 'roundhouse-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 8,
+    pos: { q: 1, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['roundhouse-blocker'] = {
+    id: 'roundhouse-blocker',
+    owner: 1,
+    kind: 'unit',
+    strength: 7,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_roundhouse_kick')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'roundhouse-user', direction: 0 }))
+  readyAndResolve(state)
+
+  const targetAfter = state.units['roundhouse-target']
+  const blockerAfter = state.units['roundhouse-blocker']
+  assert.ok(targetAfter)
+  assert.ok(blockerAfter)
+  assert.equal(targetAfter.strength, 3)
+  assert.equal(blockerAfter.strength, 4)
+  assert.deepEqual(targetAfter.pos, { q: 3, r: 2 })
+  assert.deepEqual(blockerAfter.pos, { q: 4, r: 2 })
+})
+
+test('dash moves forward up to 2 tiles and costs 0 AP', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 0 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_dash'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['dash-user'] = {
+    id: 'dash-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_dash')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'dash-user', distance: 2 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['dash-user']?.pos, { q: 3, r: 2 })
 })
 
 test('dispel can target barricades and removes their modifiers', () => {
