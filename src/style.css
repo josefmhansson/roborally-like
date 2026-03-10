@@ -30,6 +30,10 @@
   --card-width: 153px;
   --card-height: 200px;
   --card-radius: 16px;
+  --queue-card-scale: 0.5;
+  --queue-card-width: calc(var(--card-width) * var(--queue-card-scale));
+  --queue-card-height: calc(var(--card-height) * var(--queue-card-scale));
+  --queue-panel-width: clamp(112px, calc(var(--queue-card-width) + 48px), 164px);
 }
 
 * {
@@ -386,13 +390,13 @@ input[type='number'] {
 
 .board-stack {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) 250px;
+  grid-template-columns: minmax(0, 1fr) var(--queue-panel-width);
   grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas:
     "board queue"
     "hand queue";
-  column-gap: 24px;
-  row-gap: 18px;
+  column-gap: 18px;
+  row-gap: 14px;
   min-height: 0;
   min-width: 0;
   height: 100%;
@@ -402,11 +406,11 @@ input[type='number'] {
 .queue-panel {
   background: var(--panel);
   border-radius: 24px;
-  padding: 16px;
+  padding: 12px 10px 12px 12px;
   border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -865,25 +869,26 @@ input[type='number'] {
 }
 
 .card {
+  --card-scale: 1;
   background-color: transparent;
   background-image: var(--card-base-image, url('/assets/cards/action_card_base.png'));
   background-position: 45% center;
   background-size: cover;
   background-repeat: no-repeat;
   color: #1b1f2a;
-  border-radius: var(--card-radius);
-  padding: 12px 14px;
+  border-radius: calc(var(--card-radius) * var(--card-scale));
+  padding: calc(12px * var(--card-scale)) calc(14px * var(--card-scale));
   text-align: left;
   border: 1px solid transparent;
   outline: none;
   cursor: pointer;
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   animation: floatIn 0.5s ease;
-  width: var(--card-width);
-  height: var(--card-height);
-  min-height: var(--card-height);
+  width: calc(var(--card-width) * var(--card-scale));
+  height: calc(var(--card-height) * var(--card-scale));
+  min-height: calc(var(--card-height) * var(--card-scale));
   display: grid;
-  gap: 6px;
+  gap: calc(6px * var(--card-scale));
   position: relative;
   overflow: hidden;
   --card-tint: #3b4f7d;
@@ -1043,35 +1048,35 @@ body.debug-cards .card.card-placeholder::after {
 
 .card-class-mark {
   position: absolute;
-  top: 14px;
-  left: 14px;
-  font-size: 6.4px;
-  letter-spacing: 0.55px;
+  top: calc(14px * var(--card-scale));
+  left: calc(14px * var(--card-scale));
+  font-size: calc(6.4px * var(--card-scale));
+  letter-spacing: calc(0.55px * var(--card-scale));
   text-transform: uppercase;
   font-weight: 700;
   color: var(--card-class-color);
   border: 1px solid var(--card-class-color);
   border-radius: 999px;
-  padding: 1px 5px;
+  padding: calc(1px * var(--card-scale)) calc(5px * var(--card-scale));
   background: rgba(255, 255, 255, 0.55);
 }
 
 .card-title {
   position: absolute;
-  top: 28px;
-  left: 14px;
-  right: 22px;
-  font-size: 14px;
+  top: calc(28px * var(--card-scale));
+  left: calc(14px * var(--card-scale));
+  right: calc(22px * var(--card-scale));
+  font-size: calc(14px * var(--card-scale));
   font-weight: 600;
   color: var(--card-text-color);
 }
 
 .card-art {
   position: absolute;
-  top: 46px;
-  left: 16px;
-  right: 24px;
-  height: 74px;
+  top: calc(46px * var(--card-scale));
+  left: calc(16px * var(--card-scale));
+  right: calc(24px * var(--card-scale));
+  height: calc(74px * var(--card-scale));
   pointer-events: none;
 }
 
@@ -1083,21 +1088,21 @@ body.debug-cards .card.card-placeholder::after {
 
 .card-desc {
   position: absolute;
-  top: 126px;
-  left: 18px;
-  right: 36px;
-  font-size: 8px;
+  top: calc(126px * var(--card-scale));
+  left: calc(18px * var(--card-scale));
+  right: calc(36px * var(--card-scale));
+  font-size: calc(8px * var(--card-scale));
   color: var(--card-text-color);
   line-height: 1.4;
 }
 
 .card-keywords {
   position: absolute;
-  top: 153px;
-  left: 18px;
-  right: 36px;
+  top: calc(153px * var(--card-scale));
+  left: calc(18px * var(--card-scale));
+  right: calc(36px * var(--card-scale));
   display: flex;
-  gap: 4px;
+  gap: calc(4px * var(--card-scale));
   flex-wrap: wrap;
 }
 
@@ -1106,10 +1111,10 @@ body.debug-cards .card.card-placeholder::after {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  padding: 1px 5px;
-  font-size: 6.5px;
+  padding: calc(1px * var(--card-scale)) calc(5px * var(--card-scale));
+  font-size: calc(6.5px * var(--card-scale));
   font-weight: 700;
-  letter-spacing: 0.45px;
+  letter-spacing: calc(0.45px * var(--card-scale));
   text-transform: uppercase;
   color: #2a1800;
   background: rgba(255, 218, 120, 0.95);
@@ -1118,26 +1123,26 @@ body.debug-cards .card.card-placeholder::after {
 
 .card-meta {
   position: absolute;
-  top: 174px;
-  left: 18px;
-  right: 36px;
-  font-size: 8px;
+  top: calc(174px * var(--card-scale));
+  left: calc(18px * var(--card-scale));
+  right: calc(36px * var(--card-scale));
+  font-size: calc(8px * var(--card-scale));
   color: var(--card-text-color);
 }
 
 .card-ap {
   position: absolute;
-  top: 28px;
-  right: 16px;
+  top: calc(28px * var(--card-scale));
+  right: calc(16px * var(--card-scale));
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  min-height: 12px;
+  gap: calc(3px * var(--card-scale));
+  min-height: calc(12px * var(--card-scale));
 }
 
 .card-ap .ap-orb {
-  width: 16px;
-  height: 16px;
+  width: calc(16px * var(--card-scale));
+  height: calc(16px * var(--card-scale));
   border-radius: 999px;
   background: var(--ap-seal-image, url('/assets/cards/AP_seal.png')) center/200% no-repeat;
 }
@@ -1149,12 +1154,12 @@ body.debug-cards .card.card-placeholder::after {
 
 .card-ap .ap-zero {
   position: absolute;
-  inset: -2px;
-  transform: translateY(-2px);
+  inset: calc(-2px * var(--card-scale));
+  transform: translateY(calc(-2px * var(--card-scale)));
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--card-scale));
   color: #ff5b5b;
   pointer-events: none;
 }
@@ -1288,36 +1293,36 @@ body.in-match #winner-modal .btn.ready {
 .orders {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: var(--card-width);
-  gap: 10px;
+  grid-auto-columns: var(--queue-card-width);
+  gap: 8px;
   min-width: 0;
   overflow-x: auto;
   overflow-y: visible;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: 6px;
+  padding-bottom: 4px;
   justify-content: start;
   scrollbar-gutter: stable both-edges;
 }
 
 .orders .card {
-  width: var(--card-width);
+  width: var(--queue-card-width);
   flex: 0 0 auto;
 }
 
 .orders-vertical {
   display: grid;
   grid-auto-flow: row;
-  grid-auto-rows: calc(var(--card-height) + 24px);
-  gap: 10px;
+  grid-auto-rows: calc(var(--queue-card-height) + 12px);
+  gap: 8px;
   overflow-y: auto;
   overflow-x: visible;
-  padding-right: 6px;
+  padding-right: 2px;
   height: 100%;
 }
 
 .orders-vertical .card {
-  width: var(--card-width);
+  width: var(--queue-card-width);
 }
 
 .hand-row .card,
@@ -1343,8 +1348,9 @@ body.in-match #winner-modal .btn.ready {
 }
 
 .order-card {
+  --card-scale: var(--queue-card-scale);
   position: relative;
-  min-height: var(--card-height);
+  min-height: var(--queue-card-height);
   cursor: grab;
 }
 
@@ -1393,12 +1399,12 @@ body.in-match #winner-modal .btn.ready {
 
 .order-index {
   position: absolute;
-  bottom: 10px;
-  right: 12px;
-  font-size: 11px;
+  bottom: calc(10px * var(--card-scale));
+  right: calc(12px * var(--card-scale));
+  font-size: calc(11px * var(--card-scale));
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: calc(1px * var(--card-scale));
 }
 
 .order-name {
@@ -1621,7 +1627,7 @@ body.debug-cards .hidden-card {
 
   .queue-panel .orders-vertical {
     grid-auto-flow: column;
-    grid-auto-columns: var(--card-width);
+    grid-auto-columns: var(--queue-card-width);
     grid-auto-rows: unset;
     overflow-x: auto;
     overflow-y: visible;
@@ -1630,7 +1636,7 @@ body.debug-cards .hidden-card {
   }
 
   .queue-panel .orders {
-    min-height: calc(var(--card-height) + 12px);
+    min-height: calc(var(--queue-card-height) + 12px);
     align-items: stretch;
     padding-left: 1px;
     padding-right: 1px;
@@ -1832,7 +1838,7 @@ body.debug-cards .hidden-card {
   }
 
   .card {
-    padding: 8px 9px;
+    padding: calc(8px * var(--card-scale)) calc(9px * var(--card-scale));
   }
 
   .resolution-controls {
@@ -1850,75 +1856,75 @@ body.debug-cards .hidden-card {
   }
 
   .card-title {
-    top: 18px;
-    left: 10px;
-    right: 16px;
-    font-size: 10px;
+    top: calc(18px * var(--card-scale));
+    left: calc(10px * var(--card-scale));
+    right: calc(16px * var(--card-scale));
+    font-size: calc(10px * var(--card-scale));
   }
 
   .card-class-mark {
-    top: 8px;
-    left: 9px;
-    font-size: 5px;
-    letter-spacing: 0.45px;
-    padding: 1px 4px;
+    top: calc(8px * var(--card-scale));
+    left: calc(9px * var(--card-scale));
+    font-size: calc(5px * var(--card-scale));
+    letter-spacing: calc(0.45px * var(--card-scale));
+    padding: calc(1px * var(--card-scale)) calc(4px * var(--card-scale));
   }
 
   .card-art {
-    top: 34px;
-    left: 11px;
-    right: 18px;
-    height: 50px;
+    top: calc(34px * var(--card-scale));
+    left: calc(11px * var(--card-scale));
+    right: calc(18px * var(--card-scale));
+    height: calc(50px * var(--card-scale));
   }
 
   .card-desc {
-    top: 88px;
-    left: 12px;
-    right: 22px;
-    font-size: 6.5px;
+    top: calc(88px * var(--card-scale));
+    left: calc(12px * var(--card-scale));
+    right: calc(22px * var(--card-scale));
+    font-size: calc(6.5px * var(--card-scale));
     line-height: 1.25;
   }
 
   .card-keywords {
-    top: 106px;
-    left: 12px;
-    right: 22px;
-    gap: 3px;
+    top: calc(106px * var(--card-scale));
+    left: calc(12px * var(--card-scale));
+    right: calc(22px * var(--card-scale));
+    gap: calc(3px * var(--card-scale));
   }
 
   .card-keyword {
-    padding: 1px 4px;
-    font-size: 5.8px;
-    letter-spacing: 0.38px;
+    padding: calc(1px * var(--card-scale)) calc(4px * var(--card-scale));
+    font-size: calc(5.8px * var(--card-scale));
+    letter-spacing: calc(0.38px * var(--card-scale));
   }
 
   .card-meta {
-    top: 127px;
-    left: 12px;
-    right: 22px;
-    font-size: 6.5px;
+    top: calc(127px * var(--card-scale));
+    left: calc(12px * var(--card-scale));
+    right: calc(22px * var(--card-scale));
+    font-size: calc(6.5px * var(--card-scale));
   }
 
   .card-ap {
-    top: 18px;
-    right: 10px;
-    min-height: 10px;
-    gap: 2px;
+    top: calc(18px * var(--card-scale));
+    right: calc(10px * var(--card-scale));
+    min-height: calc(10px * var(--card-scale));
+    gap: calc(2px * var(--card-scale));
   }
 
   .card-ap .ap-orb {
-    width: 11px;
-    height: 11px;
+    width: calc(11px * var(--card-scale));
+    height: calc(11px * var(--card-scale));
   }
 
   .card-ap .ap-zero {
-    font-size: 9px;
+    font-size: calc(9px * var(--card-scale));
   }
 
   .order-index {
-    bottom: 6px;
-    right: 8px;
-    font-size: 9px;
+    bottom: calc(6px * var(--card-scale));
+    right: calc(8px * var(--card-scale));
+    font-size: calc(9px * var(--card-scale));
   }
 
   .card-grid.hand-row {

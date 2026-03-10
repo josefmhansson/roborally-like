@@ -6093,11 +6093,11 @@ function animateCardMove(
   const toRect = target.getBoundingClientRect()
   const baseEl = sourceEl ?? target
   const clone = baseEl.cloneNode(true) as HTMLElement
-  clone.className = target.className
   clone.classList.remove('card-placeholder')
   clone.classList.remove('hidden-card')
   clone.classList.remove('dragging')
   clone.classList.remove('drag-over')
+  clone.classList.remove('selected')
   clone.classList.add('card-moving')
   if (sourceEl) {
     clone.innerHTML = sourceEl.innerHTML
@@ -6116,13 +6116,16 @@ function animateCardMove(
   clone.style.margin = '0'
   clone.style.pointerEvents = 'none'
   clone.style.zIndex = '9999'
-  clone.style.transform = 'translate(0, 0) scale(1)'
+  clone.style.transformOrigin = 'top left'
+  clone.style.transform = 'translate(0px, 0px) scale(1, 1)'
   clone.style.opacity = '0'
   clone.style.visibility = 'hidden'
   document.body.appendChild(clone)
 
   const dx = toRect.left - fromRect.left
   const dy = toRect.top - fromRect.top
+  const scaleX = fromRect.width > 0 ? toRect.width / fromRect.width : 1
+  const scaleY = fromRect.height > 0 ? toRect.height / fromRect.height : 1
   target.style.visibility = 'hidden'
   target.style.opacity = '0'
   requestAnimationFrame(() => {
@@ -6130,8 +6133,8 @@ function animateCardMove(
     clone.style.opacity = '1'
     const animation = clone.animate(
       [
-        { transform: 'translate(0, 0) scale(1)' },
-        { transform: `translate(${dx}px, ${dy}px) scale(1)` },
+        { transform: 'translate(0px, 0px) scale(1, 1)' },
+        { transform: `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})` },
       ],
       { duration: durationMs, easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)' }
     )
