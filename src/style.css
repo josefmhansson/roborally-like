@@ -1958,6 +1958,193 @@ body.debug-cards .hidden-card {
   }
 }
 
+.tutorial-hub-card {
+  gap: 18px;
+}
+
+.tutorial-progress {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tutorial-lessons {
+  display: grid;
+  gap: 14px;
+}
+
+.tutorial-lesson-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(123, 216, 255, 0.16);
+  background:
+    linear-gradient(135deg, rgba(123, 216, 255, 0.09), rgba(255, 122, 139, 0.04)),
+    rgba(10, 14, 30, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.tutorial-lesson-meta {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tutorial-lesson-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tutorial-lesson-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.tutorial-lesson-summary {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tutorial-lesson-estimate {
+  color: var(--ink);
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  opacity: 0.82;
+}
+
+.tutorial-lesson-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.tutorial-complete-pill {
+  color: #d9ffee;
+  background: rgba(61, 220, 122, 0.15);
+  border: 1px solid rgba(61, 220, 122, 0.26);
+}
+
+.tutorial-spotlights {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1400;
+}
+
+.tutorial-spotlight-frame {
+  position: fixed;
+  border-radius: 16px;
+  border: 2px solid rgba(123, 216, 255, 0.9);
+  box-shadow:
+    0 0 0 1px rgba(8, 12, 28, 0.8),
+    0 0 0 9999px rgba(4, 6, 14, 0.42),
+    0 0 28px rgba(123, 216, 255, 0.2);
+  animation: tutorialPulse 1.6s ease-in-out infinite;
+}
+
+.tutorial-panel {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(123, 216, 255, 0.22);
+  background:
+    linear-gradient(180deg, rgba(18, 25, 48, 0.96), rgba(9, 13, 28, 0.96));
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  z-index: 1500;
+  display: grid;
+  gap: 12px;
+}
+
+.tutorial-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tutorial-panel-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.tutorial-panel-step {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.tutorial-panel-body {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.tutorial-panel-feedback {
+  min-height: 18px;
+  color: #ffd3d9;
+  font-size: 12px;
+}
+
+.tutorial-panel-feedback:empty {
+  display: none;
+}
+
+.tutorial-panel-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tutorial-panel-actions .btn {
+  min-width: 0;
+}
+
+@keyframes tutorialPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+
+  50% {
+    transform: scale(1.015);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 900px) {
+  .tutorial-panel {
+    top: auto;
+    right: 12px;
+    left: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .tutorial-lesson-card {
+    grid-template-columns: 1fr;
+  }
+
+  .tutorial-lesson-actions {
+    justify-content: flex-start;
+  }
+
+  .tutorial-panel-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 
 

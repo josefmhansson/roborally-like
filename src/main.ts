@@ -1,5 +1,6 @@
 import './style.css'
 import { CARD_DEFS, STARTING_DECK, cardCountsAsType, getCardTypes } from './engine/cards'
+import { cloneGameState } from './engine/clone'
 import {
   DEFAULT_PLAYER_CLASSES,
   getCardClassId,
@@ -53,6 +54,19 @@ import type {
   TileKind,
   Unit,
 } from './engine/types'
+import { TutorialController } from './tutorial/controller'
+import { TUTORIAL_LESSONS } from './tutorial/lessons'
+import { cloneTutorialBootstrap, createTutorialScenarioBootstrap } from './tutorial/scenarios'
+import { loadTutorialProgress, saveTutorialProgress } from './tutorial/storage'
+import type {
+  TutorialActionId,
+  TutorialDomTargetId,
+  TutorialHighlightTarget,
+  TutorialLessonId,
+  TutorialOnlineDemoData,
+  TutorialPayload,
+  TutorialScenarioBootstrap,
+} from './tutorial/types'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 if (!app) {
@@ -121,6 +135,7 @@ app.innerHTML = `
           <button id="menu-start" class="btn">Start Local Game</button>
           <button id="menu-start-bot" class="btn ghost">Start Vs Bot</button>
           <button id="menu-start-roguelike" class="btn ghost">Start Roguelike</button>
+          <button id="menu-tutorial" class="btn ghost">Tutorial</button>
           <button id="menu-loadout" class="btn ghost">Loadout</button>
           <button id="menu-settings" class="btn ghost">Settings</button>
         </div>
@@ -147,6 +162,20 @@ app.innerHTML = `
           <div id="online-links" class="seed-status"></div>
           <div id="online-status" class="seed-status"></div>
         </div>
+      </div>
+    </section>
+
+    <section id="tutorial-screen" class="menu-screen hidden">
+      <div class="menu-card wide tutorial-hub-card">
+        <div class="panel-header">
+          <div>
+            <div class="label">Tutorial</div>
+            <div class="planner-name">Lesson Hub</div>
+          </div>
+          <button id="tutorial-hub-back" class="btn ghost">Back to Menu</button>
+        </div>
+        <div id="tutorial-progress" class="tutorial-progress"></div>
+        <div id="tutorial-lessons" class="tutorial-lessons"></div>
       </div>
     </section>
 
@@ -315,18 +344,47 @@ app.innerHTML = `
       </div>
     </div>
   </div>
+  <div id="tutorial-spotlights" class="tutorial-spotlights hidden" aria-hidden="true"></div>
+  <div id="tutorial-panel" class="tutorial-panel hidden" aria-live="polite">
+    <div class="tutorial-panel-header">
+      <div>
+        <div id="tutorial-panel-title" class="tutorial-panel-title"></div>
+        <div id="tutorial-panel-step" class="tutorial-panel-step"></div>
+      </div>
+      <span id="tutorial-panel-badge" class="pill hidden">Completed</span>
+    </div>
+    <div id="tutorial-panel-body" class="tutorial-panel-body"></div>
+    <div id="tutorial-panel-feedback" class="tutorial-panel-feedback"></div>
+    <div class="tutorial-panel-actions">
+      <button id="tutorial-panel-skip" class="btn ghost" type="button">Skip</button>
+      <button id="tutorial-panel-restart" class="btn ghost" type="button">Restart</button>
+      <button id="tutorial-panel-back" class="btn" type="button">Back to Tutorials</button>
+    </div>
+  </div>
   <div id="card-overlay" class="card-overlay"></div>
 `
 
 const menuScreen = document.querySelector<HTMLDivElement>('#menu-screen')!
+const tutorialScreen = document.querySelector<HTMLDivElement>('#tutorial-screen')!
 const loadoutScreen = document.querySelector<HTMLDivElement>('#loadout-screen')!
 const settingsScreen = document.querySelector<HTMLDivElement>('#settings-screen')!
 const gameScreen = document.querySelector<HTMLDivElement>('#game-screen')!
 const cardOverlay = document.querySelector<HTMLDivElement>('#card-overlay')!
+const tutorialSpotlightsEl = document.querySelector<HTMLDivElement>('#tutorial-spotlights')!
+const tutorialPanelEl = document.querySelector<HTMLDivElement>('#tutorial-panel')!
+const tutorialPanelTitleEl = document.querySelector<HTMLDivElement>('#tutorial-panel-title')!
+const tutorialPanelStepEl = document.querySelector<HTMLDivElement>('#tutorial-panel-step')!
+const tutorialPanelBadgeEl = document.querySelector<HTMLSpanElement>('#tutorial-panel-badge')!
+const tutorialPanelBodyEl = document.querySelector<HTMLDivElement>('#tutorial-panel-body')!
+const tutorialPanelFeedbackEl = document.querySelector<HTMLDivElement>('#tutorial-panel-feedback')!
+const tutorialPanelSkipButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-skip')!
+const tutorialPanelRestartButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-restart')!
+const tutorialPanelBackButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-back')!
 
 const menuStartButton = document.querySelector<HTMLButtonElement>('#menu-start')!
 const menuStartBotButton = document.querySelector<HTMLButtonElement>('#menu-start-bot')!
 const menuStartRoguelikeButton = document.querySelector<HTMLButtonElement>('#menu-start-roguelike')!
+const menuTutorialButton = document.querySelector<HTMLButtonElement>('#menu-tutorial')!
 const menuLoadoutButton = document.querySelector<HTMLButtonElement>('#menu-loadout')!
 const menuSettingsButton = document.querySelector<HTMLButtonElement>('#menu-settings')!
 const seedInput = document.querySelector<HTMLInputElement>('#seed-input')!
@@ -340,6 +398,9 @@ const onlineJoinButton = document.querySelector<HTMLButtonElement>('#online-join
 const onlineEnterButton = document.querySelector<HTMLButtonElement>('#online-enter')!
 const onlineLinksEl = document.querySelector<HTMLDivElement>('#online-links')!
 const onlineStatusEl = document.querySelector<HTMLDivElement>('#online-status')!
+const tutorialHubBackButton = document.querySelector<HTMLButtonElement>('#tutorial-hub-back')!
+const tutorialProgressEl = document.querySelector<HTMLDivElement>('#tutorial-progress')!
+const tutorialLessonsEl = document.querySelector<HTMLDivElement>('#tutorial-lessons')!
 
 const loadoutBackButton = document.querySelector<HTMLButtonElement>('#loadout-back')!
 const loadoutToggleButton = document.querySelector<HTMLButtonElement>('#loadout-toggle')!
@@ -403,12 +464,24 @@ const resolutionControlsEl = document.querySelector<HTMLDivElement>('#resolution
 
 if (
   !menuScreen ||
+  !tutorialScreen ||
   !loadoutScreen ||
   !settingsScreen ||
   !gameScreen ||
+  !tutorialSpotlightsEl ||
+  !tutorialPanelEl ||
+  !tutorialPanelTitleEl ||
+  !tutorialPanelStepEl ||
+  !tutorialPanelBadgeEl ||
+  !tutorialPanelBodyEl ||
+  !tutorialPanelFeedbackEl ||
+  !tutorialPanelSkipButton ||
+  !tutorialPanelRestartButton ||
+  !tutorialPanelBackButton ||
   !menuStartButton ||
   !menuStartBotButton ||
   !menuStartRoguelikeButton ||
+  !menuTutorialButton ||
   !menuLoadoutButton ||
   !menuSettingsButton ||
   !seedInput ||
@@ -422,6 +495,9 @@ if (
   !onlineEnterButton ||
   !onlineLinksEl ||
   !onlineStatusEl ||
+  !tutorialHubBackButton ||
+  !tutorialProgressEl ||
+  !tutorialLessonsEl ||
   !loadoutBackButton ||
   !loadoutToggleButton ||
   !loadoutClearButton ||
@@ -841,6 +917,9 @@ let state = createGameState(gameSettings, loadouts, playerClasses)
 let planningPlayer: PlayerId = 0
 let selectedCardId: string | null = null
 let pendingOrder: { cardId: string; params: OrderParams } | null = null
+let lastObservedTurn = state.turn
+let lastObservedWinner: PlayerId | null = state.winner
+let lastObservedRoguelikeRewardVisible = false
 let previewState: GameState | null = null
 let overlayClone: HTMLElement | null = null
 let overlaySourceKey: string | null = null
@@ -1039,11 +1118,18 @@ let telemetryUploadInFlight = false
 
 isInitialized = true
 
-let screen: 'menu' | 'loadout' | 'settings' | 'game' = 'menu'
+type Screen = 'menu' | 'tutorial_hub' | 'loadout' | 'settings' | 'game'
+
+const tutorialController = new TutorialController(TUTORIAL_LESSONS, loadTutorialProgress())
+const TUTORIAL_RETURN_SNAPSHOT_STORAGE_KEY = 'untitled_game_tutorial_return_snapshot_v1'
+
+let screen: Screen = 'menu'
 let loadoutPlayer: PlayerId = 0
 let loadoutFilter: 'all' | CardType = 'all'
 let loadoutSortMode: 'type' | 'name' = 'type'
 let loadoutFiltersExpanded = false
+let tutorialOnlineDemo: TutorialOnlineDemoData | null = null
+let lastTutorialUiKey: string | null = null
 
 const layout = {
   size: 36,
@@ -1075,8 +1161,8 @@ type SeedPayload = {
 }
 
 type PersistedProgress = {
-  version: 1 | 2 | 3 | 4
-  screen: 'menu' | 'loadout' | 'settings' | 'game'
+  version: 1 | 2 | 3 | 4 | 5
+  screen: Screen
   localMode?: 'local' | 'bot' | 'roguelike'
   gameSettings: GameSettings
   loadouts: { p1: CardDefId[]; p2: CardDefId[] }
@@ -1088,6 +1174,11 @@ type PersistedProgress = {
   boardZoom: number
   boardPan: { x: number; y: number }
   roguelikeRun?: RoguelikeRunState | null
+}
+
+type TutorialReturnSnapshot = {
+  hadProgress: boolean
+  progress: PersistedProgress | null
 }
 
 type PersistedOnlineSession = {
@@ -1155,6 +1246,24 @@ function sanitizeLoadoutsForCurrentClasses(options: { enforceClassRestrictions?:
   loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, playerClasses.p2, enforceClassRestrictions)
 }
 
+function getTutorialSession() {
+  return tutorialController.getSession()
+}
+
+function isTutorialLessonActive(lessonId?: TutorialLessonId): boolean {
+  const session = getTutorialSession()
+  if (!session) return false
+  return lessonId ? session.lessonId === lessonId : true
+}
+
+function isTutorialHubVisible(): boolean {
+  return screen === 'tutorial_hub'
+}
+
+function shouldSuspendLocalPersistence(): boolean {
+  return isTutorialLessonActive() || isTutorialHubVisible()
+}
+
 function isBotControlledMode(modeValue: PlayMode = mode): boolean {
   return modeValue === 'bot' || modeValue === 'roguelike'
 }
@@ -1166,7 +1275,7 @@ function getPersistedLocalMode(modeValue: PlayMode): Exclude<PersistedProgress['
 }
 
 function getLocalTelemetryMode(modeValue: PlayMode): 'local' | 'bot' {
-  return modeValue === 'local' ? 'local' : 'bot'
+  return modeValue === 'bot' || modeValue === 'roguelike' ? 'bot' : 'local'
 }
 
 function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClasses.p1): RoguelikeRunState {
@@ -1259,7 +1368,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
 }
 
 function scheduleProgressSave(): void {
-  if (mode === 'online') return
+  if (mode === 'online' || shouldSuspendLocalPersistence()) return
   if (progressSaveTimer !== null) {
     window.clearTimeout(progressSaveTimer)
   }
@@ -1269,113 +1378,198 @@ function scheduleProgressSave(): void {
   }, PROGRESS_SAVE_DEBOUNCE_MS)
 }
 
+function cloneRoguelikeRunState(source: RoguelikeRunState | null): RoguelikeRunState | null {
+  if (!source) return null
+  return {
+    ...source,
+    deck: [...source.deck],
+    draftOptions: [...source.draftOptions],
+  }
+}
+
+function buildPersistedProgressPayload(screenOverride: Screen = screen): PersistedProgress {
+  return {
+    version: 5,
+    screen: screenOverride,
+    localMode: getPersistedLocalMode(mode),
+    gameSettings: { ...gameSettings },
+    loadouts: {
+      p1: [...loadouts.p1],
+      p2: [...loadouts.p2],
+    },
+    playerClasses: { ...playerClasses },
+    state: cloneGameState(state),
+    planningPlayer,
+    selectedCardId,
+    pendingOrder: pendingOrder
+      ? {
+          cardId: pendingOrder.cardId,
+          params: normalizeOrderParamsLeaderReferences(pendingOrder.params),
+        }
+      : null,
+    boardZoom,
+    boardPan: { ...boardPan },
+    roguelikeRun: mode === 'roguelike' ? cloneRoguelikeRunState(roguelikeRun) : null,
+  }
+}
+
 function persistProgressNow(): void {
-  if (mode === 'online') return
+  if (mode === 'online' || shouldSuspendLocalPersistence()) return
   try {
-    const payload: PersistedProgress = {
-      version: 4,
-      screen,
-      localMode: getPersistedLocalMode(mode),
-      gameSettings,
-      loadouts: {
-        p1: [...loadouts.p1],
-        p2: [...loadouts.p2],
-      },
-      playerClasses: { ...playerClasses },
-      state,
-      planningPlayer,
-      selectedCardId,
-      pendingOrder,
-      boardZoom,
-      boardPan: { ...boardPan },
-      roguelikeRun: mode === 'roguelike' ? roguelikeRun : null,
-    }
-    localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(payload))
+    localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(buildPersistedProgressPayload()))
   } catch {
     // Ignore storage write issues (quota/private mode/etc).
   }
 }
 
-function restoreProgressFromStorage(): ('menu' | 'loadout' | 'settings' | 'game') | null {
+function applyPersistedProgressPayload(parsed: Partial<PersistedProgress>): Screen | null {
+  if (
+    parsed.version !== 1 &&
+    parsed.version !== 2 &&
+    parsed.version !== 3 &&
+    parsed.version !== 4 &&
+    parsed.version !== 5
+  ) {
+    return null
+  }
+  if (!parsed.state || !Array.isArray(parsed.state.tiles) || !Array.isArray(parsed.state.players)) return null
+  if (!parsed.gameSettings || !parsed.loadouts) return null
+
+  gameSettings = normalizeGameSettingsInput(parsed.gameSettings)
+  playerClasses =
+    parsed.version === 4 || parsed.version === 5 ? normalizePlayerClassesInput(parsed.playerClasses) : { ...DEFAULT_PLAYER_CLASSES }
+  loadouts = {
+    p1: normalizeDeckInput(parsed.loadouts.p1),
+    p2: normalizeDeckInput(parsed.loadouts.p2),
+  }
+  sanitizeLoadoutsForCurrentClasses()
+  state = parsed.state as GameState
+  normalizeLeaderUnitsInState(state)
+  suppressWinnerModalForRestoredOutcome = state.winner !== null
+  planningPlayer = parsed.planningPlayer === 1 ? 1 : 0
+  selectedCardId = typeof parsed.selectedCardId === 'string' ? parsed.selectedCardId : null
+  pendingOrder =
+    parsed.pendingOrder &&
+    typeof parsed.pendingOrder.cardId === 'string' &&
+    parsed.pendingOrder.params &&
+    typeof parsed.pendingOrder.params === 'object'
+      ? { cardId: parsed.pendingOrder.cardId, params: normalizeOrderParamsLeaderReferences(parsed.pendingOrder.params) }
+      : null
+
+  if (typeof parsed.boardZoom === 'number') {
+    boardZoom = clamp(parsed.boardZoom, MIN_BOARD_ZOOM, MAX_BOARD_ZOOM)
+  }
+  if (parsed.boardPan && typeof parsed.boardPan.x === 'number' && typeof parsed.boardPan.y === 'number') {
+    boardPan.x = parsed.boardPan.x
+    boardPan.y = parsed.boardPan.y
+  }
+
+  const candidateScreen = parsed.screen
+  const restoredScreen: Screen =
+    candidateScreen === 'menu' ||
+    candidateScreen === 'tutorial_hub' ||
+    candidateScreen === 'loadout' ||
+    candidateScreen === 'settings' ||
+    candidateScreen === 'game'
+      ? candidateScreen
+      : 'menu'
+
+  const hand = state.players[planningPlayer]?.hand ?? []
+  if (selectedCardId && !hand.some((card) => card.id === selectedCardId)) {
+    selectedCardId = null
+    pendingOrder = null
+  }
+
+  roguelikeRun = null
+  if (restoredScreen === 'tutorial_hub') {
+    applyPlayMode('tutorial')
+  } else if ((parsed.version === 2 || parsed.version === 3 || parsed.version === 4 || parsed.version === 5) && parsed.localMode === 'bot') {
+    applyPlayMode('bot')
+    planningPlayer = BOT_HUMAN_PLAYER
+  } else if ((parsed.version === 3 || parsed.version === 4 || parsed.version === 5) && parsed.localMode === 'roguelike') {
+    const restoredRun = normalizeRoguelikeRunInput(parsed.roguelikeRun)
+    if (restoredRun) {
+      roguelikeRun = restoredRun
+      playerClasses.p1 = restoredRun.playerClass
+      applyPlayMode('roguelike')
+      planningPlayer = BOT_HUMAN_PLAYER
+    } else {
+      applyPlayMode('local')
+    }
+  } else {
+    applyPlayMode('local')
+  }
+
+  tutorialOnlineDemo = null
+  lastObservedTurn = state.turn
+  lastObservedWinner = state.winner
+  lastObservedRoguelikeRewardVisible = false
+  if (state.winner !== null) {
+    markLocalTelemetryAsRestoredOutcome()
+  } else {
+    resetLocalTelemetryForCurrentMatch()
+  }
+
+  return restoredScreen
+}
+
+function restoreProgressFromStorage(): Screen | null {
   try {
     const raw = localStorage.getItem(PROGRESS_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<PersistedProgress>
-    if (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4) return null
-    if (!parsed.state || !Array.isArray(parsed.state.tiles) || !Array.isArray(parsed.state.players)) return null
-    if (!parsed.gameSettings || !parsed.loadouts) return null
-
-    gameSettings = normalizeGameSettingsInput(parsed.gameSettings)
-    playerClasses =
-      parsed.version === 4 ? normalizePlayerClassesInput(parsed.playerClasses) : { ...DEFAULT_PLAYER_CLASSES }
-    loadouts = {
-      p1: normalizeDeckInput(parsed.loadouts.p1),
-      p2: normalizeDeckInput(parsed.loadouts.p2),
-    }
-    sanitizeLoadoutsForCurrentClasses()
-    state = parsed.state as GameState
-    normalizeLeaderUnitsInState(state)
-    suppressWinnerModalForRestoredOutcome = state.winner !== null
-    planningPlayer = parsed.planningPlayer === 1 ? 1 : 0
-    selectedCardId = typeof parsed.selectedCardId === 'string' ? parsed.selectedCardId : null
-    pendingOrder =
-      parsed.pendingOrder &&
-      typeof parsed.pendingOrder.cardId === 'string' &&
-      parsed.pendingOrder.params &&
-      typeof parsed.pendingOrder.params === 'object'
-        ? { cardId: parsed.pendingOrder.cardId, params: normalizeOrderParamsLeaderReferences(parsed.pendingOrder.params) }
-        : null
-
-    if (typeof parsed.boardZoom === 'number') {
-      boardZoom = clamp(parsed.boardZoom, MIN_BOARD_ZOOM, MAX_BOARD_ZOOM)
-    }
-    if (parsed.boardPan && typeof parsed.boardPan.x === 'number' && typeof parsed.boardPan.y === 'number') {
-      boardPan.x = parsed.boardPan.x
-      boardPan.y = parsed.boardPan.y
-    }
-
-    const candidateScreen = parsed.screen
-    const restoredScreen =
-      candidateScreen === 'menu' ||
-      candidateScreen === 'loadout' ||
-      candidateScreen === 'settings' ||
-      candidateScreen === 'game'
-        ? candidateScreen
-        : 'menu'
-
-    const hand = state.players[planningPlayer]?.hand ?? []
-    if (selectedCardId && !hand.some((card) => card.id === selectedCardId)) {
-      selectedCardId = null
-      pendingOrder = null
-    }
-
-    roguelikeRun = null
-    if ((parsed.version === 2 || parsed.version === 3 || parsed.version === 4) && parsed.localMode === 'bot') {
-      applyPlayMode('bot')
-      planningPlayer = BOT_HUMAN_PLAYER
-    } else if ((parsed.version === 3 || parsed.version === 4) && parsed.localMode === 'roguelike') {
-      const restoredRun = normalizeRoguelikeRunInput(parsed.roguelikeRun)
-      if (restoredRun) {
-        roguelikeRun = restoredRun
-        playerClasses.p1 = restoredRun.playerClass
-        applyPlayMode('roguelike')
-        planningPlayer = BOT_HUMAN_PLAYER
-      } else {
-        applyPlayMode('local')
-      }
-    } else {
-      applyPlayMode('local')
-    }
-
-    if (state.winner !== null) {
-      markLocalTelemetryAsRestoredOutcome()
-    } else {
-      resetLocalTelemetryForCurrentMatch()
-    }
-
-    return restoredScreen
+    return applyPersistedProgressPayload(parsed)
   } catch {
     return null
+  }
+}
+
+function persistTutorialProgress(): void {
+  saveTutorialProgress(tutorialController.getProgress())
+}
+
+function clearTutorialFeedback(): void {
+  tutorialPanelFeedbackEl.textContent = ''
+}
+
+function setTutorialFeedback(message: string): void {
+  tutorialPanelFeedbackEl.textContent = message
+  if (screen === 'game') {
+    statusEl.textContent = message
+  } else if (screen === 'menu') {
+    onlineStatusEl.textContent = message
+  }
+}
+
+function persistTutorialReturnSnapshot(): void {
+  try {
+    const snapshot: TutorialReturnSnapshot = {
+      hadProgress: true,
+      progress: buildPersistedProgressPayload(),
+    }
+    localStorage.setItem(TUTORIAL_RETURN_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot))
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function clearTutorialReturnSnapshot(): void {
+  try {
+    localStorage.removeItem(TUTORIAL_RETURN_SNAPSHOT_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function restoreTutorialReturnSnapshot(): void {
+  try {
+    const raw = localStorage.getItem(TUTORIAL_RETURN_SNAPSHOT_STORAGE_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Partial<TutorialReturnSnapshot>
+    if (!parsed.hadProgress || !parsed.progress) return
+    applyPersistedProgressPayload(parsed.progress)
+  } catch {
+    // Ignore restore failures.
   }
 }
 
@@ -1399,31 +1593,31 @@ function createLocalTelemetryState(modeValue: 'local' | 'bot', now = Date.now())
 }
 
 function resetLocalTelemetryForCurrentMatch(now = Date.now()): void {
-  if (mode === 'online') return
+  if (mode === 'online' || isTutorialLessonActive()) return
   localTelemetry = createLocalTelemetryState(getLocalTelemetryMode(mode), now)
 }
 
 function markLocalTelemetryAsRestoredOutcome(): void {
-  if (mode === 'online') return
+  if (mode === 'online' || isTutorialLessonActive()) return
   localTelemetry = createLocalTelemetryState(getLocalTelemetryMode(mode))
   localTelemetry.allowSubmission = false
 }
 
 function recordActionQueueTelemetry(sourceState: GameState): void {
-  if (mode === 'online') return
+  if (mode === 'online' || isTutorialLessonActive()) return
   sourceState.actionQueue.forEach((order) => {
     localTelemetry.playedCards[order.player].push(order.defId)
   })
 }
 
 function recordUnplayedHandTelemetry(sourceState: GameState): void {
-  if (mode === 'online') return
+  if (mode === 'online' || isTutorialLessonActive()) return
   localTelemetry.unplayedHandCards[0].push(...sourceState.players[0].hand.map((card) => card.defId))
   localTelemetry.unplayedHandCards[1].push(...sourceState.players[1].hand.map((card) => card.defId))
 }
 
 function trySubmitLocalTelemetryIfNeeded(): void {
-  if (mode === 'online') return
+  if (mode === 'online' || isTutorialLessonActive()) return
   if (state.winner === null) return
   if (localTelemetry.enqueued || !localTelemetry.allowSubmission) return
   const submission = buildLocalMatchTelemetrySubmission()
@@ -1434,7 +1628,7 @@ function trySubmitLocalTelemetryIfNeeded(): void {
 }
 
 function buildLocalMatchTelemetrySubmission(now = Date.now()): MatchTelemetrySubmission | null {
-  if (mode === 'online') return null
+  if (mode === 'online' || isTutorialLessonActive()) return null
   return {
     schemaVersion: 1,
     matchId: localTelemetry.matchId,
@@ -2402,7 +2596,7 @@ function clearReady(player?: PlayerId): void {
   updateReadyButtons()
 }
 
-function tryStartActionPhase(): void {
+function tryStartActionPhase(): boolean {
   if (state.ready[0] && state.ready[1]) {
     recordUnplayedHandTelemetry(state)
     startActionPhase(state)
@@ -2411,7 +2605,9 @@ function tryStartActionPhase(): void {
     pendingOrder = null
     statusEl.textContent = 'Action phase in progress.'
     render()
+    return true
   }
+  return false
 }
 
 function scheduleBotPlanningTurn(): void {
@@ -2454,7 +2650,10 @@ function scheduleBotPlanningTurn(): void {
     setPlayerReady(BOT_PLAYER, true)
     botThinking = false
     statusEl.textContent = 'You are ready. Bot ready.'
-    tryStartActionPhase()
+    const actionPhaseStarted = tryStartActionPhase()
+    if (actionPhaseStarted) {
+      notifyTutorialEvent('action_phase_started', { turn: state.turn })
+    }
     render()
   }, 0)
 }
@@ -3689,13 +3888,14 @@ function togglePinnedUnitStatusFromHex(hex: Hex): void {
   renderUnitStatusPopover()
 }
 
-function setScreen(next: typeof screen): void {
+function setScreen(next: Screen): void {
   if (isBotControlledMode() && next !== 'game') {
     invalidateBotPlanning()
   }
   screen = next
   applyCardAssetCssVars()
   menuScreen.classList.toggle('hidden', screen !== 'menu')
+  tutorialScreen.classList.toggle('hidden', screen !== 'tutorial_hub')
   loadoutScreen.classList.toggle('hidden', screen !== 'loadout')
   settingsScreen.classList.toggle('hidden', screen !== 'settings')
   gameScreen.classList.toggle('hidden', screen !== 'game')
@@ -3705,10 +3905,289 @@ function setScreen(next: typeof screen): void {
   }
   applyMatchClassTheme()
   if (screen === 'menu') updateSeedDisplay()
+  if (screen === 'tutorial_hub') renderTutorialHub()
   if (screen === 'loadout') renderLoadout()
   if (screen === 'settings') renderSettings()
   if (screen === 'game') render()
+  syncTutorialUi()
+  notifyTutorialEvent('screen_changed', { screen })
   scheduleProgressSave()
+}
+
+function getTutorialDomTargetElement(targetId: TutorialDomTargetId): HTMLElement | null {
+  switch (targetId) {
+    case 'menu-tutorial':
+      return menuTutorialButton
+    case 'menu-online-create':
+      return onlineCreateButton
+    case 'menu-online-join':
+      return onlineJoinButton
+    case 'menu-online-room':
+      return onlineRoomInput
+    case 'menu-online-token':
+      return onlineTokenInput
+    case 'menu-online-links':
+      return onlineLinksEl
+    case 'loadout-class':
+      return loadoutClassSelect
+    case 'loadout-filter-attack':
+      return document.querySelector<HTMLButtonElement>('[data-filter="attack"]')
+    case 'loadout-all':
+      return loadoutAll
+    case 'loadout-selected':
+      return loadoutSelected
+    case 'hand':
+      return handEl
+    case 'orders':
+      return ordersEl
+    case 'ready':
+      return readyButton
+    case 'winner':
+      return winnerModal
+    default:
+      return null
+  }
+}
+
+function findTutorialHighlightElement(target: TutorialHighlightTarget): HTMLElement | null {
+  if (target.type === 'dom') {
+    return getTutorialDomTargetElement(target.targetId)
+  }
+  if (target.type === 'hand_card') {
+    return handEl.querySelector<HTMLElement>(`[data-card-layer="hand"][data-card-def-id="${target.defId}"]`)
+  }
+  if (target.type === 'loadout_card') {
+    return loadoutAll.querySelector<HTMLElement>(`[data-add-id="${target.defId}"]`)
+  }
+  if (target.type === 'selected_loadout_card') {
+    return loadoutSelected.querySelector<HTMLElement>(`[data-remove-id="${target.defId}"]`)
+  }
+  if (target.type === 'queue_card') {
+    return ordersEl.querySelector<HTMLElement>(`[data-card-layer="queue"][data-card-def-id="${target.defId}"]`)
+  }
+  return null
+}
+
+function getActiveTutorialHighlights(): TutorialHighlightTarget[] {
+  const step = tutorialController.getCurrentStep()
+  return step?.highlights ?? []
+}
+
+function renderTutorialSpotlights(): void {
+  tutorialSpotlightsEl.innerHTML = ''
+  if (screen === 'tutorial_hub') {
+    tutorialSpotlightsEl.classList.add('hidden')
+    return
+  }
+
+  const elements = getActiveTutorialHighlights()
+    .map((target) => findTutorialHighlightElement(target))
+    .filter((element): element is HTMLElement => Boolean(element))
+  if (elements.length === 0) {
+    tutorialSpotlightsEl.classList.add('hidden')
+    return
+  }
+
+  elements.forEach((element) => {
+    const rect = element.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const frame = document.createElement('div')
+    frame.className = 'tutorial-spotlight-frame'
+    frame.style.left = `${rect.left - 6}px`
+    frame.style.top = `${rect.top - 6}px`
+    frame.style.width = `${rect.width + 12}px`
+    frame.style.height = `${rect.height + 12}px`
+    tutorialSpotlightsEl.appendChild(frame)
+  })
+
+  tutorialSpotlightsEl.classList.toggle('hidden', tutorialSpotlightsEl.childElementCount === 0)
+}
+
+function scrollActiveTutorialTargetIntoView(): void {
+  const target = getActiveTutorialHighlights()
+    .map((highlight) => findTutorialHighlightElement(highlight))
+    .find((element): element is HTMLElement => Boolean(element))
+  target?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'nearest',
+    inline: 'center',
+  })
+}
+
+function renderTutorialHub(): void {
+  const lessons = tutorialController.listLessons()
+  tutorialProgressEl.textContent = `${tutorialController.getCompletedCount()} / ${lessons.length} lessons completed`
+  tutorialLessonsEl.innerHTML = lessons
+    .map((lesson) => {
+      const completed = tutorialController.isLessonCompleted(lesson.id)
+      return `
+        <article class="tutorial-lesson-card">
+          <div class="tutorial-lesson-meta">
+            <div class="tutorial-lesson-title-row">
+              <div class="tutorial-lesson-title">${lesson.title}</div>
+              ${lesson.recommended ? '<span class="pill">Recommended First</span>' : ''}
+              ${completed ? '<span class="pill tutorial-complete-pill">Completed</span>' : ''}
+            </div>
+            <div class="tutorial-lesson-summary">${lesson.summary}</div>
+            <div class="tutorial-lesson-estimate">${lesson.estimateMinutes} min</div>
+          </div>
+          <div class="tutorial-lesson-actions">
+            <button class="btn" data-tutorial-start="${lesson.id}" type="button">${completed ? 'Replay' : 'Start'}</button>
+          </div>
+        </article>
+      `
+    })
+    .join('')
+
+  tutorialLessonsEl.querySelectorAll<HTMLButtonElement>('[data-tutorial-start]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const lessonId = button.dataset.tutorialStart as TutorialLessonId | undefined
+      if (!lessonId) return
+      startTutorialLesson(lessonId)
+    })
+  })
+}
+
+function renderTutorialOverlay(): void {
+  const session = getTutorialSession()
+  if (!session || screen === 'tutorial_hub') {
+    tutorialPanelEl.classList.add('hidden')
+    tutorialPanelBadgeEl.classList.add('hidden')
+    return
+  }
+
+  const lesson = tutorialController.getLesson(session.lessonId)
+  const step = tutorialController.getCurrentStep()
+  const stepNumber = Math.min(session.stepIndex + 1, lesson.steps.length)
+  const completed = Boolean(session.completedAt)
+  tutorialPanelTitleEl.textContent = lesson.title
+  tutorialPanelStepEl.textContent = completed ? `Completed` : `Step ${stepNumber} / ${lesson.steps.length}`
+  tutorialPanelBadgeEl.classList.toggle('hidden', !completed)
+  tutorialPanelBodyEl.textContent = completed
+    ? `${step?.instruction ?? lesson.summary} Lesson complete. Use Back to Tutorials to return or Restart to replay it.`
+    : step?.instruction ?? lesson.summary
+  tutorialPanelSkipButton.textContent = completed ? 'Close' : 'Skip'
+  tutorialPanelEl.classList.remove('hidden')
+}
+
+function getTutorialUiKey(): string | null {
+  const session = getTutorialSession()
+  if (!session) return null
+  return `${session.lessonId}:${session.stepIndex}:${session.completedAt ? 'done' : 'active'}`
+}
+
+function syncTutorialUi(): void {
+  renderTutorialOverlay()
+  renderTutorialSpotlights()
+  const nextKey = getTutorialUiKey()
+  if (nextKey !== lastTutorialUiKey) {
+    clearTutorialFeedback()
+    scrollActiveTutorialTargetIntoView()
+    lastTutorialUiKey = nextKey
+  }
+  if (!nextKey) {
+    lastTutorialUiKey = null
+  }
+}
+
+function notifyTutorialEvent(event: Parameters<TutorialController['recordEvent']>[0], payload: TutorialPayload = {}): void {
+  if (!isTutorialLessonActive()) return
+  const result = tutorialController.recordEvent(event, payload)
+  if (!result.advanced && !result.completed) return
+  persistTutorialProgress()
+  if (result.completed) {
+    setTutorialFeedback('Lesson complete. Use Back to Tutorials or Restart.')
+  }
+}
+
+function guardTutorialAction(action: TutorialActionId, payload: TutorialPayload = {}): boolean {
+  if (!isTutorialLessonActive()) return true
+  const result = tutorialController.canPerform(action, payload)
+  if (result.allowed) return true
+  setTutorialFeedback(result.message)
+  return false
+}
+
+function applyTutorialBootstrap(bootstrap: TutorialScenarioBootstrap): void {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+  }
+  tutorialOnlineDemo = bootstrap.onlineDemo ?? null
+  applyPlayMode(bootstrap.mode)
+  if (bootstrap.gameSettings) {
+    gameSettings = normalizeGameSettingsInput(bootstrap.gameSettings)
+  }
+  if (bootstrap.playerClasses) {
+    playerClasses = normalizePlayerClassesInput(bootstrap.playerClasses)
+  }
+  if (bootstrap.loadouts) {
+    loadouts = {
+      p1: [...bootstrap.loadouts.p1],
+      p2: [...bootstrap.loadouts.p2],
+    }
+  }
+  sanitizeLoadoutsForCurrentClasses()
+  if (bootstrap.state) {
+    state = cloneGameState(bootstrap.state)
+    normalizeLeaderUnitsInState(state)
+  } else {
+    state = createGameState(gameSettings, loadouts, playerClasses)
+  }
+  roguelikeRun = cloneRoguelikeRunState((bootstrap.roguelikeRun as RoguelikeRunState | null | undefined) ?? null)
+  planningPlayer = bootstrap.planningPlayer ?? 0
+  selectedCardId = null
+  pendingOrder = null
+  lastObservedTurn = state.turn
+  lastObservedWinner = state.winner
+  lastObservedRoguelikeRewardVisible = false
+  suppressWinnerModalForRestoredOutcome = false
+  winnerModal.classList.add('hidden')
+  clearTutorialFeedback()
+  refreshOnlineLobbyUi()
+  if (tutorialOnlineDemo) {
+    onlineRoomInput.value = tutorialOnlineDemo.roomCode
+    onlineTokenInput.value = tutorialOnlineDemo.seatToken
+    setOnlineLinks('')
+    setOnlineStatus(bootstrap.statusMessage ?? '')
+  }
+  setScreen(bootstrap.screen)
+  if (screen === 'game') {
+    statusEl.textContent = bootstrap.statusMessage ?? 'Tutorial active.'
+    render()
+  } else if (screen === 'loadout') {
+    renderLoadout()
+  } else if (screen === 'menu') {
+    if (tutorialOnlineDemo) {
+      onlineRoomInput.value = tutorialOnlineDemo.roomCode
+      onlineTokenInput.value = tutorialOnlineDemo.seatToken
+    }
+    setOnlineStatus(bootstrap.statusMessage ?? '')
+  }
+}
+
+function startTutorialLesson(lessonId: TutorialLessonId): void {
+  if (!isTutorialLessonActive() && !isTutorialHubVisible()) {
+    persistTutorialReturnSnapshot()
+  }
+  tutorialController.startLesson(lessonId)
+  const bootstrap = cloneTutorialBootstrap(createTutorialScenarioBootstrap(lessonId))
+  applyTutorialBootstrap(bootstrap)
+}
+
+function returnToTutorialHub(): void {
+  tutorialController.clearSession()
+  tutorialOnlineDemo = null
+  restoreTutorialReturnSnapshot()
+  applyPlayMode('tutorial')
+  setScreen('tutorial_hub')
+}
+
+function leaveTutorialHubToMenu(): void {
+  tutorialController.clearSession()
+  tutorialOnlineDemo = null
+  restoreTutorialReturnSnapshot()
+  clearTutorialReturnSnapshot()
+  setScreen('menu')
 }
 
 function drawLightningStrike(center: { x: number; y: number }, progress: number): void {
@@ -4871,6 +5350,7 @@ function drawBoard(): void {
     })
 
   drawSelectableHighlights()
+  drawTutorialBoardHighlights()
 
   if (previewState && state.phase === 'planning') {
     drawPlannedMoves(state)
@@ -5080,6 +5560,46 @@ function drawSelectableHighlights(): void {
     ctx.strokeStyle = stroke
     ctx.lineWidth = lineWidth
     ctx.stroke()
+  })
+}
+
+function drawTutorialBoardHighlights(): void {
+  if (!isTutorialLessonActive()) return
+  const pulse = 0.55 + Math.abs(Math.sin(performance.now() / 320)) * 0.45
+  getActiveTutorialHighlights().forEach((highlight) => {
+    if (highlight.type === 'board_tile') {
+      const center = projectHex(highlight.hex)
+      const corners = polygonCornersProjected(center, layout.size - 2)
+      ctx.save()
+      ctx.globalAlpha = pulse
+      ctx.beginPath()
+      corners.forEach((corner, index) => {
+        if (index === 0) ctx.moveTo(corner.x, corner.y)
+        else ctx.lineTo(corner.x, corner.y)
+      })
+      ctx.closePath()
+      ctx.fillStyle = 'rgba(255, 214, 102, 0.18)'
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(255, 214, 102, 0.95)'
+      ctx.lineWidth = 3
+      ctx.stroke()
+      ctx.restore()
+      return
+    }
+
+    if (highlight.type === 'board_unit') {
+      const unit = state.units[highlight.unitId] ?? previewState?.units[highlight.unitId]
+      if (!unit) return
+      const center = projectHex(unit.pos)
+      ctx.save()
+      ctx.globalAlpha = pulse
+      ctx.strokeStyle = 'rgba(255, 214, 102, 0.95)'
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.ellipse(center.x, center.y, layout.size * 0.72, layout.size * 0.5 * BOARD_TILT, 0, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+    }
   })
 }
 
@@ -5542,6 +6062,10 @@ function getOrderedHandCards(player: PlayerId): HandCard[] {
 
 function reorderHandCards(fromId: string, toId: string): void {
   if (!fromId || !toId || fromId === toId) return
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Card reordering is disabled during the tutorial.')
+    return
+  }
   if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
   syncHandVisualOrder(planningPlayer)
   const order = handVisualOrder[planningPlayer]
@@ -5555,6 +6079,10 @@ function reorderHandCards(fromId: string, toId: string): void {
 
 function reorderQueuedOrder(fromId: string, toId: string): void {
   if (!fromId || !toId || fromId === toId) return
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Queue reordering is disabled during the tutorial.')
+    return
+  }
   if (isBotPlanningLocked()) return
   if (state.ready[planningPlayer]) return
   if (mode === 'online') {
@@ -5806,6 +6334,8 @@ function handleHandCardActivation(button: HTMLButtonElement): void {
   if (state.ready[planningPlayer]) return
   const cardId = button.dataset.cardId ?? null
   if (!cardId) return
+  const defId = button.dataset.cardDefId as CardDefId | undefined
+  if (!guardTutorialAction('hand_card_select', { cardId, defId: defId ?? null })) return
   const buttonKey = getCardVisualKey(button)
   if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
     overlayLocked = false
@@ -5823,11 +6353,18 @@ function handleHandCardActivation(button: HTMLButtonElement): void {
   selectedCardId = cardId
   pendingOrder = selectedCardId ? { cardId: selectedCardId, params: {} } : null
   statusEl.textContent = selectedCardId ? 'Pick a unit/tile on the board.' : 'Select a card to start planning.'
+  if (defId) {
+    notifyTutorialEvent('card_selected', { cardId, defId })
+  }
   tryAutoAddOrder()
   render()
 }
 
 function handleOrderCardActivation(card: HTMLDivElement): void {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Order removal is disabled during the tutorial.')
+    return
+  }
   if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
   const orderId = card.dataset.orderId
   if (!orderId) return
@@ -6511,7 +7048,9 @@ function renderLoadout(): void {
       const defId = button.dataset.removeId as CardDefId
       const index = deck.findIndex((id) => id === defId)
       if (index === -1) return
+      if (!guardTutorialAction('loadout_card_remove', { defId })) return
       deck.splice(index, 1)
+      notifyTutorialEvent('loadout_card_removed', { defId })
       renderLoadout()
     })
   })
@@ -6550,12 +7089,15 @@ function renderLoadout(): void {
       if (classPool && !isCardAllowedForClass(defId, loadoutClass)) return
       const count = counts[defId] ?? 0
       if (count >= gameSettings.maxCopies) return
+      if (!guardTutorialAction('loadout_card_add', { defId })) return
       deck.push(defId)
+      notifyTutorialEvent('loadout_card_added', { defId })
       renderLoadout()
     })
   })
 
   updateSeedDisplay()
+  syncTutorialUi()
 }
 function renderSettings(): void {
   settingRows.value = String(gameSettings.boardRows)
@@ -6567,6 +7109,7 @@ function renderSettings(): void {
   settingActionBudgetP1.value = String(gameSettings.actionBudgetP1)
   settingActionBudgetP2.value = String(gameSettings.actionBudgetP2)
   updateSeedDisplay()
+  syncTutorialUi()
 }
 
 function renderApDots(used: number, total: number): string {
@@ -7059,18 +7602,25 @@ function handleRoguelikeMatchResultIfNeeded(): void {
   if (roguelikeRun.resultHandled) return
 
   roguelikeRun.resultHandled = true
-  roguelikeRun.draftOptions = []
-  roguelikeRun.pendingRandomReward = null
 
   if (state.winner === BOT_HUMAN_PLAYER) {
     const leader = state.units[`leader-${BOT_HUMAN_PLAYER}`]
     roguelikeRun.leaderHp = Math.max(1, leader?.strength ?? roguelikeRun.leaderHp)
     roguelikeRun.wins += 1
     roguelikeRun.uiStage = 'reward_choice'
+    if (isTutorialLessonActive('roguelike_run')) {
+      roguelikeRun.draftOptions = ['spell_lightning', 'move_forward', 'reinforce_boost']
+      roguelikeRun.pendingRandomReward = 'extraDraw'
+      return
+    }
+    roguelikeRun.draftOptions = []
+    roguelikeRun.pendingRandomReward = null
     prepareRoguelikeRewardChoiceOptions()
     return
   }
 
+  roguelikeRun.draftOptions = []
+  roguelikeRun.pendingRandomReward = null
   roguelikeRun.uiStage = 'run_over'
 }
 
@@ -7269,6 +7819,25 @@ function render(): void {
     winnerModal.classList.add('hidden')
   }
 
+  if (state.turn !== lastObservedTurn) {
+    lastObservedTurn = state.turn
+    notifyTutorialEvent('turn_changed', { turn: state.turn })
+  }
+  if (state.winner !== lastObservedWinner) {
+    lastObservedWinner = state.winner
+    if (state.winner !== null) {
+      notifyTutorialEvent('winner_shown', { winner: state.winner })
+    }
+  }
+  const roguelikeRewardVisible =
+    mode === 'roguelike' &&
+    Boolean(roguelikeRun && state.winner === BOT_HUMAN_PLAYER && roguelikeRun.uiStage === 'reward_choice') &&
+    !winnerModal.classList.contains('hidden')
+  if (roguelikeRewardVisible && !lastObservedRoguelikeRewardVisible) {
+    notifyTutorialEvent('roguelike_reward_shown')
+  }
+  lastObservedRoguelikeRewardVisible = roguelikeRewardVisible
+
   const inPlanning = state.phase === 'planning'
   const inOnlineMode = mode === 'online'
   const inBotMode = isBotControlledMode()
@@ -7290,6 +7859,7 @@ function render(): void {
   ordersEl.classList.toggle('reorder-enabled', cardsCanReorder)
   resetGameButton.disabled = inOnlineMode
   scheduleProgressSave()
+  syncTutorialUi()
 }
 
 function renderBoardOnly(): void {
@@ -7297,6 +7867,7 @@ function renderBoardOnly(): void {
   computeLayout()
   drawBoard()
   renderUnitStatusPopover()
+  renderTutorialSpotlights()
 }
 
 function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
@@ -9040,6 +9611,7 @@ function tryAutoAddOrder(): void {
   pendingOrder = null
   clearReady(planningPlayer)
   statusEl.textContent = 'Order queued.'
+  notifyTutorialEvent('order_queued', { defId: order.defId, cardId: order.cardId, turn: state.turn })
   if (fromRect) {
     hiddenCardIds.add(order.cardId)
     const pendingHandEl = handEl.querySelector<HTMLElement>(`[data-card-id="${order.cardId}"]`)
@@ -9902,6 +10474,7 @@ function handleBoardClick(hex: Hex): void {
     return
   }
   if (isBotPlanningLocked()) return
+  if (!guardTutorialAction('board_select', { hex })) return
   if (!pendingOrder || state.phase !== 'planning') return
   const activeOrder = pendingOrder
   const defId = getCardDefId(activeOrder.cardId)
@@ -9909,6 +10482,7 @@ function handleBoardClick(hex: Hex): void {
   const nextStep = getNextRequirement(defId, activeOrder.params)
   if (!nextStep) return
   const selectionState = simulatePlannedState(state, planningPlayer)
+  let tutorialSelectionSucceeded = false
 
   if (nextStep === 'unit') {
     const requirement = CARD_DEFS[defId].requires.unit ?? 'friendly'
@@ -9917,6 +10491,7 @@ function handleBoardClick(hex: Hex): void {
       activeOrder.params.unitId = selectionId
       statusEl.textContent =
         selectionId.startsWith('planned:') ? 'Planned spawn selected.' : 'Unit selected.'
+      tutorialSelectionSucceeded = true
     } else {
       statusEl.textContent =
         requirement === 'enemy'
@@ -9943,6 +10518,7 @@ function handleBoardClick(hex: Hex): void {
       activeOrder.params.unitId2 = selectionId
       statusEl.textContent =
         selectionId.startsWith('planned:') ? 'Second planned spawn selected.' : 'Second unit selected.'
+      tutorialSelectionSucceeded = true
     }
   }
 
@@ -9952,6 +10528,7 @@ function handleBoardClick(hex: Hex): void {
       if (customTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile = hex
         statusEl.textContent = 'Tile selected.'
+        tutorialSelectionSucceeded = true
       } else {
         statusEl.textContent = 'Select a highlighted tile.'
       }
@@ -9964,6 +10541,7 @@ function handleBoardClick(hex: Hex): void {
         ) {
           clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile')
           statusEl.textContent = 'Move target selected.'
+          tutorialSelectionSucceeded = true
         } else {
           statusEl.textContent = 'Select a highlighted move target.'
         }
@@ -9977,6 +10555,7 @@ function handleBoardClick(hex: Hex): void {
           if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
             activeOrder.params.tile = hex
             statusEl.textContent = defId === 'move_teleport' ? 'Teleport destination selected.' : 'Tile selected.'
+            tutorialSelectionSucceeded = true
           } else {
             statusEl.textContent = defId === 'move_teleport' ? 'Select a valid teleport destination.' : 'Select a tile.'
           }
@@ -9988,6 +10567,7 @@ function handleBoardClick(hex: Hex): void {
           if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
             activeOrder.params.tile = hex
             statusEl.textContent = tileRequirement === 'barricade' ? 'Barricade tile selected.' : 'Spawn tile selected.'
+            tutorialSelectionSucceeded = true
           } else {
             statusEl.textContent =
               tileRequirement === 'barricade' ? 'Select a valid barricade tile.' : 'Select a spawn tile.'
@@ -10003,6 +10583,7 @@ function handleBoardClick(hex: Hex): void {
       if (customTargets.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile2 = hex
         statusEl.textContent = 'Second tile selected.'
+        tutorialSelectionSucceeded = true
       } else {
         statusEl.textContent = 'Select a highlighted second tile.'
       }
@@ -10015,6 +10596,7 @@ function handleBoardClick(hex: Hex): void {
         ) {
           clearLaterChainedTileMoveSelections(defId, activeOrder.params, 'tile2')
           statusEl.textContent = 'Second move target selected.'
+          tutorialSelectionSucceeded = true
         } else {
           statusEl.textContent = 'Select a highlighted second move target.'
         }
@@ -10027,12 +10609,14 @@ function handleBoardClick(hex: Hex): void {
         } else {
           activeOrder.params.tile2 = hex
           statusEl.textContent = 'Second barricade tile selected.'
+          tutorialSelectionSucceeded = true
         }
       } else if (CARD_DEFS[defId].requires.tile2 === 'any') {
         const validTiles = selectionState.tiles.map((tile) => ({ q: tile.q, r: tile.r }))
         if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
           activeOrder.params.tile2 = hex
           statusEl.textContent = 'Second tile selected.'
+          tutorialSelectionSucceeded = true
         } else {
           statusEl.textContent = 'Select a valid second tile.'
         }
@@ -10048,6 +10632,7 @@ function handleBoardClick(hex: Hex): void {
         applyChainedTileMoveSelection(selectionState, defId, activeOrder.params, planningPlayer, 'tile3', hex)
       ) {
         statusEl.textContent = 'Third move target selected.'
+        tutorialSelectionSucceeded = true
       } else {
         statusEl.textContent = 'Select a highlighted third move target.'
       }
@@ -10056,6 +10641,7 @@ function handleBoardClick(hex: Hex): void {
       if (validTiles.some((tile) => tile.q === hex.q && tile.r === hex.r)) {
         activeOrder.params.tile3 = hex
         statusEl.textContent = 'Third tile selected.'
+        tutorialSelectionSucceeded = true
       } else {
         statusEl.textContent = 'Select a valid third tile.'
       }
@@ -10085,6 +10671,7 @@ function handleBoardClick(hex: Hex): void {
           activeOrder.params.direction = direction
           statusEl.textContent = 'Direction selected.'
         }
+        tutorialSelectionSucceeded = true
       } else {
         statusEl.textContent = 'Click an adjacent tile for direction.'
       }
@@ -10110,15 +10697,23 @@ function handleBoardClick(hex: Hex): void {
         if (resolution.distance !== undefined) {
           activeOrder.params.distance = resolution.distance
         }
+        tutorialSelectionSucceeded = true
       }
       statusEl.textContent = resolution.matched ? 'Distance selected.' : 'Click a highlighted tile.'
     }
   }
 
+  if (tutorialSelectionSucceeded) {
+    notifyTutorialEvent('board_tile_selected', { hex })
+  }
   tryAutoAddOrder()
   render()
 }
 menuStartButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    return
+  }
   if (mode === 'online') {
     teardownOnlineSession(true)
     setOnlineStatus('')
@@ -10129,6 +10724,10 @@ menuStartButton.addEventListener('click', () => {
 })
 
 menuStartBotButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    return
+  }
   if (mode === 'online') {
     teardownOnlineSession(true)
     setOnlineStatus('')
@@ -10143,6 +10742,10 @@ menuStartBotButton.addEventListener('click', () => {
 })
 
 menuStartRoguelikeButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    return
+  }
   if (mode === 'online') {
     teardownOnlineSession(true)
     setOnlineStatus('')
@@ -10150,7 +10753,25 @@ menuStartRoguelikeButton.addEventListener('click', () => {
   startRoguelikeRun()
 })
 
+menuTutorialButton.addEventListener('click', () => {
+  if (mode === 'online') {
+    teardownOnlineSession(true)
+    setOnlineStatus('')
+  }
+  if (!isTutorialHubVisible() && !isTutorialLessonActive()) {
+    persistTutorialReturnSnapshot()
+  }
+  tutorialController.clearSession()
+  tutorialOnlineDemo = null
+  applyPlayMode('tutorial')
+  setScreen('tutorial_hub')
+})
+
 menuLoadoutButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    return
+  }
   if (mode !== 'online') {
     loadoutPlayer = 0
   }
@@ -10158,6 +10779,10 @@ menuLoadoutButton.addEventListener('click', () => {
 })
 
 menuSettingsButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    return
+  }
   if (mode === 'online') {
     setOnlineStatus('Leave online match to edit settings.')
     return
@@ -10194,10 +10819,27 @@ seedApplyButton.addEventListener('click', () => {
 })
 
 onlineCreateButton.addEventListener('click', () => {
+  if (isTutorialLessonActive('play_online')) {
+    if (!guardTutorialAction('online_create')) return
+    if (tutorialOnlineDemo) {
+      renderOnlineInviteLinks(0, tutorialOnlineDemo.inviteLinks)
+      setOnlineStatus('Sample room created. In a real match, these links come from the server.')
+    }
+    notifyTutorialEvent('online_create_clicked')
+    syncTutorialUi()
+    return
+  }
   beginOnlineCreate()
 })
 
 onlineJoinButton.addEventListener('click', () => {
+  if (isTutorialLessonActive('play_online')) {
+    if (!guardTutorialAction('online_join')) return
+    setOnlineStatus('Sample join complete. In a real match, the room code and seat token would be validated by the server.')
+    notifyTutorialEvent('online_join_clicked')
+    syncTutorialUi()
+    return
+  }
   const roomCode = onlineRoomInput.value.trim().toUpperCase()
   const seatToken = onlineTokenInput.value.trim()
   if (!roomCode || !seatToken) {
@@ -10216,6 +10858,11 @@ onlineEnterButton.addEventListener('click', () => {
 })
 
 gameMenuButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    if (!guardTutorialAction('leave_match')) return
+    returnToTutorialHub()
+    return
+  }
   if (mode === 'online') {
     teardownOnlineSession(true)
     applyPlayMode('local')
@@ -10229,20 +10876,54 @@ gameMenuButton.addEventListener('click', () => {
 })
 
 loadoutBackButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    returnToTutorialHub()
+    return
+  }
   setScreen('menu')
 })
 
+tutorialHubBackButton.addEventListener('click', () => {
+  leaveTutorialHubToMenu()
+})
+
+tutorialPanelSkipButton.addEventListener('click', () => {
+  returnToTutorialHub()
+})
+
+tutorialPanelRestartButton.addEventListener('click', () => {
+  const session = getTutorialSession()
+  if (!session) return
+  startTutorialLesson(session.lessonId)
+})
+
+tutorialPanelBackButton.addEventListener('click', () => {
+  returnToTutorialHub()
+})
+
 loadoutToggleButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Stay on the current tutorial step.')
+    return
+  }
   if (mode === 'online') return
   loadoutPlayer = loadoutPlayer === 0 ? 1 : 0
   renderLoadout()
 })
 
 loadoutContinueButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Return to the tutorial hub when you are done.')
+    return
+  }
   submitOnlineLoadoutAndContinue()
 })
 
 loadoutClearButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Use the highlighted tutorial actions instead of clearing the deck.')
+    return
+  }
   if (loadoutPlayer === 0) {
     loadouts.p1 = []
   } else {
@@ -10252,6 +10933,10 @@ loadoutClearButton.addEventListener('click', () => {
 })
 
 loadoutRandomButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Use the highlighted tutorial actions instead of randomizing the deck.')
+    return
+  }
   const targetPlayer: PlayerId = mode === 'online' ? (onlineSession?.seat ?? 0) : loadoutPlayer
   const randomClass = pickRandomPlayerClass()
   setLoadoutClass(targetPlayer, randomClass)
@@ -10276,18 +10961,26 @@ loadoutSort.addEventListener('change', () => {
 
 loadoutClassSelect.addEventListener('change', () => {
   const nextClass = normalizePlayerClassInput(loadoutClassSelect.value, getLoadoutClass(loadoutPlayer))
+  if (!guardTutorialAction('loadout_class_change', { classId: nextClass })) {
+    renderLoadout()
+    return
+  }
   setLoadoutClass(loadoutPlayer, nextClass)
   if (loadoutPlayer === 0) {
     loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, nextClass, true)
   } else {
     loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, nextClass, true)
   }
+  notifyTutorialEvent('loadout_class_changed', { classId: nextClass })
   renderLoadout()
 })
 
 loadoutFilterButtons.forEach((button) => {
   button.addEventListener('click', () => {
-    loadoutFilter = (button.dataset.filter as 'all' | CardType) ?? 'all'
+    const nextFilter = (button.dataset.filter as 'all' | CardType) ?? 'all'
+    if (!guardTutorialAction('loadout_filter_change', { filter: nextFilter })) return
+    loadoutFilter = nextFilter
+    notifyTutorialEvent('loadout_filter_changed', { filter: nextFilter })
     renderLoadout()
   })
 })
@@ -10357,6 +11050,10 @@ settingActionBudgetP2.addEventListener('change', () => {
 })
 
 switchPlannerButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    setTutorialFeedback('Stay on the guided lesson flow.')
+    return
+  }
   if (mode !== 'local') return
   planningPlayer = planningPlayer === 0 ? 1 : 0
   selectedCardId = null
@@ -10365,6 +11062,7 @@ switchPlannerButton.addEventListener('click', () => {
 })
 
 readyButton.addEventListener('click', () => {
+  if (!guardTutorialAction('ready', { turn: state.turn })) return
   if (mode === 'online') {
     if (state.phase !== 'planning') return
     if (state.ready[planningPlayer]) return
@@ -10373,6 +11071,26 @@ readyButton.addEventListener('click', () => {
     return
   }
   if (isBotPlanningLocked()) return
+  if (isTutorialLessonActive('first_battle')) {
+    if (state.phase !== 'planning' || state.ready[0]) return
+    setPlayerReady(BOT_HUMAN_PLAYER, true)
+    selectedCardId = null
+    pendingOrder = null
+    notifyTutorialEvent('ready_pressed', { turn: state.turn })
+    if (state.turn === 1 && state.players[1].orders.length === 0) {
+      const pivotCard = state.players[1].hand.find((card) => card.defId === 'move_pivot')
+      if (pivotCard) {
+        planOrder(state, 1, pivotCard.id, { unitId: 'leader-1', direction: 5 })
+      }
+    }
+    setPlayerReady(BOT_PLAYER, true)
+    const actionPhaseStarted = tryStartActionPhase()
+    if (actionPhaseStarted) {
+      notifyTutorialEvent('action_phase_started', { turn: state.turn })
+    }
+    render()
+    return
+  }
   if (isBotControlledMode()) {
     if (state.phase !== 'planning') return
     if (state.ready[BOT_HUMAN_PLAYER]) return
@@ -10381,6 +11099,8 @@ readyButton.addEventListener('click', () => {
     selectedCardId = null
     pendingOrder = null
     statusEl.textContent = 'You are ready. Bot planning...'
+    notifyTutorialEvent('ready_pressed', { turn: state.turn })
+    notifyTutorialEvent('bot_planning_started', { turn: state.turn })
     scheduleBotPlanningTurn()
     render()
     return
@@ -10390,13 +11110,17 @@ readyButton.addEventListener('click', () => {
   const currentPlayer = planningPlayer
   const otherPlayer = currentPlayer === 0 ? 1 : 0
   setPlayerReady(currentPlayer, true)
+  notifyTutorialEvent('ready_pressed', { turn: state.turn })
   if (!state.ready[otherPlayer]) {
     planningPlayer = otherPlayer
     selectedCardId = null
     pendingOrder = null
     statusEl.textContent = `Player ${currentPlayer + 1} is ready. Player ${otherPlayer + 1} planning.`
   }
-  tryStartActionPhase()
+  const actionPhaseStarted = tryStartActionPhase()
+  if (actionPhaseStarted) {
+    notifyTutorialEvent('action_phase_started', { turn: state.turn })
+  }
   render()
 })
 
@@ -10413,6 +11137,11 @@ resolveAllButton.addEventListener('click', () => {
 })
 
 resetGameButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    if (!guardTutorialAction('reset_game')) return
+    returnToTutorialHub()
+    return
+  }
   if (mode === 'online') {
     statusEl.textContent = 'Reset is disabled in online mode.'
     return
@@ -10421,6 +11150,11 @@ resetGameButton.addEventListener('click', () => {
 })
 
 winnerMenuButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    if (!guardTutorialAction('winner_primary')) return
+    returnToTutorialHub()
+    return
+  }
   if (mode === 'online') {
     teardownOnlineSession(true)
     applyPlayMode('local')
@@ -10431,6 +11165,11 @@ winnerMenuButton.addEventListener('click', () => {
 })
 
 winnerResetButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    if (!guardTutorialAction('winner_secondary')) return
+    returnToTutorialHub()
+    return
+  }
   if (mode === 'roguelike') {
     if (!roguelikeRun) return
     if (state.winner === BOT_HUMAN_PLAYER) return
@@ -10446,6 +11185,11 @@ winnerResetButton.addEventListener('click', () => {
 })
 
 winnerRematchButton.addEventListener('click', () => {
+  if (isTutorialLessonActive()) {
+    if (!guardTutorialAction('winner_secondary')) return
+    returnToTutorialHub()
+    return
+  }
   if (mode === 'roguelike') {
     if (!roguelikeRun || state.winner !== BOT_HUMAN_PLAYER || roguelikeRun.uiStage !== 'reward_choice') return
     chooseRoguelikeRandomReward()
@@ -10687,24 +11431,3 @@ window.addEventListener('resize', () => {
 window.addEventListener('online', () => {
   void flushPendingTelemetryQueue()
 })
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
