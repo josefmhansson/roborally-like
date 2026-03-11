@@ -73,7 +73,15 @@ export type Unit = {
   roguelikeRole?: RoguelikeUnitRole
 }
 
-export type TileKind = 'grass' | 'forest' | 'mountain' | 'pond' | 'rocky' | 'rough' | 'shrub'
+export type TileKind =
+  | 'grassland'
+  | 'meadow'
+  | 'forest'
+  | 'swamp'
+  | 'hills'
+  | 'mountain'
+  | 'snow'
+  | 'snow_hills'
 
 export type Tile = {
   id: string

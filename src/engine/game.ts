@@ -22,16 +22,16 @@ import { CARD_DEFS, STARTING_DECK, cardCountsAsType } from './cards'
 import { DIRECTIONS, neighbor, offsetToAxial, rotateDirection } from './hex'
 
 const DEFAULT_BOARD_SIZE = 6
-const TILE_KINDS: TileKind[] = ['grass', 'forest', 'mountain', 'pond', 'rocky', 'rough', 'shrub']
-const POND_KIND: TileKind = 'pond'
+const TILE_KINDS: TileKind[] = ['grassland', 'meadow', 'forest', 'swamp', 'hills', 'mountain', 'snow', 'snow_hills']
 const TILE_BASE_WEIGHT: Record<TileKind, number> = {
-  grass: 1,
+  grassland: 1,
+  meadow: 1,
   forest: 1,
-  mountain: 1,
-  pond: 0.7,
-  rocky: 1,
-  rough: 1,
-  shrub: 1,
+  swamp: 0.7,
+  hills: 1,
+  mountain: 0.95,
+  snow: 0.75,
+  snow_hills: 0.7,
 }
 const SAME_KIND_BONUS = 2.2
 const COMMANDER_AURA_SOURCE = 'commanderAura'
@@ -371,8 +371,9 @@ function normalizeDuration(turns: ModifierDuration): ModifierDuration | null {
 function pickWeightedKind(weights: Array<{ kind: TileKind; weight: number }>): TileKind {
   const total = weights.reduce((sum, entry) => sum + entry.weight, 0)
   if (total <= 0) {
-    const fallback = weights.filter((entry) => entry.weight >= 0 && entry.kind !== POND_KIND)
-    return (fallback.length ? fallback : weights)[Math.floor(Math.random() * weights.length)].kind
+    const fallback = weights.filter((entry) => entry.weight >= 0)
+    const pool = fallback.length > 0 ? fallback : weights
+    return pool[Math.floor(Math.random() * pool.length)].kind
   }
   let roll = Math.random() * total
   for (const entry of weights) {
@@ -410,9 +411,6 @@ function createTiles(rows: number, cols: number): Tile[] {
   const assigned = new Map<string, TileKind>()
   shuffle(positions).forEach((hex) => {
     const weights = TILE_KINDS.map((kind) => {
-      if (kind === POND_KIND && countNeighborsOfKind(assigned, rows, cols, hex, POND_KIND) > 0) {
-        return { kind, weight: 0 }
-      }
       const sameCount = countNeighborsOfKind(assigned, rows, cols, hex, kind)
       const weight = TILE_BASE_WEIGHT[kind] + sameCount * SAME_KIND_BONUS
       return { kind, weight }
@@ -425,7 +423,7 @@ function createTiles(rows: number, cols: number): Tile[] {
     id: `${hex.q},${hex.r}`,
     q: hex.q,
     r: hex.r,
-    kind: assigned.get(`${hex.q},${hex.r}`) ?? 'grass',
+    kind: assigned.get(`${hex.q},${hex.r}`) ?? 'grassland',
   }))
 }
 

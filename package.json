@@ -12,6 +12,7 @@
     "dev:lan:https": "vite --mode lan-https --host 0.0.0.0 --port 5173",
     "server:dev": "tsx watch server/index.ts",
     "server:start": "tsx server/index.ts",
+    "assets:generate-team": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generateTeamAssets.ps1",
     "telemetry:cards": "tsx server/scripts/telemetryCards.ts",
     "telemetry:simulate": "tsx server/scripts/simulateBotMatches.ts",
     "bot:tune": "tsx server/scripts/tuneBotParameters.ts",

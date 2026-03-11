@@ -49,6 +49,7 @@ import type {
   PlayerClassId,
   RoguelikeEncounterId,
   Trap,
+  Tile,
   TileKind,
   Unit,
 } from './engine/types'
@@ -70,6 +71,35 @@ function resolveAssetUrl(relativePath: string): string {
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
   const normalizedPath = relativePath.replace(/^\/+/, '')
   return `${normalizedBase}${normalizedPath}`
+}
+
+const LEGACY_TILE_KIND_MAP: Record<string, TileKind> = {
+  grass: 'grassland',
+  forest: 'forest',
+  mountain: 'mountain',
+  pond: 'swamp',
+  rocky: 'hills',
+  rough: 'hills',
+  shrub: 'meadow',
+}
+
+function normalizeTileKindInput(kind: unknown): TileKind {
+  if (
+    kind === 'grassland' ||
+    kind === 'meadow' ||
+    kind === 'forest' ||
+    kind === 'swamp' ||
+    kind === 'hills' ||
+    kind === 'mountain' ||
+    kind === 'snow' ||
+    kind === 'snow_hills'
+  ) {
+    return kind
+  }
+  if (typeof kind === 'string' && kind in LEGACY_TILE_KIND_MAP) {
+    return LEGACY_TILE_KIND_MAP[kind]
+  }
+  return 'grassland'
 }
 
 function applyCardAssetCssVars(): void {
@@ -692,38 +722,62 @@ function loadImage(src: string): ImageAsset {
   return asset
 }
 
-const tileImages: Record<TileKind, ImageAsset> = {
-  grass: loadImage(resolveAssetUrl('assets/tiles/tile_grass.png')),
-  forest: loadImage(resolveAssetUrl('assets/tiles/tile_forest.png')),
-  mountain: loadImage(resolveAssetUrl('assets/tiles/tile_mountain.png')),
-  pond: loadImage(resolveAssetUrl('assets/tiles/tile_pond.png')),
-  rocky: loadImage(resolveAssetUrl('assets/tiles/tile_rocky.png')),
-  rough: loadImage(resolveAssetUrl('assets/tiles/tile_rough.png')),
-  shrub: loadImage(resolveAssetUrl('assets/tiles/tile_shrub.png')),
+const tileImages: Record<TileKind, ImageAsset[]> = {
+  grassland: [loadImage(resolveAssetUrl('assets/new style/tile_grassland.png'))],
+  meadow: [loadImage(resolveAssetUrl('assets/new style/tile_meadow.png'))],
+  forest: [
+    loadImage(resolveAssetUrl('assets/new style/tile_forest.png')),
+    loadImage(resolveAssetUrl('assets/new style/tile_forest_2.png')),
+  ],
+  swamp: [loadImage(resolveAssetUrl('assets/new style/tile_grassland_swamp.png'))],
+  hills: [loadImage(resolveAssetUrl('assets/new style/tile_hills.png'))],
+  mountain: [
+    loadImage(resolveAssetUrl('assets/new style/tile_mountain.png')),
+    loadImage(resolveAssetUrl('assets/new style/tile_mountain_2.png')),
+  ],
+  snow: [
+    loadImage(resolveAssetUrl('assets/new style/tile_snow.png')),
+    loadImage(resolveAssetUrl('assets/new style/tile_snow_2.png')),
+  ],
+  snow_hills: [
+    loadImage(resolveAssetUrl('assets/new style/tile_snow_hills.png')),
+    loadImage(resolveAssetUrl('assets/new style/tile_snow_hills_2.png')),
+  ],
 }
 const spawnBaseImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_base.png'))
 const spawnTeamImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_team.png'))
 const barricadeBaseImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_base.png'))
 const barricadeTeamImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_team.png'))
 const trapImages: Record<'pitfall' | 'explosive', ImageAsset> = {
-  pitfall: loadImage(resolveAssetUrl('assets/traps/pitfall_trap.png')),
-  explosive: loadImage(resolveAssetUrl('assets/traps/explosive_trap.png')),
+  pitfall: loadImage(resolveAssetUrl('assets/new style/trap_bear.png')),
+  explosive: loadImage(resolveAssetUrl('assets/new style/trap_explosive.png')),
 }
 const monsterRoleImages: Record<RoguelikeEncounterUnitRole, ImageAsset[]> = {
-  slime_grand: [loadImage(resolveAssetUrl('assets/monsters/monster_grandslime.png'))],
-  slime_mid: [loadImage(resolveAssetUrl('assets/monsters/monster_slime.png'))],
-  slime_small: [loadImage(resolveAssetUrl('assets/monsters/monster_slimeling.png'))],
-  troll: [loadImage(resolveAssetUrl('assets/monsters/monster_troll.png'))],
-  alpha_wolf: [loadImage(resolveAssetUrl('assets/monsters/monster_alpha_wolf.png'))],
-  wolf: [
-    loadImage(resolveAssetUrl('assets/monsters/monster_wolf_1.png')),
-    loadImage(resolveAssetUrl('assets/monsters/monster_wolf_2.png')),
-    loadImage(resolveAssetUrl('assets/monsters/monster_wolf_3.png')),
-  ],
+  slime_grand: [loadImage(resolveAssetUrl('assets/new style/monster_grandslime.png'))],
+  slime_mid: [loadImage(resolveAssetUrl('assets/new style/monster_slime.png'))],
+  slime_small: [loadImage(resolveAssetUrl('assets/new style/monster_slimeling.png'))],
+  troll: [loadImage(resolveAssetUrl('assets/new style/monster_troll.png'))],
+  alpha_wolf: [loadImage(resolveAssetUrl('assets/new style/monster_alpha_wolf.png'))],
+  wolf: [loadImage(resolveAssetUrl('assets/new style/monster_wolf_2.png'))],
 }
 const roguelikeMonsterVariantByUnitId = new Map<string, number>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
+
+function getStableVariantIndex(seed: string, variantCount: number): number {
+  if (variantCount <= 1) return 0
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0
+  }
+  return Math.abs(hash) % variantCount
+}
+
+function getTileImage(tile: Pick<Tile, 'id' | 'kind'>): ImageAsset | null {
+  const variants = tileImages[tile.kind] ?? tileImages.grassland
+  if (variants.length === 0) return null
+  return variants[getStableVariantIndex(tile.id, variants.length)] ?? variants[0] ?? null
+}
 
 type ClassSpriteSet = {
   unitBaseImage: ImageAsset
@@ -732,6 +786,10 @@ type ClassSpriteSet = {
   leaderTeamImage: ImageAsset
   unitTeamCache: Map<PlayerId, HTMLCanvasElement>
   leaderTeamCache: Map<PlayerId, HTMLCanvasElement>
+  unitOffsetX: number
+  unitOffsetY: number
+  leaderOffsetX: number
+  leaderOffsetY: number
 }
 
 const classSpriteSets: Record<PlayerClassId, ClassSpriteSet> = {
@@ -742,6 +800,10 @@ const classSpriteSets: Record<PlayerClassId, ClassSpriteSet> = {
     leaderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.commander.leaderTeamAsset)),
     unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
     leaderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    unitOffsetX: -0.06,
+    unitOffsetY: 0,
+    leaderOffsetX: 0,
+    leaderOffsetY: 0,
   },
   warleader: {
     unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.unitBaseAsset)),
@@ -750,6 +812,10 @@ const classSpriteSets: Record<PlayerClassId, ClassSpriteSet> = {
     leaderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.warleader.leaderTeamAsset)),
     unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
     leaderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    unitOffsetX: -0.1,
+    unitOffsetY: -0.05,
+    leaderOffsetX: 0,
+    leaderOffsetY: -0.05,
   },
   archmage: {
     unitBaseImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.unitBaseAsset)),
@@ -758,6 +824,10 @@ const classSpriteSets: Record<PlayerClassId, ClassSpriteSet> = {
     leaderTeamImage: loadImage(resolveAssetUrl(PLAYER_CLASS_DEFS.archmage.leaderTeamAsset)),
     unitTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
     leaderTeamCache: new Map<PlayerId, HTMLCanvasElement>(),
+    unitOffsetX: 0,
+    unitOffsetY: 0,
+    leaderOffsetX: 0,
+    leaderOffsetY: 0,
   },
 }
 
@@ -983,16 +1053,16 @@ const layout = {
   height: 520,
 }
 
-const BOARD_TILT = 0.8
-const TILE_IMAGE_SCALE = 3
+const BOARD_TILT = 0.55
+const TILE_IMAGE_SCALE = 1.5 * 1.37
 const TILE_ANCHOR_Y = 0.45
 const TILE_GAP = 0.6
 const BUILDING_IMAGE_SCALE = 1.8
 const BUILDING_ANCHOR_Y = 0.7
 const SPAWN_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.5
 const SPAWN_ANCHOR_Y = BUILDING_ANCHOR_Y - 0.08
-const UNIT_IMAGE_SCALE = 1.1
-const LEADER_IMAGE_SCALE = UNIT_IMAGE_SCALE
+const UNIT_IMAGE_SCALE = 1.1 * 1.7
+const LEADER_IMAGE_SCALE = 1.1 * 2
 const UNIT_ANCHOR_Y = 0.78
 const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
 const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
@@ -1980,6 +2050,15 @@ function mapViewToState(view: GameStateView): GameState {
 
 function normalizeLeaderUnitsInState(sourceState: GameState): void {
   sourceState.settings = normalizeGameSettingsInput(sourceState.settings)
+  sourceState.tiles = Array.isArray(sourceState.tiles)
+    ? sourceState.tiles.map((tile) => ({
+        ...tile,
+        id: typeof tile.id === 'string' ? tile.id : `${tile.q},${tile.r}`,
+        q: Math.floor(tile.q),
+        r: Math.floor(tile.r),
+        kind: normalizeTileKindInput((tile as { kind?: unknown }).kind),
+      }))
+    : []
   const normalizedUnits: GameState['units'] = {}
   Object.entries(sourceState.units).forEach(([unitId, unit]) => {
     const normalizedUnitId = normalizeLeaderUnitReference(unitId)
@@ -2856,14 +2935,23 @@ function drawAnchoredImageTo(
   asset: ImageAsset,
   center: { x: number; y: number },
   scale: number,
-  anchorY: number
+  anchorY: number,
+  offsetX = 0,
+  offsetY = 0
 ): void {
   if (!asset.loaded) return
-  drawAnchoredSource(context, asset.img, asset.img.width, asset.img.height, center, scale, anchorY)
+  drawAnchoredSource(context, asset.img, asset.img.width, asset.img.height, center, scale, anchorY, offsetX, offsetY)
 }
 
-function drawAnchoredImage(asset: ImageAsset, center: { x: number; y: number }, scale: number, anchorY: number): void {
-  drawAnchoredImageTo(ctx, asset, center, scale, anchorY)
+function drawAnchoredImage(
+  asset: ImageAsset,
+  center: { x: number; y: number },
+  scale: number,
+  anchorY: number,
+  offsetX = 0,
+  offsetY = 0
+): void {
+  drawAnchoredImageTo(ctx, asset, center, scale, anchorY, offsetX, offsetY)
 }
 
 function drawAnchoredSource(
@@ -2873,14 +2961,16 @@ function drawAnchoredSource(
   sourceHeight: number,
   center: { x: number; y: number },
   scale: number,
-  anchorY: number
+  anchorY: number,
+  offsetX = 0,
+  offsetY = 0
 ): void {
   const baseSize = layout.size * scale
   const ratio = sourceHeight / sourceWidth || 1
   const drawWidth = baseSize
   const drawHeight = baseSize * ratio
-  const drawX = center.x - drawWidth / 2
-  const drawY = center.y - drawHeight * anchorY
+  const drawX = center.x - drawWidth / 2 + drawWidth * offsetX
+  const drawY = center.y - drawHeight * anchorY + drawHeight * offsetY
   context.drawImage(source, drawX, drawY, drawWidth, drawHeight)
 }
 
@@ -3075,19 +3165,46 @@ function getTintedTeamLayer(
 function drawUnitSprite(center: { x: number; y: number }, owner: PlayerId, scale = UNIT_IMAGE_SCALE): void {
   const spriteSet = getSpriteSetForOwner(owner)
   if (!spriteSet.unitBaseImage.loaded) return
-  drawAnchoredImage(spriteSet.unitBaseImage, center, scale, UNIT_ANCHOR_Y)
+  drawAnchoredImage(spriteSet.unitBaseImage, center, scale, UNIT_ANCHOR_Y, spriteSet.unitOffsetX, spriteSet.unitOffsetY)
   const tinted = getTintedTeamLayer(owner, spriteSet.unitTeamImage, spriteSet.unitTeamCache)
   if (!tinted) return
-  drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
+  drawAnchoredSource(
+    ctx,
+    tinted,
+    tinted.width,
+    tinted.height,
+    center,
+    scale,
+    UNIT_ANCHOR_Y,
+    spriteSet.unitOffsetX,
+    spriteSet.unitOffsetY
+  )
 }
 
 function drawLeaderSprite(center: { x: number; y: number }, owner: PlayerId, scale = LEADER_IMAGE_SCALE): void {
   const spriteSet = getSpriteSetForOwner(owner)
   if (!spriteSet.leaderBaseImage.loaded) return
-  drawAnchoredImage(spriteSet.leaderBaseImage, center, scale, UNIT_ANCHOR_Y)
+  drawAnchoredImage(
+    spriteSet.leaderBaseImage,
+    center,
+    scale,
+    UNIT_ANCHOR_Y,
+    spriteSet.leaderOffsetX,
+    spriteSet.leaderOffsetY
+  )
   const tinted = getTintedTeamLayer(owner, spriteSet.leaderTeamImage, spriteSet.leaderTeamCache)
   if (!tinted) return
-  drawAnchoredSource(ctx, tinted, tinted.width, tinted.height, center, scale, UNIT_ANCHOR_Y)
+  drawAnchoredSource(
+    ctx,
+    tinted,
+    tinted.width,
+    tinted.height,
+    center,
+    scale,
+    UNIT_ANCHOR_Y,
+    spriteSet.leaderOffsetX,
+    spriteSet.leaderOffsetY
+  )
 }
 
 function drawBarricadeSprite(
@@ -4703,27 +4820,20 @@ function drawBoard(): void {
 
   for (const tile of [...state.tiles].sort((a, b) => a.r - b.r || a.q - b.q)) {
     const center = projectHex({ q: tile.q, r: tile.r })
-    const corners = polygonCornersProjected(center, layout.size - TILE_GAP)
-
-    ctx.beginPath()
-    corners.forEach((corner, index) => {
-      if (index === 0) ctx.moveTo(corner.x, corner.y)
-      else ctx.lineTo(corner.x, corner.y)
-    })
-    ctx.closePath()
-    const tileAsset = tileImages[tile.kind] ?? tileImages.grass
+    const tileAsset = getTileImage(tile)
     if (tileAsset?.loaded) {
-      ctx.save()
-      ctx.clip()
       drawAnchoredImage(tileAsset, center, TILE_IMAGE_SCALE, TILE_ANCHOR_Y)
-      ctx.restore()
     } else {
+      const corners = polygonCornersProjected(center, layout.size - TILE_GAP)
+      ctx.beginPath()
+      corners.forEach((corner, index) => {
+        if (index === 0) ctx.moveTo(corner.x, corner.y)
+        else ctx.lineTo(corner.x, corner.y)
+      })
+      ctx.closePath()
       ctx.fillStyle = '#1f2442'
       ctx.fill()
     }
-    ctx.strokeStyle = '#070405'
-    ctx.lineWidth = 1.2
-    ctx.stroke()
   }
 
   const structures: { pos: Hex; owner: PlayerId }[] = []
@@ -4973,6 +5083,68 @@ function drawSelectableHighlights(): void {
   })
 }
 
+function getUnitRingMetrics(kind: Unit['kind']): {
+  radius: number
+  stroke: number
+  outerTipDistance: number
+  outerBaseDistance: number
+  outerBaseHalfWidth: number
+  innerTipDistance: number
+  innerBaseDistance: number
+  innerBaseHalfWidth: number
+} {
+  const leaderScale = kind === 'leader' ? 1.2 : 1
+  const baseScale = 1.3 * leaderScale
+  const radius = layout.size * 0.38 * baseScale
+  const stroke = layout.size * 0.12 * 1.15 * leaderScale
+  const outerTipDistance = layout.size * 0.66 * baseScale
+  const outerBaseDistance = layout.size * 0.388 * baseScale
+  const outerBaseHalfWidth = layout.size * 0.156 * baseScale
+  const innerTipDistance = -(radius * 0.42)
+  const innerBaseDistance = -(radius - stroke * 0.3)
+  const innerBaseHalfWidth = outerBaseHalfWidth * 0.74
+  return {
+    radius,
+    stroke,
+    outerTipDistance,
+    outerBaseDistance,
+    outerBaseHalfWidth,
+    innerTipDistance,
+    innerBaseDistance,
+    innerBaseHalfWidth,
+  }
+}
+
+function drawDirectionalTriangle(
+  context: CanvasRenderingContext2D,
+  nx: number,
+  ny: number,
+  tipDistance: number,
+  baseDistance: number,
+  halfWidth: number,
+  fillStyle: string | CanvasGradient,
+  strokeStyle: string,
+  lineWidth: number
+): void {
+  const perpX = -ny
+  const perpY = nx
+  const tipX = nx * tipDistance
+  const tipY = ny * tipDistance
+  const baseX = nx * baseDistance
+  const baseY = ny * baseDistance
+
+  context.beginPath()
+  context.moveTo(tipX, tipY)
+  context.lineTo(baseX + perpX * halfWidth, baseY + perpY * halfWidth)
+  context.lineTo(baseX - perpX * halfWidth, baseY - perpY * halfWidth)
+  context.closePath()
+  context.fillStyle = fillStyle
+  context.fill()
+  context.strokeStyle = strokeStyle
+  context.lineWidth = lineWidth
+  context.stroke()
+}
+
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
   const color = getUnitRingColor(unit)
@@ -5038,22 +5210,14 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     const length = Math.hypot(dir.x, dir.y) || 1
     const nx = dir.x / length
     const ny = dir.y / length
-    const tipDistance = layout.size * 0.66
-    const tipX = nx * tipDistance
-    const tipY = ny * tipDistance
-    const baseDistance = layout.size * 0.388
-    const baseHalfWidth = layout.size * 0.156
-    const baseX = nx * baseDistance
-    const baseY = ny * baseDistance
-    const perpX = -ny
-    const perpY = nx
+    const ringMetrics = getUnitRingMetrics(unit.kind)
 
     ctx.save()
     ctx.translate(center.x, center.y)
     ctx.scale(1, BOARD_TILT)
 
-    const ringRadius = layout.size * 0.38
-    const ringStroke = layout.size * 0.12
+    const ringRadius = ringMetrics.radius
+    const ringStroke = ringMetrics.stroke
     const ringGradient = ctx.createRadialGradient(0, 0, ringRadius - ringStroke * 0.4, 0, 0, ringRadius)
     ringGradient.addColorStop(0, 'rgba(255, 255, 255, 0.85)')
     ringGradient.addColorStop(0.5, color)
@@ -5076,16 +5240,28 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     ctx.lineWidth = 1.2
     ctx.stroke()
 
-    ctx.beginPath()
-    ctx.moveTo(tipX, tipY)
-    ctx.lineTo(baseX + perpX * baseHalfWidth, baseY + perpY * baseHalfWidth)
-    ctx.lineTo(baseX - perpX * baseHalfWidth, baseY - perpY * baseHalfWidth)
-    ctx.closePath()
-    ctx.fillStyle = ringGradient
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)'
-    ctx.lineWidth = 1.1
-    ctx.stroke()
+    drawDirectionalTriangle(
+      ctx,
+      nx,
+      ny,
+      ringMetrics.outerTipDistance,
+      ringMetrics.outerBaseDistance,
+      ringMetrics.outerBaseHalfWidth,
+      ringGradient,
+      'rgba(0, 0, 0, 0.28)',
+      1.1
+    )
+    drawDirectionalTriangle(
+      ctx,
+      nx,
+      ny,
+      ringMetrics.innerTipDistance,
+      ringMetrics.innerBaseDistance,
+      ringMetrics.innerBaseHalfWidth,
+      ringGradient,
+      'rgba(0, 0, 0, 0.22)',
+      1
+    )
 
     ctx.globalAlpha = 0.9
     ctx.beginPath()
@@ -5093,16 +5269,28 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     ctx.strokeStyle = color
     ctx.lineWidth = 1.4
     ctx.stroke()
-    ctx.beginPath()
-    ctx.moveTo(tipX, tipY)
-    ctx.lineTo(baseX + perpX * baseHalfWidth, baseY + perpY * baseHalfWidth)
-    ctx.lineTo(baseX - perpX * baseHalfWidth, baseY - perpY * baseHalfWidth)
-    ctx.closePath()
-    ctx.fillStyle = color
-    ctx.fill()
-    ctx.strokeStyle = color
-    ctx.lineWidth = 1.2
-    ctx.stroke()
+    drawDirectionalTriangle(
+      ctx,
+      nx,
+      ny,
+      ringMetrics.outerTipDistance,
+      ringMetrics.outerBaseDistance,
+      ringMetrics.outerBaseHalfWidth,
+      color,
+      color,
+      1.2
+    )
+    drawDirectionalTriangle(
+      ctx,
+      nx,
+      ny,
+      ringMetrics.innerTipDistance,
+      ringMetrics.innerBaseDistance,
+      ringMetrics.innerBaseHalfWidth,
+      color,
+      color,
+      1.1
+    )
     ctx.globalAlpha = 1
 
     ctx.restore()
@@ -5196,33 +5384,40 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
     const length = Math.hypot(dir.x, dir.y) || 1
     const nx = dir.x / length
     const ny = dir.y / length
-    const tipDistance = layout.size * 0.66
-    const baseDistance = layout.size * 0.38
-    const baseHalfWidth = layout.size * 0.156
-    const tipX = nx * tipDistance
-    const tipY = ny * tipDistance
-    const baseX = nx * baseDistance
-    const baseY = ny * baseDistance
-    const perpX = -ny
-    const perpY = nx
+    const ringMetrics = getUnitRingMetrics(unit.kind)
 
     ghostCtx.save()
     ghostCtx.translate(localCenter.x, localCenter.y)
     ghostCtx.scale(1, BOARD_TILT)
 
     ghostCtx.beginPath()
-    ghostCtx.arc(0, 0, layout.size * 0.38, 0, Math.PI * 2)
+    ghostCtx.arc(0, 0, ringMetrics.radius, 0, Math.PI * 2)
     ghostCtx.strokeStyle = ringColor
-    ghostCtx.lineWidth = 2
+    ghostCtx.lineWidth = 2.4
     ghostCtx.stroke()
 
-    ghostCtx.beginPath()
-    ghostCtx.moveTo(tipX, tipY)
-    ghostCtx.lineTo(baseX + perpX * baseHalfWidth, baseY + perpY * baseHalfWidth)
-    ghostCtx.lineTo(baseX - perpX * baseHalfWidth, baseY - perpY * baseHalfWidth)
-    ghostCtx.closePath()
-    ghostCtx.fillStyle = ringColor
-    ghostCtx.fill()
+    drawDirectionalTriangle(
+      ghostCtx,
+      nx,
+      ny,
+      ringMetrics.outerTipDistance,
+      ringMetrics.outerBaseDistance,
+      ringMetrics.outerBaseHalfWidth,
+      ringColor,
+      ringColor,
+      1.1
+    )
+    drawDirectionalTriangle(
+      ghostCtx,
+      nx,
+      ny,
+      ringMetrics.innerTipDistance,
+      ringMetrics.innerBaseDistance,
+      ringMetrics.innerBaseHalfWidth,
+      ringColor,
+      ringColor,
+      1
+    )
 
     ghostCtx.restore()
 
@@ -5230,6 +5425,10 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
     const troopBaseImage = unit.kind === 'leader' ? spriteSet.leaderBaseImage : spriteSet.unitBaseImage
     const monsterImage = unit.kind === 'unit' ? getRoguelikeMonsterImage(unit) : null
     const spriteImage = monsterImage ?? troopBaseImage
+    const spriteOffsetX =
+      monsterImage !== null ? 0 : unit.kind === 'leader' ? spriteSet.leaderOffsetX : spriteSet.unitOffsetX
+    const spriteOffsetY =
+      monsterImage !== null ? 0 : unit.kind === 'leader' ? spriteSet.leaderOffsetY : spriteSet.unitOffsetY
     if (spriteImage.loaded) {
       ghostCtx.save()
       ghostCtx.filter = 'grayscale(1) brightness(1.8)'
@@ -5238,7 +5437,9 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
         spriteImage,
         localCenter,
         unitSpriteScale * (unit.kind === 'unit' ? getUnitRenderScale(unit) : 1),
-        UNIT_ANCHOR_Y
+        UNIT_ANCHOR_Y,
+        spriteOffsetX,
+        spriteOffsetY
       )
       ghostCtx.filter = 'none'
       ghostCtx.restore()
@@ -10486,15 +10687,6 @@ window.addEventListener('resize', () => {
 window.addEventListener('online', () => {
   void flushPendingTelemetryQueue()
 })
-
-
-
-
-
-
-
-
-
 
 
 
