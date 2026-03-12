@@ -4,8 +4,6 @@ import type { PlayMode } from '../net/types'
 export type TutorialLessonId =
   | 'first_battle'
   | 'build_deck'
-  | 'fight_bot'
-  | 'roguelike_run'
   | 'play_online'
 
 export type TutorialDomTargetId =
@@ -16,22 +14,32 @@ export type TutorialDomTargetId =
   | 'menu-online-token'
   | 'menu-online-links'
   | 'loadout-class'
+  | 'loadout-back'
   | 'loadout-filter-attack'
   | 'loadout-all'
   | 'loadout-selected'
+  | 'planner-ap'
+  | 'active-player'
   | 'hand'
   | 'orders'
   | 'ready'
+  | 'resolve-next'
+  | 'resolve-all'
   | 'winner'
 
 export type TutorialActionId =
+  | 'tutorial_next'
   | 'loadout_class_change'
   | 'loadout_filter_change'
   | 'loadout_card_add'
   | 'loadout_card_remove'
   | 'hand_card_select'
+  | 'queue_remove'
+  | 'queue_reorder'
   | 'board_select'
   | 'ready'
+  | 'resolve_next'
+  | 'resolve_all'
   | 'online_create'
   | 'online_join'
   | 'reset_game'
@@ -40,6 +48,7 @@ export type TutorialActionId =
   | 'winner_secondary'
 
 export type TutorialEventId =
+  | 'manual_next'
   | 'screen_changed'
   | 'loadout_class_changed'
   | 'loadout_filter_changed'
@@ -48,6 +57,8 @@ export type TutorialEventId =
   | 'card_selected'
   | 'board_tile_selected'
   | 'order_queued'
+  | 'queue_removed'
+  | 'queue_reordered'
   | 'ready_pressed'
   | 'action_phase_started'
   | 'turn_changed'
@@ -94,9 +105,10 @@ export type TutorialStep = {
   allowedActions?: TutorialActionRule[]
   completeOn: TutorialEventRule[]
   highlights?: TutorialHighlightTarget[]
+  panelPlacement?: 'auto' | 'right' | 'right_above'
 }
 
-export type TutorialLessonBehavior = 'local_match' | 'loadout' | 'bot_match' | 'roguelike_match' | 'online_demo'
+export type TutorialLessonBehavior = 'local_match' | 'loadout' | 'online_demo'
 
 export type TutorialLessonDef = {
   id: TutorialLessonId

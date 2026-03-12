@@ -22,16 +22,13 @@ import { CARD_DEFS, STARTING_DECK, cardCountsAsType } from './cards'
 import { DIRECTIONS, neighbor, offsetToAxial, rotateDirection } from './hex'
 
 const DEFAULT_BOARD_SIZE = 6
-const TILE_KINDS: TileKind[] = ['grassland', 'meadow', 'forest', 'swamp', 'hills', 'mountain', 'snow', 'snow_hills']
-const TILE_BASE_WEIGHT: Record<TileKind, number> = {
-  grassland: 1,
-  meadow: 1,
+const GENERATED_TILE_KINDS = ['grassland', 'forest', 'hills', 'mountain'] as const satisfies readonly TileKind[]
+type GeneratedTileKind = (typeof GENERATED_TILE_KINDS)[number]
+const TILE_BASE_WEIGHT: Record<GeneratedTileKind, number> = {
+  grassland: 1.15,
   forest: 1,
-  swamp: 0.7,
-  hills: 1,
-  mountain: 0.95,
-  snow: 0.75,
-  snow_hills: 0.7,
+  hills: 0.95,
+  mountain: 0.8,
 }
 const SAME_KIND_BONUS = 2.2
 const COMMANDER_AURA_SOURCE = 'commanderAura'
@@ -400,6 +397,31 @@ function countNeighborsOfKind(
   return count
 }
 
+function getSpawnHexes(rows: number, cols: number): Hex[] {
+  const [topPos, bottomPos] = getLeaderPositions(rows, cols)
+  const keys = new Set<string>()
+  const hexes: Hex[] = []
+  const anchors = [topPos, bottomPos]
+
+  anchors.forEach((anchor) => {
+    const key = `${anchor.q},${anchor.r}`
+    if (!keys.has(key)) {
+      keys.add(key)
+      hexes.push({ ...anchor })
+    }
+    for (let dir = 0 as Direction; dir < 6; dir += 1) {
+      const candidate = neighbor(anchor, dir)
+      if (!inBounds(rows, cols, candidate)) continue
+      const candidateKey = `${candidate.q},${candidate.r}`
+      if (keys.has(candidateKey)) continue
+      keys.add(candidateKey)
+      hexes.push(candidate)
+    }
+  })
+
+  return hexes
+}
+
 function createTiles(rows: number, cols: number): Tile[] {
   const positions: Hex[] = []
   for (let r = 0; r < rows; r += 1) {
@@ -410,13 +432,17 @@ function createTiles(rows: number, cols: number): Tile[] {
 
   const assigned = new Map<string, TileKind>()
   shuffle(positions).forEach((hex) => {
-    const weights = TILE_KINDS.map((kind) => {
+    const weights = GENERATED_TILE_KINDS.map((kind) => {
       const sameCount = countNeighborsOfKind(assigned, rows, cols, hex, kind)
       const weight = TILE_BASE_WEIGHT[kind] + sameCount * SAME_KIND_BONUS
       return { kind, weight }
     })
     const chosen = pickWeightedKind(weights)
     assigned.set(`${hex.q},${hex.r}`, chosen)
+  })
+
+  getSpawnHexes(rows, cols).forEach((hex) => {
+    assigned.set(`${hex.q},${hex.r}`, 'grassland')
   })
 
   return positions.map((hex) => ({

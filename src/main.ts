@@ -172,7 +172,7 @@ app.innerHTML = `
             <div class="label">Tutorial</div>
             <div class="planner-name">Lesson Hub</div>
           </div>
-          <button id="tutorial-hub-back" class="btn ghost">Back to Menu</button>
+          <button id="tutorial-hub-back" class="btn ghost">Main Menu</button>
         </div>
         <div id="tutorial-progress" class="tutorial-progress"></div>
         <div id="tutorial-lessons" class="tutorial-lessons"></div>
@@ -283,6 +283,7 @@ app.innerHTML = `
           <section class="board-panel">
             <div class="board-menu">
               <button id="game-menu" class="btn ghost board-menu-btn">Main Menu</button>
+              <button id="game-tutorial-hub" class="btn ghost board-menu-btn hidden">Tutorial Hub</button>
               <button id="reset-game" class="btn ghost board-menu-btn">Reset Game</button>
             </div>
             <div id="planner-name" class="board-planner"></div>
@@ -355,10 +356,8 @@ app.innerHTML = `
     </div>
     <div id="tutorial-panel-body" class="tutorial-panel-body"></div>
     <div id="tutorial-panel-feedback" class="tutorial-panel-feedback"></div>
-    <div class="tutorial-panel-actions">
-      <button id="tutorial-panel-skip" class="btn ghost" type="button">Skip</button>
-      <button id="tutorial-panel-restart" class="btn ghost" type="button">Restart</button>
-      <button id="tutorial-panel-back" class="btn" type="button">Back to Tutorials</button>
+    <div id="tutorial-panel-actions" class="tutorial-panel-actions hidden">
+      <button id="tutorial-panel-next" class="btn ghost hidden" type="button">Next</button>
     </div>
   </div>
   <div id="card-overlay" class="card-overlay"></div>
@@ -377,9 +376,8 @@ const tutorialPanelStepEl = document.querySelector<HTMLDivElement>('#tutorial-pa
 const tutorialPanelBadgeEl = document.querySelector<HTMLSpanElement>('#tutorial-panel-badge')!
 const tutorialPanelBodyEl = document.querySelector<HTMLDivElement>('#tutorial-panel-body')!
 const tutorialPanelFeedbackEl = document.querySelector<HTMLDivElement>('#tutorial-panel-feedback')!
-const tutorialPanelSkipButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-skip')!
-const tutorialPanelRestartButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-restart')!
-const tutorialPanelBackButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-back')!
+const tutorialPanelActionsEl = document.querySelector<HTMLDivElement>('#tutorial-panel-actions')!
+const tutorialPanelNextButton = document.querySelector<HTMLButtonElement>('#tutorial-panel-next')!
 
 const menuStartButton = document.querySelector<HTMLButtonElement>('#menu-start')!
 const menuStartBotButton = document.querySelector<HTMLButtonElement>('#menu-start-bot')!
@@ -452,6 +450,7 @@ const winnerMenuButton = document.querySelector<HTMLButtonElement>('#winner-menu
 const winnerResetButton = document.querySelector<HTMLButtonElement>('#winner-reset')!
 const winnerRematchButton = document.querySelector<HTMLButtonElement>('#winner-rematch')!
 const gameMenuButton = document.querySelector<HTMLButtonElement>('#game-menu')!
+const gameTutorialHubButton = document.querySelector<HTMLButtonElement>('#game-tutorial-hub')!
 
 const switchPlannerButton = document.querySelector<HTMLButtonElement>('#switch-planner')!
 const readyButton = document.querySelector<HTMLButtonElement>('#ready-btn')!
@@ -475,9 +474,8 @@ if (
   !tutorialPanelBadgeEl ||
   !tutorialPanelBodyEl ||
   !tutorialPanelFeedbackEl ||
-  !tutorialPanelSkipButton ||
-  !tutorialPanelRestartButton ||
-  !tutorialPanelBackButton ||
+  !tutorialPanelActionsEl ||
+  !tutorialPanelNextButton ||
   !menuStartButton ||
   !menuStartBotButton ||
   !menuStartRoguelikeButton ||
@@ -543,7 +541,8 @@ if (
   !winnerMenuButton ||
   !winnerResetButton ||
   !winnerRematchButton ||
-  !gameMenuButton
+  !gameMenuButton ||
+  !gameTutorialHubButton
 ) {
   throw new Error('UI elements missing')
 }
@@ -798,43 +797,50 @@ function loadImage(src: string): ImageAsset {
   return asset
 }
 
+const tileImageFamilies = {
+  grassland: loadImage(resolveAssetUrl('assets/tiles/tile_grassland.png')),
+  hills: loadImage(resolveAssetUrl('assets/tiles/tile_hills.png')),
+  forest: loadImage(resolveAssetUrl('assets/tiles/tile_forest.png')),
+  mountain: loadImage(resolveAssetUrl('assets/tiles/tile_mountain.png')),
+} as const
+
+// The current tileset only ships four terrain sprites, so older saved terrain kinds
+// are mapped to the closest available family instead of failing on missing files.
 const tileImages: Record<TileKind, ImageAsset[]> = {
-  grassland: [loadImage(resolveAssetUrl('assets/new style/tile_grassland.png'))],
-  meadow: [loadImage(resolveAssetUrl('assets/new style/tile_meadow.png'))],
-  forest: [
-    loadImage(resolveAssetUrl('assets/new style/tile_forest.png')),
-    loadImage(resolveAssetUrl('assets/new style/tile_forest_2.png')),
-  ],
-  swamp: [loadImage(resolveAssetUrl('assets/new style/tile_grassland_swamp.png'))],
-  hills: [loadImage(resolveAssetUrl('assets/new style/tile_hills.png'))],
-  mountain: [
-    loadImage(resolveAssetUrl('assets/new style/tile_mountain.png')),
-    loadImage(resolveAssetUrl('assets/new style/tile_mountain_2.png')),
-  ],
-  snow: [
-    loadImage(resolveAssetUrl('assets/new style/tile_snow.png')),
-    loadImage(resolveAssetUrl('assets/new style/tile_snow_2.png')),
-  ],
-  snow_hills: [
-    loadImage(resolveAssetUrl('assets/new style/tile_snow_hills.png')),
-    loadImage(resolveAssetUrl('assets/new style/tile_snow_hills_2.png')),
-  ],
+  grassland: [tileImageFamilies.grassland],
+  meadow: [tileImageFamilies.grassland],
+  forest: [tileImageFamilies.forest],
+  swamp: [tileImageFamilies.forest],
+  hills: [tileImageFamilies.hills],
+  mountain: [tileImageFamilies.mountain],
+  snow: [tileImageFamilies.mountain],
+  snow_hills: [tileImageFamilies.hills],
+}
+const tileRenderAdjustments: Record<TileKind, { offsetX: number; offsetY: number; rowOverlayPriority: number }> = {
+  grassland: { offsetX: 0, offsetY: 0, rowOverlayPriority: 0 },
+  meadow: { offsetX: 0, offsetY: 0, rowOverlayPriority: 0 },
+  forest: { offsetX: 0, offsetY: 0, rowOverlayPriority: 1 },
+  swamp: { offsetX: 0, offsetY: 0, rowOverlayPriority: 1 },
+  hills: { offsetX: -0.01, offsetY: -0.01, rowOverlayPriority: 0 },
+  mountain: { offsetX: 0, offsetY: -0.02, rowOverlayPriority: 0 },
+  snow: { offsetX: 0, offsetY: -0.02, rowOverlayPriority: 0 },
+  snow_hills: { offsetX: -0.01, offsetY: -0.01, rowOverlayPriority: 0 },
 }
 const spawnBaseImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_base.png'))
 const spawnTeamImage = loadImage(resolveAssetUrl('assets/buildings/spawn_village_team.png'))
 const barricadeBaseImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_base.png'))
 const barricadeTeamImage = loadImage(resolveAssetUrl('assets/units/unit_barricade_team.png'))
 const trapImages: Record<'pitfall' | 'explosive', ImageAsset> = {
-  pitfall: loadImage(resolveAssetUrl('assets/new style/trap_bear.png')),
-  explosive: loadImage(resolveAssetUrl('assets/new style/trap_explosive.png')),
+  pitfall: loadImage(resolveAssetUrl('assets/traps/pitfall_trap.png')),
+  explosive: loadImage(resolveAssetUrl('assets/traps/explosive_trap.png')),
 }
 const monsterRoleImages: Record<RoguelikeEncounterUnitRole, ImageAsset[]> = {
-  slime_grand: [loadImage(resolveAssetUrl('assets/new style/monster_grandslime.png'))],
-  slime_mid: [loadImage(resolveAssetUrl('assets/new style/monster_slime.png'))],
-  slime_small: [loadImage(resolveAssetUrl('assets/new style/monster_slimeling.png'))],
-  troll: [loadImage(resolveAssetUrl('assets/new style/monster_troll.png'))],
-  alpha_wolf: [loadImage(resolveAssetUrl('assets/new style/monster_alpha_wolf.png'))],
-  wolf: [loadImage(resolveAssetUrl('assets/new style/monster_wolf_2.png'))],
+  slime_grand: [loadImage(resolveAssetUrl('assets/monsters/monster_grandslime.png'))],
+  slime_mid: [loadImage(resolveAssetUrl('assets/monsters/monster_slime.png'))],
+  slime_small: [loadImage(resolveAssetUrl('assets/monsters/monster_slimeling.png'))],
+  troll: [loadImage(resolveAssetUrl('assets/monsters/monster_troll.png'))],
+  alpha_wolf: [loadImage(resolveAssetUrl('assets/monsters/monster_alpha_wolf.png'))],
+  wolf: [loadImage(resolveAssetUrl('assets/monsters/monster_wolf_2.png'))],
 }
 const roguelikeMonsterVariantByUnitId = new Map<string, number>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
@@ -853,6 +859,10 @@ function getTileImage(tile: Pick<Tile, 'id' | 'kind'>): ImageAsset | null {
   const variants = tileImages[tile.kind] ?? tileImages.grassland
   if (variants.length === 0) return null
   return variants[getStableVariantIndex(tile.id, variants.length)] ?? variants[0] ?? null
+}
+
+function getTileRenderAdjustment(kind: TileKind): { offsetX: number; offsetY: number; rowOverlayPriority: number } {
+  return tileRenderAdjustments[kind] ?? tileRenderAdjustments.grassland
 }
 
 type ClassSpriteSet = {
@@ -1139,9 +1149,9 @@ const layout = {
   height: 520,
 }
 
-const BOARD_TILT = 0.55
-const TILE_IMAGE_SCALE = 1.5 * 1.37
-const TILE_ANCHOR_Y = 0.45
+const BOARD_TILT = 0.73
+const TILE_IMAGE_SCALE = 1.55 * 1.35
+const TILE_ANCHOR_Y = 0.5
 const TILE_GAP = 0.6
 const BUILDING_IMAGE_SCALE = 1.8
 const BUILDING_ANCHOR_Y = 0.7
@@ -3930,18 +3940,28 @@ function getTutorialDomTargetElement(targetId: TutorialDomTargetId): HTMLElement
       return onlineLinksEl
     case 'loadout-class':
       return loadoutClassSelect
+    case 'loadout-back':
+      return loadoutBackButton
     case 'loadout-filter-attack':
       return document.querySelector<HTMLButtonElement>('[data-filter="attack"]')
     case 'loadout-all':
       return loadoutAll
     case 'loadout-selected':
       return loadoutSelected
+    case 'planner-ap':
+      return plannerApEl
+    case 'active-player':
+      return activeEl
     case 'hand':
       return handEl
     case 'orders':
       return ordersEl
     case 'ready':
       return readyButton
+    case 'resolve-next':
+      return resolveNextButton
+    case 'resolve-all':
+      return resolveAllButton
     case 'winner':
       return winnerModal
     default:
@@ -3971,6 +3991,77 @@ function findTutorialHighlightElement(target: TutorialHighlightTarget): HTMLElem
 function getActiveTutorialHighlights(): TutorialHighlightTarget[] {
   const step = tutorialController.getCurrentStep()
   return step?.highlights ?? []
+}
+
+function getTutorialHighlightPriority(target: TutorialHighlightTarget): number {
+  switch (target.type) {
+    case 'board_unit':
+    case 'board_tile':
+      return 5
+    case 'hand_card':
+    case 'queue_card':
+    case 'loadout_card':
+    case 'selected_loadout_card':
+      return 4
+    case 'dom':
+      switch (target.targetId) {
+        case 'ready':
+        case 'resolve-next':
+        case 'resolve-all':
+        case 'winner':
+        case 'menu-online-create':
+        case 'menu-online-join':
+        case 'loadout-class':
+        case 'loadout-back':
+        case 'loadout-filter-attack':
+          return 3
+        case 'orders':
+        case 'hand':
+          return 1
+        default:
+          return 2
+      }
+    default:
+      return 0
+  }
+}
+
+function getTutorialFocusHighlight():
+  | { target: TutorialHighlightTarget; rect: DOMRect; element: HTMLElement | null }
+  | null {
+  const candidates = getActiveTutorialHighlights()
+    .map((target) => {
+      const rect = getTutorialHighlightRect(target)
+      if (!rect) return null
+      return {
+        target,
+        rect,
+        element: findTutorialHighlightElement(target),
+      }
+    })
+    .filter((candidate): candidate is { target: TutorialHighlightTarget; rect: DOMRect; element: HTMLElement | null } =>
+      Boolean(candidate)
+    )
+
+  if (candidates.length === 0) return null
+
+  candidates.sort((left, right) => {
+    const priorityDelta = getTutorialHighlightPriority(right.target) - getTutorialHighlightPriority(left.target)
+    if (priorityDelta !== 0) return priorityDelta
+    const leftArea = left.rect.width * left.rect.height
+    const rightArea = right.rect.width * right.rect.height
+    return leftArea - rightArea
+  })
+
+  return candidates[0]
+}
+
+function isQueueLikeTutorialTarget(target: TutorialHighlightTarget): boolean {
+  return (
+    target.type === 'queue_card' ||
+    target.type === 'hand_card' ||
+    (target.type === 'dom' && (target.targetId === 'orders' || target.targetId === 'hand'))
+  )
 }
 
 function renderTutorialSpotlights(): void {
@@ -4004,14 +4095,167 @@ function renderTutorialSpotlights(): void {
 }
 
 function scrollActiveTutorialTargetIntoView(): void {
-  const target = getActiveTutorialHighlights()
-    .map((highlight) => findTutorialHighlightElement(highlight))
-    .find((element): element is HTMLElement => Boolean(element))
-  target?.scrollIntoView({
-    behavior: 'smooth',
+  getTutorialFocusHighlight()?.element?.scrollIntoView({
+    behavior: 'auto',
     block: 'nearest',
     inline: 'center',
   })
+}
+
+function getTutorialBoardHighlightRect(target: TutorialHighlightTarget): DOMRect | null {
+  const hex =
+    target.type === 'board_tile'
+      ? target.hex
+      : target.type === 'board_unit'
+        ? state.units[target.unitId]?.pos ?? null
+        : null
+  if (!hex) return null
+  const canvasRect = canvas.getBoundingClientRect()
+  const center = projectHex(hex)
+  const viewportCenterX = canvasRect.left + boardOffset.x + center.x * boardScale
+  const viewportCenterY = canvasRect.top + boardOffset.y + center.y * boardScale
+  const radiusX = layout.size * boardScale * (target.type === 'board_unit' ? 1.12 : 0.92)
+  const radiusY = layout.size * BOARD_TILT * boardScale * (target.type === 'board_unit' ? 1.18 : 0.78)
+  return new DOMRect(viewportCenterX - radiusX, viewportCenterY - radiusY, radiusX * 2, radiusY * 2)
+}
+
+function getTutorialHighlightRect(target: TutorialHighlightTarget): DOMRect | null {
+  const element = findTutorialHighlightElement(target)
+  if (element) {
+    const rect = element.getBoundingClientRect()
+    if (rect.width > 0 && rect.height > 0) return rect
+  }
+  if (target.type === 'board_tile' || target.type === 'board_unit') {
+    return getTutorialBoardHighlightRect(target)
+  }
+  return null
+}
+
+function clampPanelPosition(left: number, top: number, width: number, height: number, margin: number): { left: number; top: number } {
+  return {
+    left: clamp(left, margin, Math.max(margin, window.innerWidth - width - margin)),
+    top: clamp(top, margin, Math.max(margin, window.innerHeight - height - margin)),
+  }
+}
+
+function getRectOverlapArea(
+  a: { left: number; top: number; right: number; bottom: number },
+  b: { left: number; top: number; right: number; bottom: number }
+): number {
+  const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+  const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
+  return width * height
+}
+
+function positionTutorialOverlay(): void {
+  if (tutorialPanelEl.classList.contains('hidden')) return
+  const step = tutorialController.getCurrentStep()
+  const rect = tutorialPanelEl.getBoundingClientRect()
+  const width = rect.width || 240
+  const height = rect.height || 140
+  const margin = 12
+  const gap = 12
+  const focus = getTutorialFocusHighlight()
+  const focusRect = focus?.rect ?? null
+
+  let left = window.innerWidth - width - margin
+  let top = margin
+
+  if (focusRect) {
+    const focusCenterX = focusRect.left + focusRect.width / 2
+    const focusCenterY = focusRect.top + focusRect.height / 2
+    const rightDockedLeft = window.innerWidth - width - margin
+    const forceRightDock = step?.panelPlacement === 'right' || step?.panelPlacement === 'right_above'
+    const forceRightAbove = step?.panelPlacement === 'right_above'
+    const useRightDock = forceRightDock || (focus ? isQueueLikeTutorialTarget(focus.target) : false)
+    const centeredLeft = focusCenterX - width / 2
+    const verticalLeft = useRightDock ? rightDockedLeft : centeredLeft
+    const sideBias = useRightDock
+      ? { right: 180, above: 90, below: 60, left: 0 }
+      : { right: 80, above: 40, below: 30, left: 0 }
+    const sideCandidates = [
+      {
+        side: 'right' as const,
+        required: width,
+        available: window.innerWidth - focusRect.right - margin - gap,
+        left: focusRect.right + gap,
+        top: focusCenterY - height / 2,
+      },
+      {
+        side: 'above' as const,
+        required: height,
+        available: focusRect.top - margin - gap,
+        left: verticalLeft,
+        top: focusRect.top - height - gap,
+      },
+      {
+        side: 'below' as const,
+        required: height,
+        available: window.innerHeight - focusRect.bottom - margin - gap,
+        left: verticalLeft,
+        top: focusRect.bottom + gap,
+      },
+      {
+        side: 'left' as const,
+        required: width,
+        available: focusRect.left - margin - gap,
+        left: focusRect.left - width - gap,
+        top: focusCenterY - height / 2,
+      },
+    ]
+      .filter((candidate) => candidate.available >= candidate.required)
+      .sort((leftCandidate, rightCandidate) => {
+        const leftScore = leftCandidate.available + sideBias[leftCandidate.side]
+        const rightScore = rightCandidate.available + sideBias[rightCandidate.side]
+        return rightScore - leftScore
+      })
+
+    if (forceRightAbove) {
+      const candidate = clampPanelPosition(rightDockedLeft, focusRect.top - height - gap, width, height, margin)
+      left = candidate.left
+      top = candidate.top
+    } else if (forceRightDock) {
+      const candidate = clampPanelPosition(rightDockedLeft, focusCenterY - height / 2, width, height, margin)
+      left = candidate.left
+      top = candidate.top
+    } else if (sideCandidates.length > 0) {
+      const candidate = clampPanelPosition(sideCandidates[0].left, sideCandidates[0].top, width, height, margin)
+      left = candidate.left
+      top = candidate.top
+    } else {
+      const fallbackCandidates = [
+        clampPanelPosition(window.innerWidth - width - margin, margin, width, height, margin),
+        clampPanelPosition(window.innerWidth - width - margin, window.innerHeight - height - margin, width, height, margin),
+        clampPanelPosition(margin, margin, width, height, margin),
+        clampPanelPosition(margin, window.innerHeight - height - margin, width, height, margin),
+      ]
+      const bestFallback = fallbackCandidates
+        .map((candidate) => ({
+          ...candidate,
+          overlap: getRectOverlapArea(
+            { left: candidate.left, top: candidate.top, right: candidate.left + width, bottom: candidate.top + height },
+            focusRect
+          ),
+        }))
+        .sort((a, b) => a.overlap - b.overlap)[0]
+      left = bestFallback.left
+      top = bestFallback.top
+    }
+  }
+
+  tutorialPanelEl.style.left = `${Math.round(left)}px`
+  tutorialPanelEl.style.top = `${Math.round(top)}px`
+  tutorialPanelEl.style.right = 'auto'
+  tutorialPanelEl.style.bottom = 'auto'
+}
+
+function canAdvanceTutorialStepManually(): boolean {
+  const step = tutorialController.getCurrentStep()
+  if (!step) return false
+  return (
+    step.completeOn.some((rule) => rule.event === 'manual_next') ||
+    step.allowedActions?.some((rule) => rule.action === 'tutorial_next') === true
+  )
 }
 
 function renderTutorialHub(): void {
@@ -4064,10 +4308,13 @@ function renderTutorialOverlay(): void {
   tutorialPanelStepEl.textContent = completed ? `Completed` : `Step ${stepNumber} / ${lesson.steps.length}`
   tutorialPanelBadgeEl.classList.toggle('hidden', !completed)
   tutorialPanelBodyEl.textContent = completed
-    ? `${step?.instruction ?? lesson.summary} Lesson complete. Use Back to Tutorials to return or Restart to replay it.`
+    ? `${step?.instruction ?? lesson.summary} Lesson complete. Use Tutorial Hub to return.`
     : step?.instruction ?? lesson.summary
-  tutorialPanelSkipButton.textContent = completed ? 'Close' : 'Skip'
+  const showNextButton = !completed && canAdvanceTutorialStepManually()
+  tutorialPanelActionsEl.classList.toggle('hidden', !showNextButton)
+  tutorialPanelNextButton.classList.toggle('hidden', !showNextButton)
   tutorialPanelEl.classList.remove('hidden')
+  positionTutorialOverlay()
 }
 
 function getTutorialUiKey(): string | null {
@@ -4083,6 +4330,10 @@ function syncTutorialUi(): void {
   if (nextKey !== lastTutorialUiKey) {
     clearTutorialFeedback()
     scrollActiveTutorialTargetIntoView()
+    window.requestAnimationFrame(() => {
+      renderTutorialSpotlights()
+      positionTutorialOverlay()
+    })
     lastTutorialUiKey = nextKey
   }
   if (!nextKey) {
@@ -4096,7 +4347,13 @@ function notifyTutorialEvent(event: Parameters<TutorialController['recordEvent']
   if (!result.advanced && !result.completed) return
   persistTutorialProgress()
   if (result.completed) {
-    setTutorialFeedback('Lesson complete. Use Back to Tutorials or Restart.')
+    setTutorialFeedback('Lesson complete. Use Tutorial Hub to return.')
+    if (state.winner !== null) {
+      winnerMenuButton.textContent = 'Back to Tutorials'
+      winnerResetButton.textContent = 'Replay Lesson'
+      winnerRematchButton.classList.add('hidden')
+      winnerRematchButton.disabled = true
+    }
   }
 }
 
@@ -5297,11 +5554,18 @@ function drawBoard(): void {
   const spawnTopKeys = new Set(spawnTop.map((tile) => `${tile.q},${tile.r}`))
   const spawnBottomKeys = new Set(spawnBottom.map((tile) => `${tile.q},${tile.r}`))
 
-  for (const tile of [...state.tiles].sort((a, b) => a.r - b.r || a.q - b.q)) {
+  for (const tile of [...state.tiles].sort((a, b) => {
+    const rowDelta = a.r - b.r
+    if (rowDelta !== 0) return rowDelta
+    const overlayDelta = getTileRenderAdjustment(a.kind).rowOverlayPriority - getTileRenderAdjustment(b.kind).rowOverlayPriority
+    if (overlayDelta !== 0) return overlayDelta
+    return a.q - b.q
+  })) {
     const center = projectHex({ q: tile.q, r: tile.r })
     const tileAsset = getTileImage(tile)
+    const adjustment = getTileRenderAdjustment(tile.kind)
     if (tileAsset?.loaded) {
-      drawAnchoredImage(tileAsset, center, TILE_IMAGE_SCALE, TILE_ANCHOR_Y)
+      drawAnchoredImage(tileAsset, center, TILE_IMAGE_SCALE, TILE_ANCHOR_Y, adjustment.offsetX, adjustment.offsetY)
     } else {
       const corners = polygonCornersProjected(center, layout.size - TILE_GAP)
       ctx.beginPath()
@@ -6079,12 +6343,22 @@ function reorderHandCards(fromId: string, toId: string): void {
 
 function reorderQueuedOrder(fromId: string, toId: string): void {
   if (!fromId || !toId || fromId === toId) return
-  if (isTutorialLessonActive()) {
-    setTutorialFeedback('Queue reordering is disabled during the tutorial.')
-    return
-  }
   if (isBotPlanningLocked()) return
   if (state.ready[planningPlayer]) return
+  const playerState = state.players[planningPlayer]
+  const fromOrder = playerState.orders.find((order) => order.id === fromId) ?? null
+  const toOrder = playerState.orders.find((order) => order.id === toId) ?? null
+  if (
+    !guardTutorialAction('queue_reorder', {
+      fromId,
+      toId,
+      fromDefId: fromOrder?.defId ?? null,
+      toDefId: toOrder?.defId ?? null,
+      turn: state.turn,
+    })
+  ) {
+    return
+  }
   if (mode === 'online') {
     sendOnlineCommand({
       type: 'reorder_order',
@@ -6094,7 +6368,6 @@ function reorderQueuedOrder(fromId: string, toId: string): void {
     statusEl.textContent = 'Moving order...'
     return
   }
-  const playerState = state.players[planningPlayer]
   const fromIndex = playerState.orders.findIndex((order) => order.id === fromId)
   const toIndex = playerState.orders.findIndex((order) => order.id === toId)
   if (fromIndex === -1 || toIndex === -1) return
@@ -6102,6 +6375,14 @@ function reorderQueuedOrder(fromId: string, toId: string): void {
   playerState.orders.splice(toIndex, 0, moved)
   clearReady(planningPlayer)
   statusEl.textContent = 'Order moved.'
+  notifyTutorialEvent('queue_reordered', {
+    fromId,
+    toId,
+    fromDefId: moved.defId,
+    toDefId: toOrder?.defId ?? null,
+    order: playerState.orders.map((order) => order.defId),
+    turn: state.turn,
+  })
   render()
 }
 
@@ -6203,6 +6484,47 @@ function resolveCardStripTarget(options: CardStripReorderOptions, clientX: numbe
   return options.cards.includes(target) ? target : null
 }
 
+function getCardStripPrimaryAxis(cards: HTMLElement[], excludedCard?: HTMLElement): 'horizontal' | 'vertical' {
+  const candidateRects = cards
+    .filter((card) => card !== excludedCard)
+    .map((card) => card.getBoundingClientRect())
+
+  if (candidateRects.length <= 1) return 'horizontal'
+
+  const centerXs = candidateRects.map((rect) => rect.left + rect.width / 2)
+  const centerYs = candidateRects.map((rect) => rect.top + rect.height / 2)
+  const spreadX = Math.max(...centerXs) - Math.min(...centerXs)
+  const spreadY = Math.max(...centerYs) - Math.min(...centerYs)
+  return spreadX >= spreadY ? 'horizontal' : 'vertical'
+}
+
+function resolveCardStripTargetByAxis(
+  cards: HTMLElement[],
+  clientX: number,
+  clientY: number,
+  excludedCard?: HTMLElement
+): HTMLElement | null {
+  const axis = getCardStripPrimaryAxis(cards, excludedCard)
+  const pointerPos = axis === 'horizontal' ? clientX : clientY
+  const orderedCards = cards
+    .filter((card) => card !== excludedCard)
+    .map((card) => {
+      const rect = card.getBoundingClientRect()
+      const primaryStart = axis === 'horizontal' ? rect.left : rect.top
+      const primaryEnd = axis === 'horizontal' ? rect.right : rect.bottom
+      return {
+        card,
+        primaryCenter: (primaryStart + primaryEnd) / 2,
+      }
+    })
+    .sort((left, right) => left.primaryCenter - right.primaryCenter)
+
+  if (orderedCards.length === 0) return null
+
+  const target = orderedCards.find((candidate) => pointerPos <= candidate.primaryCenter) ?? orderedCards.at(-1)
+  return target?.card ?? null
+}
+
 function shouldActivateCardStripCard(drag: CardReorderDragState, clientX: number, clientY: number): boolean {
   if (drag.isDragging || drag.didScroll) return false
   const movedDistance = Math.abs(clientX - drag.startX) + Math.abs(clientY - drag.startY)
@@ -6219,6 +6541,7 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
       if (event.pointerType === 'mouse' && event.button !== 0) return
       if (!options.canReorder()) return
       if (cardReorderDrag) return
+      event.preventDefault()
       const fromId = options.getCardId(card)
       if (!fromId) return
       cardReorderDrag = {
@@ -6292,7 +6615,9 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
       autoScrollContainerForPointer(drag.container, event.clientX, event.clientY)
       updateCardReorderDragVisual(drag.card, drag, event.clientX, event.clientY)
       clearCardStripDragOver(drag.cards)
-      const validTarget = resolveCardStripTarget(options, event.clientX, event.clientY)
+      const validTarget =
+        resolveCardStripTarget(options, event.clientX, event.clientY) ??
+        resolveCardStripTargetByAxis(drag.cards, event.clientX, event.clientY, drag.card)
       const targetId = validTarget ? options.getCardId(validTarget) : null
       if (validTarget && targetId && targetId !== drag.fromId) {
         validTarget.classList.add('card-reorder-over')
@@ -6324,6 +6649,10 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
 
     card.addEventListener('lostpointercapture', (event) => {
       finishCardReorderDrag(event.pointerId)
+    })
+
+    card.addEventListener('dragstart', (event) => {
+      event.preventDefault()
     })
   })
 }
@@ -6361,13 +6690,11 @@ function handleHandCardActivation(button: HTMLButtonElement): void {
 }
 
 function handleOrderCardActivation(card: HTMLDivElement): void {
-  if (isTutorialLessonActive()) {
-    setTutorialFeedback('Order removal is disabled during the tutorial.')
-    return
-  }
   if (state.phase !== 'planning' || state.ready[planningPlayer] || isBotPlanningLocked()) return
   const orderId = card.dataset.orderId
+  const defId = (card.dataset.cardDefId as CardDefId | undefined) ?? null
   if (!orderId) return
+  if (!guardTutorialAction('queue_remove', { orderId, defId, turn: state.turn })) return
   if (mode === 'online') {
     sendOnlineCommand({
       type: 'remove_order',
@@ -6386,6 +6713,7 @@ function handleOrderCardActivation(card: HTMLDivElement): void {
   playerState.hand.push({ id: removed.cardId, defId: removed.defId })
   clearReady(planningPlayer)
   statusEl.textContent = 'Order removed.'
+  notifyTutorialEvent('queue_removed', { orderId, defId: removed.defId, turn: state.turn })
   clearOverlayClone()
   suppressOverlayUntil = performance.now() + 200
   card.style.visibility = 'hidden'
@@ -7006,12 +7334,15 @@ function renderLoadout(): void {
   const loadoutClass = getLoadoutClass(loadoutPlayer)
   const loadoutClassDef = PLAYER_CLASS_DEFS[loadoutClass]
   const deck = loadoutPlayer === 0 ? loadouts.p1 : loadouts.p2
+  const tutorialSession = getTutorialSession()
   loadoutToggleButton.textContent = mode === 'online' ? 'Your Deck' : `Player ${loadoutPlayer + 1}`
   loadoutToggleButton.classList.toggle('hidden', mode === 'online')
   loadoutContinueButton.classList.toggle('hidden', !(mode === 'online' && onlineSession))
   loadoutContinueButton.disabled = !(mode === 'online' && onlineSession)
   loadoutContinueButton.textContent =
     mode === 'online' && state.winner !== null ? 'Save Deck + Back to Match' : 'Continue to Match'
+  loadoutBackButton.textContent = tutorialSession ? 'Tutorial Hub' : 'Back'
+  loadoutBackButton.classList.toggle('tutorial-return-ready', Boolean(tutorialSession?.completedAt))
   loadoutCountLabel.textContent = `${deck.length}/${gameSettings.deckSize} cards | ${loadoutClassDef.name}`
   loadoutClassSelect.value = loadoutClass
   loadoutClassSelect.disabled = false
@@ -7608,11 +7939,6 @@ function handleRoguelikeMatchResultIfNeeded(): void {
     roguelikeRun.leaderHp = Math.max(1, leader?.strength ?? roguelikeRun.leaderHp)
     roguelikeRun.wins += 1
     roguelikeRun.uiStage = 'reward_choice'
-    if (isTutorialLessonActive('roguelike_run')) {
-      roguelikeRun.draftOptions = ['spell_lightning', 'move_forward', 'reinforce_boost']
-      roguelikeRun.pendingRandomReward = 'extraDraw'
-      return
-    }
     roguelikeRun.draftOptions = []
     roguelikeRun.pendingRandomReward = null
     prepareRoguelikeRewardChoiceOptions()
@@ -7737,6 +8063,8 @@ function renderMeta(): void {
   resolveAllButton.textContent = compactLabels ? 'Resolve' : 'Resolve Turn'
   gameMenuButton.textContent =
     mode === 'online' ? (compactLabels ? 'Leave' : 'Leave Match') : compactLabels ? 'Menu' : 'Main Menu'
+  gameTutorialHubButton.textContent = compactLabels ? 'Tutorial' : 'Tutorial Hub'
+  gameTutorialHubButton.classList.toggle('hidden', !isTutorialLessonActive())
   resetGameButton.textContent =
     mode === 'online'
       ? compactLabels
@@ -7749,6 +8077,14 @@ function renderMeta(): void {
         : compactLabels
           ? 'Reset'
           : 'Reset Game'
+  const tutorialSession = getTutorialSession()
+  if (tutorialSession?.completedAt && state.winner !== null) {
+    winnerMenuButton.textContent = 'Back to Tutorials'
+    winnerResetButton.textContent = 'Replay Lesson'
+    winnerRematchButton.classList.add('hidden')
+    winnerRematchButton.disabled = true
+    return
+  }
   winnerMenuButton.textContent = mode === 'online' ? 'Leave Match' : 'Main Menu'
   winnerResetButton.textContent = mode === 'online' ? 'Edit Deck' : 'Reset Game'
   winnerRematchButton.classList.toggle('hidden', mode !== 'online')
@@ -7868,6 +8204,7 @@ function renderBoardOnly(): void {
   drawBoard()
   renderUnitStatusPopover()
   renderTutorialSpotlights()
+  positionTutorialOverlay()
 }
 
 function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
@@ -10711,7 +11048,7 @@ function handleBoardClick(hex: Hex): void {
 }
 menuStartButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
-    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    setTutorialFeedback('Finish the current lesson or use Tutorial Hub.')
     return
   }
   if (mode === 'online') {
@@ -10725,7 +11062,7 @@ menuStartButton.addEventListener('click', () => {
 
 menuStartBotButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
-    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    setTutorialFeedback('Finish the current lesson or use Tutorial Hub.')
     return
   }
   if (mode === 'online') {
@@ -10743,7 +11080,7 @@ menuStartBotButton.addEventListener('click', () => {
 
 menuStartRoguelikeButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
-    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    setTutorialFeedback('Finish the current lesson or use Tutorial Hub.')
     return
   }
   if (mode === 'online') {
@@ -10769,7 +11106,7 @@ menuTutorialButton.addEventListener('click', () => {
 
 menuLoadoutButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
-    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    setTutorialFeedback('Finish the current lesson or use Tutorial Hub.')
     return
   }
   if (mode !== 'online') {
@@ -10780,7 +11117,7 @@ menuLoadoutButton.addEventListener('click', () => {
 
 menuSettingsButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
-    setTutorialFeedback('Finish the current lesson or use Back to Tutorials.')
+    setTutorialFeedback('Finish the current lesson or use Tutorial Hub.')
     return
   }
   if (mode === 'online') {
@@ -10859,8 +11196,7 @@ onlineEnterButton.addEventListener('click', () => {
 
 gameMenuButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
-    if (!guardTutorialAction('leave_match')) return
-    returnToTutorialHub()
+    leaveTutorialHubToMenu()
     return
   }
   if (mode === 'online') {
@@ -10887,17 +11223,13 @@ tutorialHubBackButton.addEventListener('click', () => {
   leaveTutorialHubToMenu()
 })
 
-tutorialPanelSkipButton.addEventListener('click', () => {
-  returnToTutorialHub()
+tutorialPanelNextButton.addEventListener('click', () => {
+  if (!guardTutorialAction('tutorial_next')) return
+  notifyTutorialEvent('manual_next')
+  syncTutorialUi()
 })
 
-tutorialPanelRestartButton.addEventListener('click', () => {
-  const session = getTutorialSession()
-  if (!session) return
-  startTutorialLesson(session.lessonId)
-})
-
-tutorialPanelBackButton.addEventListener('click', () => {
+gameTutorialHubButton.addEventListener('click', () => {
   returnToTutorialHub()
 })
 
@@ -11082,6 +11414,11 @@ readyButton.addEventListener('click', () => {
       if (pivotCard) {
         planOrder(state, 1, pivotCard.id, { unitId: 'leader-1', direction: 5 })
       }
+    } else if (state.turn === 2 && state.players[1].orders.length === 0) {
+      const boostCard = state.players[1].hand.find((card) => card.defId === 'reinforce_boost')
+      if (boostCard) {
+        planOrder(state, 1, boostCard.id, { unitId: 'u1-2' })
+      }
     }
     setPlayerReady(BOT_PLAYER, true)
     const actionPhaseStarted = tryStartActionPhase()
@@ -11125,12 +11462,14 @@ readyButton.addEventListener('click', () => {
 })
 
 resolveNextButton.addEventListener('click', () => {
+  if (!guardTutorialAction('resolve_next')) return
   if (mode === 'online' && !isOnlineResolutionReplayActive()) return
   autoResolve = false
   resolveNextActionAnimated()
 })
 
 resolveAllButton.addEventListener('click', () => {
+  if (!guardTutorialAction('resolve_all')) return
   if (mode === 'online' && !isOnlineResolutionReplayActive()) return
   autoResolve = true
   resolveNextActionAnimated()

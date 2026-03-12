@@ -92,7 +92,20 @@ body {
   overflow-x: hidden;
 }
 
+#tutorial-screen {
+  align-items: flex-start;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 #loadout-screen .menu-card.wide {
+  margin-top: 0;
+}
+
+#tutorial-screen .menu-card.wide {
   margin-top: 0;
 }
 
@@ -144,6 +157,12 @@ body {
 .loadout-actions .btn {
   min-width: 0;
   white-space: nowrap;
+}
+
+.loadout-actions .btn.tutorial-return-ready {
+  border-color: rgba(123, 216, 255, 0.72);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px rgba(123, 216, 255, 0.18);
 }
 
 .loadout-grid {
@@ -2038,60 +2057,62 @@ body.debug-cards .hidden-card {
 
 .tutorial-spotlight-frame {
   position: fixed;
-  border-radius: 16px;
+  border-radius: 14px;
   border: 2px solid rgba(123, 216, 255, 0.9);
   box-shadow:
     0 0 0 1px rgba(8, 12, 28, 0.8),
-    0 0 0 9999px rgba(4, 6, 14, 0.42),
+    0 0 0 9999px rgba(4, 6, 14, 0.12),
     0 0 28px rgba(123, 216, 255, 0.2);
   animation: tutorialPulse 1.6s ease-in-out infinite;
 }
 
 .tutorial-panel {
   position: fixed;
-  top: 24px;
-  right: 24px;
-  width: min(360px, calc(100vw - 32px));
-  padding: 18px;
-  border-radius: 18px;
+  top: 12px;
+  left: 12px;
+  width: min(250px, calc(100vw - 24px));
+  padding: 12px 13px;
+  border-radius: 12px;
   border: 1px solid rgba(123, 216, 255, 0.22);
   background:
     linear-gradient(180deg, rgba(18, 25, 48, 0.96), rgba(9, 13, 28, 0.96));
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(10px);
   z-index: 1500;
   display: grid;
-  gap: 12px;
+  gap: 8px;
+  pointer-events: none;
 }
 
 .tutorial-panel-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
 }
 
 .tutorial-panel-title {
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 700;
+  line-height: 1.2;
 }
 
 .tutorial-panel-step {
   color: var(--muted);
-  font-size: 12px;
-  margin-top: 3px;
+  font-size: 10px;
+  margin-top: 2px;
 }
 
 .tutorial-panel-body {
   color: var(--ink);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .tutorial-panel-feedback {
-  min-height: 18px;
+  min-height: 14px;
   color: #ffd3d9;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .tutorial-panel-feedback:empty {
@@ -2099,13 +2120,19 @@ body.debug-cards .hidden-card {
 }
 
 .tutorial-panel-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  pointer-events: auto;
+  justify-content: flex-end;
 }
 
 .tutorial-panel-actions .btn {
   min-width: 0;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.15;
 }
 
 @keyframes tutorialPulse {
@@ -2123,11 +2150,7 @@ body.debug-cards .hidden-card {
 
 @media (max-width: 900px) {
   .tutorial-panel {
-    top: auto;
-    right: 12px;
-    left: 12px;
-    bottom: calc(12px + env(safe-area-inset-bottom));
-    width: auto;
+    width: min(220px, calc(100vw - 20px));
   }
 }
 
@@ -2140,8 +2163,8 @@ body.debug-cards .hidden-card {
     justify-content: flex-start;
   }
 
-  .tutorial-panel-actions {
-    grid-template-columns: 1fr;
+  .tutorial-panel {
+    width: min(210px, calc(100vw - 18px));
   }
 }
 

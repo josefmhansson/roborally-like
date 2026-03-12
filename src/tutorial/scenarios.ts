@@ -5,7 +5,6 @@ import type { CardDefId, GameState, GameSettings, PlayerClassId, PlayerId, Unit 
 import type {
   TutorialLessonId,
   TutorialOnlineDemoData,
-  TutorialRoguelikeRunState,
   TutorialScenarioBootstrap,
 } from './types'
 
@@ -15,10 +14,6 @@ export function createTutorialScenarioBootstrap(lessonId: TutorialLessonId): Tut
       return createFirstBattleBootstrap()
     case 'build_deck':
       return createBuildDeckBootstrap()
-    case 'fight_bot':
-      return createFightBotBootstrap()
-    case 'roguelike_run':
-      return createRoguelikeBootstrap()
     case 'play_online':
       return createPlayOnlineBootstrap()
     default:
@@ -27,10 +22,16 @@ export function createTutorialScenarioBootstrap(lessonId: TutorialLessonId): Tut
 }
 
 function createFirstBattleBootstrap(): TutorialScenarioBootstrap {
-  const settings = createBaseSettings()
+  const settings: GameSettings = {
+    ...createBaseSettings(),
+    deckSize: 4,
+    drawPerTurn: 2,
+    actionBudgetP1: 2,
+    actionBudgetP2: 1,
+  }
   const loadouts = {
-    p1: ['move_forward', 'attack_jab'],
-    p2: ['move_pivot'],
+    p1: ['move_forward', 'reinforce_spawn', 'attack_jab', 'attack_jab'],
+    p2: ['move_pivot', 'reinforce_boost'],
   } satisfies { p1: CardDefId[]; p2: CardDefId[] }
   const playerClasses = {
     p1: 'commander',
@@ -39,15 +40,19 @@ function createFirstBattleBootstrap(): TutorialScenarioBootstrap {
   const state = createBaseTutorialState(settings, loadouts, playerClasses)
 
   state.players[0].hand = [makeCard('tut-p1-advance', 'move_forward')]
-  state.players[0].deck = [makeCard('tut-p1-jab', 'attack_jab')]
+  state.players[0].deck = [
+    makeCard('tut-p1-recruit', 'reinforce_spawn'),
+    makeCard('tut-p1-jab-1', 'attack_jab'),
+    makeCard('tut-p1-jab-2', 'attack_jab'),
+  ]
   state.players[0].discard = []
   state.players[1].hand = [makeCard('tut-p2-pivot', 'move_pivot')]
-  state.players[1].deck = []
+  state.players[1].deck = [makeCard('tut-p2-boost', 'reinforce_boost')]
   state.players[1].discard = []
   state.units['leader-0'] = makeLeader(state.units['leader-0'], 0, { q: 2, r: 4 }, 2, 5)
   state.units['leader-1'] = makeLeader(state.units['leader-1'], 1, { q: 2, r: 0 }, 3, 2)
   state.units['u0-1'] = makeUnit(state.units['u0-1'], 0, { q: 2, r: 3 }, 2, 2)
-  delete state.units['u1-2']
+  state.units['u1-2'] = makeUnit(state.units['u1-2'], 1, { q: 3, r: 0 }, 4, 2)
   finalizeState(state)
 
   return {
@@ -86,111 +91,6 @@ function createBuildDeckBootstrap(): TutorialScenarioBootstrap {
     state: createGameState(settings, loadouts, playerClasses),
     planningPlayer: 0,
     statusMessage: 'Tutorial: build a temporary deck.',
-  }
-}
-
-function createFightBotBootstrap(): TutorialScenarioBootstrap {
-  const settings = createBaseSettings()
-  const loadouts = {
-    p1: ['move_forward'],
-    p2: [],
-  } satisfies { p1: CardDefId[]; p2: CardDefId[] }
-  const playerClasses = {
-    p1: 'commander',
-    p2: 'commander',
-  } satisfies { p1: PlayerClassId; p2: PlayerClassId }
-  const state = createBaseTutorialState(settings, loadouts, playerClasses)
-
-  state.players[0].hand = [makeCard('tut-bot-advance', 'move_forward')]
-  state.players[0].deck = []
-  state.players[1].hand = []
-  state.players[1].deck = []
-  state.players[1].discard = []
-  state.units['leader-0'] = makeLeader(state.units['leader-0'], 0, { q: 2, r: 4 }, 2, 5)
-  state.units['leader-1'] = makeLeader(state.units['leader-1'], 1, { q: 2, r: 0 }, 5, 5)
-  state.units['u0-1'] = makeUnit(state.units['u0-1'], 0, { q: 2, r: 3 }, 2, 2)
-  delete state.units['u1-2']
-  finalizeState(state)
-
-  return {
-    mode: 'bot',
-    screen: 'game',
-    gameSettings: settings,
-    loadouts,
-    playerClasses,
-    state,
-    planningPlayer: 0,
-    statusMessage: 'Tutorial: queue a safe move, then watch the bot answer.',
-  }
-}
-
-function createRoguelikeBootstrap(): TutorialScenarioBootstrap {
-  const settings: GameSettings = {
-    ...createBaseSettings(),
-    victoryCondition: 'eliminate_units',
-    roguelikeEncounterId: 'slimes',
-    roguelikeMatchNumber: 1,
-  }
-  const loadouts = {
-    p1: ['attack_roguelike_basic'],
-    p2: [],
-  } satisfies { p1: CardDefId[]; p2: CardDefId[] }
-  const playerClasses = {
-    p1: 'commander',
-    p2: 'commander',
-  } satisfies { p1: PlayerClassId; p2: PlayerClassId }
-  const state = createBaseTutorialState(settings, loadouts, playerClasses)
-
-  state.players[0].hand = [makeCard('tut-rogue-attack', 'attack_roguelike_basic')]
-  state.players[0].deck = []
-  state.players[0].discard = []
-  state.players[1].hand = []
-  state.players[1].deck = []
-  state.players[1].discard = []
-  state.units['leader-0'] = makeLeader(state.units['leader-0'], 0, { q: 2, r: 4 }, 2, 6)
-  state.units['leader-1'] = makeLeader(state.units['leader-1'], 1, { q: 2, r: 0 }, 5, 5)
-  state.units['u0-1'] = makeUnit(state.units['u0-1'], 0, { q: 2, r: 2 }, 2, 2)
-  state.units['tut-monster-1'] = {
-    id: 'tut-monster-1',
-    owner: 1,
-    kind: 'unit',
-    strength: 1,
-    pos: { q: 2, r: 1 },
-    facing: 5,
-    modifiers: [],
-    roguelikeRole: 'slime_small',
-  }
-  delete state.units['u1-2']
-  finalizeState(state)
-
-  const roguelikeRun: TutorialRoguelikeRunState = {
-    wins: 0,
-    leaderHp: 6,
-    deck: ['attack_roguelike_basic'],
-    playerClass: 'commander',
-    bonusDrawPerTurn: 0,
-    bonusActionBudget: 0,
-    bonusStartingUnits: 0,
-    bonusStartingUnitStrength: 0,
-    resultHandled: false,
-    uiStage: 'reward_choice',
-    draftOptions: ['spell_lightning', 'move_forward', 'reinforce_boost'],
-    pendingRandomReward: 'extraDraw',
-    rewardNoticeMessage: null,
-    currentEncounterId: 'slimes',
-    currentMatchNumber: 1,
-  }
-
-  return {
-    mode: 'roguelike',
-    screen: 'game',
-    gameSettings: settings,
-    loadouts,
-    playerClasses,
-    state,
-    planningPlayer: 0,
-    statusMessage: 'Tutorial: finish a tiny roguelike encounter.',
-    roguelikeRun,
   }
 }
 

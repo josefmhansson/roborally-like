@@ -1,0 +1,93 @@
+{
+  "generatedAt": "2026-03-09T08:22:30.284Z",
+  "seed": "baseline-a",
+  "options": {
+    "generations": 8,
+    "population": 12,
+    "survivors": 4,
+    "roundsPerPair": 2,
+    "mutationRate": 0.18,
+    "mutationScale": 1,
+    "freshCandidates": 1,
+    "maxTurns": 60,
+    "thinkTimeMs": 12,
+    "settings": {
+      "boardRows": 6,
+      "boardCols": 6,
+      "strongholdStrength": 5,
+      "deckSize": 22,
+      "drawPerTurn": 5,
+      "maxCopies": 3,
+      "actionBudgetP1": 3,
+      "actionBudgetP2": 3
+    }
+  },
+  "best": {
+    "id": "g3-c11",
+    "summary": {
+      "points": 31.5,
+      "wins": 20,
+      "losses": 1,
+      "draws": 23,
+      "games": 44
+    },
+    "config": {
+      "thinkTimeMs": 12,
+      "beamWidth": 10,
+      "maxCandidatesPerCard": 12,
+      "heuristics": {
+        "scoring": {
+          "winValue": 1000000,
+          "strongholdDeltaWeight": 519.3162720184773,
+          "unitStrengthDeltaWeight": 41.72691012918949,
+          "unitCountDeltaWeight": 22.315747688679643,
+          "pressureDeltaWeight": 8,
+          "tacticalDeltaWeight": 10,
+          "opponentHistoryRiskWeight": -14,
+          "chainLightningOpportunityWeight": 10.951227646321058,
+          "queueTimingRiskWeight": -18
+        },
+        "pressure": {
+          "distancePressureWindow": 10
+        },
+        "tactical": {
+          "adjacentEnemyWeight": 1.8808535866439342,
+          "facingRayThreatWeight": 3.473263795580715
+        },
+        "history": {
+          "fragileUnitThreshold": 2,
+          "priors": {
+            "attack_arrow": 0.18,
+            "attack_line": 0.16,
+            "attack_fwd_lr": 0.16,
+            "spell_lightning": 0.12,
+            "spell_meteor": 0.08
+          },
+          "arrowStrongholdRayScale": 1.1419834326487035,
+          "lineRayScale": 0.7783512050658464,
+          "cleaveAdjacencyScale": 0.45,
+          "lightningFragileScale": 0.40925164477278786,
+          "meteorClusterScale": 0.34183267135793965,
+          "meteorStrongholdRayScale": 0.2150194256628553
+        },
+        "chainLightning": {
+          "basePlayChance": 0.22,
+          "adjacentTargetChance": 0.08,
+          "reachableTargetChance": 0.14986350594088438,
+          "fragileTargetChance": 0.17204612614586948,
+          "leaderTargetChance": 0.09752507647499442,
+          "minPlayChance": 0.05,
+          "maxPlayChance": 0.95,
+          "guaranteedReachableTargets": 4,
+          "guaranteedFragileTargets": 2,
+          "isolatedDurableChanceScale": 0.35
+        },
+        "timing": {
+          "lateOrderIndexRisk": 0.18,
+          "slowTailExtraRisk": 0.9583779936470092,
+          "priorityRiskScale": 0.7064629470432797
+        }
+      }
+    }
+  }
+}

@@ -11,6 +11,13 @@ import type {
   TutorialValue,
 } from './types'
 
+const COMPLETION_ALLOWED_ACTIONS = new Set<TutorialActionId>([
+  'leave_match',
+  'reset_game',
+  'winner_primary',
+  'winner_secondary',
+])
+
 export type TutorialAdvanceResult = {
   advanced: boolean
   completed: boolean
@@ -24,7 +31,7 @@ export class TutorialController {
 
   constructor(lessons: TutorialLessonDef[], progress: TutorialProgress = { completedAt: {} }) {
     this.lessons = new Map(lessons.map((lesson) => [lesson.id, lesson]))
-    this.progress = normalizeProgress(progress)
+    this.progress = normalizeProgress(progress, this.lessons)
     this.session = null
   }
 
@@ -85,7 +92,10 @@ export class TutorialController {
       return { allowed: true }
     }
     if (this.session?.completedAt) {
-      return { allowed: false, message: 'Lesson complete. Use Back to Tutorials or Restart.' }
+      if (COMPLETION_ALLOWED_ACTIONS.has(action)) {
+        return { allowed: true }
+      }
+      return { allowed: false, message: 'Lesson complete. Use Tutorial Hub to return.' }
     }
     const allowedRules = step.allowedActions ?? []
     if (allowedRules.length === 0) {
@@ -94,7 +104,11 @@ export class TutorialController {
 
     const actionRules = allowedRules.filter((rule) => rule.action === action)
     if (actionRules.length === 0) {
-      return { allowed: false, message: step.blockedMessage ?? 'Follow the current tutorial step.' }
+      const manualAdvanceRule = allowedRules.find((rule) => rule.action === 'tutorial_next')
+      return {
+        allowed: false,
+        message: manualAdvanceRule?.message ?? step.blockedMessage ?? 'Follow the current tutorial step.',
+      }
     }
 
     const matchedRule = actionRules.find((rule) => matchesPayload(rule.match, payload))
@@ -146,9 +160,18 @@ export class TutorialController {
   }
 }
 
-function normalizeProgress(progress: TutorialProgress): TutorialProgress {
+function normalizeProgress(
+  progress: TutorialProgress,
+  lessons: ReadonlyMap<TutorialLessonId, TutorialLessonDef>
+): TutorialProgress {
+  const completedAt = Object.fromEntries(
+    Object.entries(progress.completedAt ?? {}).filter(([lessonId, completedAt]) => {
+      return lessons.has(lessonId as TutorialLessonId) && typeof completedAt === 'number'
+    })
+  ) as Partial<Record<TutorialLessonId, number>>
+
   return {
-    completedAt: { ...(progress.completedAt ?? {}) },
+    completedAt,
   }
 }
 
