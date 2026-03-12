@@ -78,6 +78,7 @@ Use `build` after client/rendering changes. Use `test:server` after engine/serve
 
 - Turn-end burn/lightning-barrier replay may be embedded in the final order's log slice; client replay code needs to split those logs out instead of assuming they only appear in a separate no-order resolution step.
 - On touch, tapping an already zoomed hand card should collapse the zoom and clear that in-progress selection.
+- Movement and teleport planning selectors intentionally allow targeting tiles that are currently occupied; queue order and simulated resolution determine whether those tiles will be vacated in time.
 
 ## Good Places To Tune Visuals
 

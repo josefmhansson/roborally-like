@@ -10576,8 +10576,6 @@ function getTeleportSelectionTargets(
     .filter((tile) => {
       if (tile.q === unitSnapshot.pos.q && tile.r === unitSnapshot.pos.r) return false
       if (hexDistance(unitSnapshot.pos, tile) > effectiveMaxDistance) return false
-      const occupied = Object.values(snapshot.units).some((unit) => unit.pos.q === tile.q && unit.pos.r === tile.r)
-      if (occupied) return false
       return true
     })
 }
@@ -10786,13 +10784,11 @@ function getMoveToTileSelectionTargets(
     defId === 'attack_blade_dance' ? buildBladeDanceSelectionSnapshot(snapshot, params, player, step) : null
   const base = bladeDanceSnapshot?.base ?? getChainedTileMoveBase(snapshot, params, player, config)
   if (!base) return []
-  const occupied = bladeDanceSnapshot?.occupied ?? new Set(Object.values(snapshot.units).map((unit) => `${unit.pos.q},${unit.pos.r}`))
   const targets: Hex[] = []
   for (let direction = 0 as Direction; direction < 6; direction += 1) {
     for (let distance = 1; distance <= config.maxDistance; distance += 1) {
       const tile = stepInDirection(base, direction, distance)
       if (!isTile(tile)) break
-      if (occupied.has(`${tile.q},${tile.r}`)) continue
       targets.push(tile)
     }
   }
