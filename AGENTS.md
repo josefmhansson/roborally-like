@@ -60,6 +60,15 @@ Use `build` after client/rendering changes. Use `test:server` after engine/serve
 - Spawn village is still used and has active art.
 - Bear trap art replaces the old pitfall art, but the internal trap kind/card id still uses legacy `pitfall` naming in several code paths for compatibility.
 - Wolf enemies currently use a single art variant.
+- `attack_roguelike_pack_hunt` is intentionally alpha-wolf-only.
+- `Double Steps`, `Converge`, and `Mark` intentionally resolve movement simultaneously, including moves into tiles vacated in the same step.
+- Multi-target damage and chain effects should snapshot eligible targets at effect start so newly spawned slimes are not hit again by the same resolving effect.
+- `GameSettings.randomizeFirstPlayer` is used for online and standard local matches; roguelike runs intentionally keep their fixed opener.
+
+## Roguelike UI Notes
+
+- Roguelike reward selection uses rendered card UI, not plain text buttons.
+- Remove-card rewards use the winner modal with `uiStage = 'remove_choice'` and present the current deck as removable card options.
 
 ## Good Places To Tune Visuals
 

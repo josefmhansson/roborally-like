@@ -379,6 +379,7 @@ function normalizeSettings(input?: GameSettings): GameSettings {
     maxCopies: toBoundedInt(input.maxCopies, defaults.maxCopies, 1, 10),
     actionBudgetP1: toBoundedInt(input.actionBudgetP1, defaults.actionBudgetP1, 1, 10),
     actionBudgetP2: toBoundedInt(input.actionBudgetP2, defaults.actionBudgetP2, 1, 10),
+    randomizeFirstPlayer: true,
   }
 }
 

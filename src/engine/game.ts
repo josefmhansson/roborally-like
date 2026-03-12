@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS = {
   maxCopies: 3,
   actionBudgetP1: 3,
   actionBudgetP2: 3,
+  randomizeFirstPlayer: false,
   victoryCondition: 'leader' as VictoryCondition,
 }
 
@@ -101,6 +102,14 @@ function isLeaderUnit(unit: Unit): boolean {
 
 function canActAsUnit(unit: Unit): boolean {
   return unit.kind === 'unit' || unit.kind === 'leader'
+}
+
+function canUnitActWithCard(defId: CardDefId, unit: Unit): boolean {
+  if (!canActAsUnit(unit)) return false
+  if (defId === 'attack_roguelike_pack_hunt') {
+    return unit.roguelikeRole === 'alpha_wolf'
+  }
+  return true
 }
 
 function canTriggerTraps(unit: Unit): boolean {
@@ -348,7 +357,7 @@ function isActingUnitRequirement(defId: CardDefId): boolean {
 
 export function canCardSelectUnit(defId: CardDefId, unit: Unit): boolean {
   if (isActingUnitRequirement(defId)) {
-    return canActAsUnit(unit)
+    return canUnitActWithCard(defId, unit)
   }
   return canCardTargetUnit(defId, unit)
 }
@@ -549,7 +558,7 @@ export function createGameState(
     players,
     ready: [false, false],
     actionBudgets: [settings.actionBudgetP1, settings.actionBudgetP2],
-    activePlayer: 0,
+    activePlayer: settings.randomizeFirstPlayer ? (Math.random() < 0.5 ? 0 : 1) : 0,
     phase: 'planning',
     actionQueue: [],
     actionIndex: 0,
@@ -1030,7 +1039,11 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
 
   for (const order of state.players[player].orders) {
     const def = CARD_DEFS[order.defId]
-    const context: OrderResolutionContext = { movedUnitOrigins: {}, lastMoveSucceededByUnit: {} }
+    const context: OrderResolutionContext = {
+      movedUnitOrigins: {},
+      lastMoveSucceededByUnit: {},
+      resolvedCompositeEffects: new Set(),
+    }
     for (const effect of def.effects) {
       if (effect.type === 'move') {
         const params = order.params
@@ -1062,6 +1075,20 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
         continue
       }
       if (effect.type === 'moveToTile') {
+        if (order.defId === 'move_double_steps') {
+          if (context.resolvedCompositeEffects.has('move_double_steps')) continue
+          const beforePositions = new Map<string, Hex>()
+          Object.values(sim.units).forEach((unit) => {
+            beforePositions.set(unit.id, { ...unit.pos })
+          })
+          applyEffect(sim, order, effect, context)
+          beforePositions.forEach((from, unitId) => {
+            const afterUnit = sim.units[unitId]
+            if (!afterUnit || sameHex(from, afterUnit.pos)) return
+            segments.push({ from, to: { ...afterUnit.pos } })
+          })
+          continue
+        }
         const rawUnitId = getOrderUnitParam(order.params, effect.unitParam)
         if (!rawUnitId) continue
         const resolvedUnitId = resolveUnitId(sim, order.player, rawUnitId)
@@ -1267,7 +1294,7 @@ function validateUnitRequirementParam(
     if (!unit) return false
     if (unit.owner !== player) return false
     if (requireActingUnit) {
-      if (!canActAsUnit(unit)) return false
+      if (!canUnitActWithCard(defId, unit)) return false
       return true
     }
     return canCardTargetUnit(defId, unit)
@@ -1299,7 +1326,9 @@ function validateOrderParams(
     def.requires.unit2 &&
     !validateUnitRequirementParam(state, player, defId, def.requires.unit2, params.unitId2, 'unitId2', fallbackState)
   ) {
-    return false
+    if (defId !== 'move_double_steps' || hasResolvableDoubleStepsFollowUp(state, player, params.unitId, params.tile)) {
+      return false
+    }
   }
   if (def.requires.unit2 && params.unitId && params.unitId2) {
     if (normalizeLegacyLeaderUnitId(params.unitId) === normalizeLegacyLeaderUnitId(params.unitId2)) return false
@@ -1328,8 +1357,13 @@ function validateOrderParams(
     if (!params.tile || sameHex(params.tile, params.tile2)) return false
   }
   if (def.requires.tile2 === 'any') {
-    if (!params.tile2) return false
-    if (!inBounds(state.boardRows, state.boardCols, params.tile2)) return false
+    if (!params.tile2) {
+      if (defId !== 'move_double_steps' || hasResolvableDoubleStepsFollowUp(state, player, params.unitId, params.tile)) {
+        return false
+      }
+    } else if (!inBounds(state.boardRows, state.boardCols, params.tile2)) {
+      return false
+    }
   }
   if (def.requires.tile3 === 'any') {
     if (!params.tile3) return false
@@ -1994,6 +2028,166 @@ function moveUnitFormation(state: GameState, unitIds: UnitId[], direction: Direc
   })
 }
 
+type SimultaneousMovePlan = {
+  unitId: UnitId
+  target: Hex
+  faceMovedDirection?: boolean
+}
+
+type SimultaneousMoveResolution = {
+  plans: Map<UnitId, { unit: Unit; target: Hex; direction: Direction; faceMovedDirection: boolean }>
+  movable: Set<UnitId>
+  cannotMove: Set<UnitId>
+}
+
+function resolveSimultaneousMovePlans(state: GameState, plans: SimultaneousMovePlan[]): SimultaneousMoveResolution {
+  const resolvedPlans = new Map<UnitId, { unit: Unit; target: Hex; direction: Direction; faceMovedDirection: boolean }>()
+
+  plans.forEach((plan) => {
+    const unit = state.units[plan.unitId]
+    if (!unit || !canActAsUnit(unit)) return
+    if (!inBounds(state.boardRows, state.boardCols, plan.target)) return
+    const direction = getDirectionToAdjacentTile(unit.pos, plan.target)
+    if (direction === null) return
+    resolvedPlans.set(plan.unitId, {
+      unit,
+      target: { ...plan.target },
+      direction,
+      faceMovedDirection: plan.faceMovedDirection === true,
+    })
+  })
+
+  const cannotMove = new Set<UnitId>()
+  resolvedPlans.forEach((plan, unitId) => {
+    if (hasUnitModifier(plan.unit, 'cannotMove') || hasUnitModifier(plan.unit, 'stunned')) {
+      cannotMove.add(unitId)
+    }
+  })
+
+  const movable = new Set<UnitId>([...resolvedPlans.keys()].filter((unitId) => !cannotMove.has(unitId)))
+
+  let changed = true
+  while (changed) {
+    changed = false
+    const targetCounts = new Map<string, number>()
+    movable.forEach((unitId) => {
+      const plan = resolvedPlans.get(unitId)
+      if (!plan) return
+      const key = `${plan.target.q},${plan.target.r}`
+      targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1)
+    })
+
+    for (const unitId of [...movable]) {
+      const plan = resolvedPlans.get(unitId)
+      if (!plan) {
+        movable.delete(unitId)
+        changed = true
+        continue
+      }
+
+      const targetKey = `${plan.target.q},${plan.target.r}`
+      if ((targetCounts.get(targetKey) ?? 0) > 1) {
+        movable.delete(unitId)
+        changed = true
+        continue
+      }
+
+      const occupant = getUnitAt(state, plan.target)
+      if (!occupant || occupant.id === unitId) continue
+      if (!resolvedPlans.has(occupant.id) || !movable.has(occupant.id)) {
+        movable.delete(unitId)
+        changed = true
+      }
+    }
+  }
+
+  return { plans: resolvedPlans, movable, cannotMove }
+}
+
+function canResolveSimultaneousMoves(state: GameState, plans: SimultaneousMovePlan[]): boolean {
+  const resolution = resolveSimultaneousMovePlans(state, plans)
+  return resolution.plans.size > 0 && resolution.movable.size === resolution.plans.size
+}
+
+function executeSimultaneousMoves(state: GameState, plans: SimultaneousMovePlan[]): void {
+  const resolution = resolveSimultaneousMovePlans(state, plans)
+  const stoppedByTrap = new Set<UnitId>()
+
+  resolution.cannotMove.forEach((unitId) => {
+    state.log.push(`Unit ${unitId} cannot move this turn.`)
+  })
+
+  resolution.movable.forEach((unitId) => {
+    const plan = resolution.plans.get(unitId)
+    if (!plan) return
+    setUnitPosition(plan.unit, { ...plan.target })
+  })
+
+  resolution.movable.forEach((unitId) => {
+    const liveUnit = state.units[unitId]
+    if (!liveUnit) return
+    const trapResolution = triggerTrapAtCurrentTile(state, liveUnit)
+    if (trapResolution.stopMovement) {
+      stoppedByTrap.add(unitId)
+    }
+    const surviving = state.units[unitId]
+    if (!surviving) return
+    const plan = resolution.plans.get(unitId)
+    if (plan?.faceMovedDirection) {
+      surviving.facing = plan.direction
+      state.log.push(`Unit ${surviving.id} faces ${plan.direction}.`)
+    }
+    recordSlowMovement(surviving, 1)
+  })
+
+  resolution.plans.forEach((plan, unitId) => {
+    if (!resolution.movable.has(unitId)) {
+      if (!resolution.cannotMove.has(unitId)) {
+        state.log.push(`Unit ${unitId} cannot move.`)
+      }
+      return
+    }
+    const liveUnit = state.units[unitId]
+    const finalPos = liveUnit?.pos ?? plan.target
+    state.log.push(`Unit ${unitId} moves to ${finalPos.q},${finalPos.r}.`)
+    if (stoppedByTrap.has(unitId)) {
+      state.log.push(`Unit ${unitId} is stopped by a trap.`)
+    }
+  })
+}
+
+function hasResolvableDoubleStepsFollowUp(
+  state: GameState,
+  player: PlayerId,
+  firstUnitId: string | undefined,
+  firstTile: Hex | undefined
+): boolean {
+  if (!firstUnitId || !firstTile) return false
+  const resolvedFirstUnitId = resolveUnitId(state, player, firstUnitId)
+  if (!resolvedFirstUnitId) return false
+  const firstUnit = state.units[resolvedFirstUnitId]
+  if (!firstUnit || !canActAsUnit(firstUnit)) return false
+
+  return Object.values(state.units).some((unit) => {
+    if (unit.owner !== player || unit.id === resolvedFirstUnitId || !canActAsUnit(unit)) {
+      return false
+    }
+    for (let direction = 0 as Direction; direction < 6; direction += 1) {
+      const candidate = neighbor(unit.pos, direction)
+      if (!inBounds(state.boardRows, state.boardCols, candidate)) continue
+      if (
+        canResolveSimultaneousMoves(state, [
+          { unitId: resolvedFirstUnitId, target: firstTile },
+          { unitId: unit.id, target: candidate },
+        ])
+      ) {
+        return true
+      }
+    }
+    return false
+  })
+}
+
 function teleportUnit(state: GameState, unit: Unit, target: Hex, maxDistance: number): boolean {
   if (!canActAsUnit(unit)) return false
   if (hasUnitModifier(unit, 'cannotMove') || hasUnitModifier(unit, 'stunned')) {
@@ -2114,6 +2308,7 @@ function pushUnit(state: GameState, unit: Unit, direction: Direction, distance: 
 type OrderResolutionContext = {
   movedUnitOrigins: Record<string, Hex>
   lastMoveSucceededByUnit: Record<string, boolean>
+  resolvedCompositeEffects: Set<string>
 }
 
 function getPrimaryActingUnit(state: GameState, order: Order): Unit | null {
@@ -2123,7 +2318,7 @@ function getPrimaryActingUnit(state: GameState, order: Order): Unit | null {
   const resolved = resolveUnitId(state, order.player, rawUnitId)
   if (!resolved) return null
   const unit = state.units[resolved]
-  if (!unit || !canActAsUnit(unit)) return null
+  if (!unit || !canUnitActWithCard(order.defId, unit)) return null
   return unit
 }
 
@@ -2138,7 +2333,11 @@ function applyOrder(state: GameState, order: Order): void {
       return
     }
   }
-  const context: OrderResolutionContext = { movedUnitOrigins: {}, lastMoveSucceededByUnit: {} }
+  const context: OrderResolutionContext = {
+    movedUnitOrigins: {},
+    lastMoveSucceededByUnit: {},
+    resolvedCompositeEffects: new Set(),
+  }
   syncCommanderAuraStrong(state)
   for (const effect of def.effects) {
     applyEffect(state, order, effect, context)
@@ -2155,7 +2354,11 @@ function applyOrderForPlanning(state: GameState, order: Order): void {
     if (!actingUnit) return
     if (hasUnitModifier(actingUnit, 'stunned')) return
   }
-  const context: OrderResolutionContext = { movedUnitOrigins: {}, lastMoveSucceededByUnit: {} }
+  const context: OrderResolutionContext = {
+    movedUnitOrigins: {},
+    lastMoveSucceededByUnit: {},
+    resolvedCompositeEffects: new Set(),
+  }
   syncCommanderAuraStrong(state)
   for (const effect of def.effects) {
     if (effect.type === 'budget' || effect.type === 'chainLightning') continue
@@ -2174,7 +2377,7 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
     const resolved = resolveUnitId(state, order.player, params.unitId)
     if (!resolved) return false
     const unit = state.units[resolved]
-    if (!unit || !canActAsUnit(unit)) return false
+    if (!unit || !canUnitActWithCard(order.defId, unit)) return false
   }
   if (def.requires.unit2 && params.unitId && params.unitId2) {
     if (normalizeLegacyLeaderUnitId(params.unitId) === normalizeLegacyLeaderUnitId(params.unitId2)) return false
@@ -2230,13 +2433,36 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
     if (effect.type === 'moveToTile') {
       const rawUnitId = getOrderUnitParam(params, effect.unitParam)
       const tile = getOrderTileParam(params, effect.tileParam)
-      if (!rawUnitId || !tile) return false
+      if (!rawUnitId || !tile) {
+        if (order.defId === 'move_double_steps' && effect.unitParam === 'unitId2' && !rawUnitId && !tile) {
+          continue
+        }
+        return false
+      }
       const resolved = resolveUnitId(state, order.player, rawUnitId)
       if (!resolved) return false
       const unit = state.units[resolved]
       if (!unit || !canActAsUnit(unit)) return false
       if (!inBounds(state.boardRows, state.boardCols, tile)) return false
       if (getDirectionToAdjacentTile(unit.pos, tile) === null) return false
+      if (order.defId === 'move_double_steps') {
+        const firstUnitId =
+          effect.unitParam === 'unitId'
+            ? resolved
+            : params.unitId
+              ? resolveUnitId(state, order.player, params.unitId)
+              : null
+        const firstTile = effect.unitParam === 'unitId' ? tile : params.tile
+        const plans: SimultaneousMovePlan[] = []
+        if (firstUnitId && firstTile) {
+          plans.push({ unitId: firstUnitId, target: firstTile })
+        }
+        if (effect.unitParam === 'unitId2') {
+          plans.push({ unitId: resolved, target: tile })
+        }
+        if (!canResolveSimultaneousMoves(state, plans)) return false
+        continue
+      }
       const occupyingUnit = getUnitAt(state, tile)
       if (occupyingUnit && occupyingUnit.id !== unit.id) return false
       continue
@@ -2583,6 +2809,37 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       return
     }
     case 'moveToTile': {
+      if (order.defId === 'move_double_steps') {
+        if (context.resolvedCompositeEffects.has('move_double_steps')) return
+        context.resolvedCompositeEffects.add('move_double_steps')
+        const firstUnitId = getOrderUnitParam(params, 'unitId')
+        const firstTile = getOrderTileParam(params, 'tile')
+        const secondUnitId = getOrderUnitParam(params, 'unitId2')
+        const secondTile = getOrderTileParam(params, 'tile2')
+        const firstResolved = firstUnitId ? resolveUnitId(state, order.player, firstUnitId) : null
+        const secondResolved = secondUnitId ? resolveUnitId(state, order.player, secondUnitId) : null
+        const plans: SimultaneousMovePlan[] = []
+        if (firstResolved && firstTile) {
+          if (!context.movedUnitOrigins[firstResolved]) {
+            context.movedUnitOrigins[firstResolved] = { ...state.units[firstResolved].pos }
+          }
+          plans.push({ unitId: firstResolved, target: firstTile })
+        }
+        if (secondResolved && secondTile) {
+          if (!context.movedUnitOrigins[secondResolved]) {
+            context.movedUnitOrigins[secondResolved] = { ...state.units[secondResolved].pos }
+          }
+          plans.push({ unitId: secondResolved, target: secondTile })
+        }
+        executeSimultaneousMoves(state, plans)
+        ;([firstResolved, secondResolved] as Array<UnitId | null>).forEach((unitId) => {
+          if (!unitId) return
+          const origin = context.movedUnitOrigins[unitId]
+          const movedUnit = state.units[unitId]
+          context.lastMoveSucceededByUnit[unitId] = Boolean(origin && movedUnit && !sameHex(origin, movedUnit.pos))
+        })
+        return
+      }
       const rawUnitId = getOrderUnitParam(params, effect.unitParam)
       const tile = getOrderTileParam(params, effect.tileParam)
       if (!rawUnitId || !tile) return
@@ -2632,17 +2889,26 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
     case 'damageTileArea': {
       const tile = params.tile
       if (!tile) return
-      const centerUnit = getUnitAt(state, tile)
-      if (centerUnit && isDamageableUnit(centerUnit)) {
-        applyDamage(state, centerUnit, effect.centerAmount, null, order.defId)
-      }
+      const centerUnitId = getUnitAt(state, tile)?.id
+      const splashTargetIds: UnitId[] = []
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const neighborTile = neighbor(tile, dir)
         if (!inBounds(state.boardRows, state.boardCols, neighborTile)) continue
         const target = getUnitAt(state, neighborTile)
         if (!target || !isDamageableUnit(target)) continue
-        applyDamage(state, target, effect.splashAmount, null, order.defId)
+        splashTargetIds.push(target.id)
       }
+      if (centerUnitId) {
+        const centerUnit = state.units[centerUnitId]
+        if (centerUnit && isDamageableUnit(centerUnit)) {
+          applyDamage(state, centerUnit, effect.centerAmount, null, order.defId)
+        }
+      }
+      splashTargetIds.forEach((targetId) => {
+        const target = state.units[targetId]
+        if (!target || !isDamageableUnit(target)) return
+        applyDamage(state, target, effect.splashAmount, null, order.defId)
+      })
       return
     }
     case 'damageRadius': {
@@ -2736,7 +3002,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
       if (getDirectionToAdjacentTile(actingUnit.pos, tile) === null) return
-      const participants = getCommanderSupportParticipants(state, order.player, tile, actingUnit.id)
+      const participants = [actingUnit, ...getCommanderSupportParticipants(state, order.player, tile, actingUnit.id)]
       applyRepeatedUnitSourcedDamage(state, participants, effect.damagePerAdjacentAlly, order.defId, () => {
         const target = getUnitAt(state, tile)
         if (!target || !canCardTargetUnit(order.defId, target)) return null
@@ -2817,9 +3083,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         damage = getRoguelikeSlowAttackDamage(state)
       }
       const directions = resolveDirections(unit.facing, params, effect.directions)
-      directions.forEach((dir) => {
-        const targets = getAttackTargets(state, unit, effect.mode, dir, effect.maxRange)
-        targets.forEach((target) => applyDamage(state, target, damage, unit))
+      const targetIds = directions.flatMap((dir) =>
+        getAttackTargets(state, unit, effect.mode, dir, effect.maxRange).map((target) => target.id)
+      )
+      targetIds.forEach((targetId) => {
+        const target = state.units[targetId]
+        if (!target) return
+        applyDamage(state, target, damage, unit)
       })
       return
     }
@@ -2829,12 +3099,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const unit = state.units[resolvedUnitId]
       if (!unit || !canActAsUnit(unit)) return
       const directions = resolveDirections(unit.facing, params, effect.directions)
-      directions.forEach((dir) => {
-        const targets = getAttackTargets(state, unit, effect.mode, dir, effect.maxRange)
-        targets.forEach((target) => {
-          if (!canCardTargetUnit(order.defId, target)) return
-          addUnitModifier(state, target, effect.modifier, effect.turns)
-        })
+      const targetIds = directions.flatMap((dir) =>
+        getAttackTargets(state, unit, effect.mode, dir, effect.maxRange).map((target) => target.id)
+      )
+      targetIds.forEach((targetId) => {
+        const target = state.units[targetId]
+        if (!target || !canCardTargetUnit(order.defId, target)) return
+        addUnitModifier(state, target, effect.modifier, effect.turns)
       })
       return
     }
@@ -2848,14 +3119,15 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         const target = getAttackTargets(state, unit, 'line', dir, effect.maxRange)[0]
         if (!target || !canCardTargetUnit(order.defId, target)) return
         const targetPos = { ...target.pos }
-        applyDamage(state, target, effect.damage, unit, order.defId)
-        Object.values(state.units)
+        const splashTargetIds = Object.values(state.units)
           .filter((candidate) => candidate.id !== target.id && hexDistance(candidate.pos, targetPos) <= effect.splashRadius)
-          .forEach((candidate) => {
-            const splashTarget = state.units[candidate.id]
-            if (!splashTarget || !canCardTargetUnit(order.defId, splashTarget)) return
-            applyDamage(state, splashTarget, effect.damage, unit, order.defId)
-          })
+          .map((candidate) => candidate.id)
+        applyDamage(state, target, effect.damage, unit, order.defId)
+        splashTargetIds.forEach((targetId) => {
+          const splashTarget = state.units[targetId]
+          if (!splashTarget || !canCardTargetUnit(order.defId, splashTarget)) return
+          applyDamage(state, splashTarget, effect.damage, unit, order.defId)
+        })
       })
       return
     }
@@ -2922,13 +3194,19 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
 
+      const targetIds: UnitId[] = []
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const targetTile = neighbor(actingUnit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
         const target = getUnitAt(state, targetTile)
         if (!target || !canCardTargetUnit(order.defId, target)) continue
-        applyDamage(state, target, effect.amount, actingUnit, order.defId)
+        targetIds.push(target.id)
       }
+      targetIds.forEach((targetId) => {
+        const target = state.units[targetId]
+        if (!target) return
+        applyDamage(state, target, effect.amount, actingUnit, order.defId)
+      })
       return
     }
     case 'stunAdjacent': {
@@ -2936,13 +3214,19 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!resolvedUnitId) return
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
+      const targetIds: UnitId[] = []
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const targetTile = neighbor(actingUnit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
         const target = getUnitAt(state, targetTile)
         if (!target || !canCardTargetUnit(order.defId, target)) continue
-        addUnitModifier(state, target, 'stunned', effect.turns)
+        targetIds.push(target.id)
       }
+      targetIds.forEach((targetId) => {
+        const target = state.units[targetId]
+        if (!target) return
+        addUnitModifier(state, target, 'stunned', effect.turns)
+      })
       return
     }
     case 'chainLightning': {
@@ -2950,12 +3234,15 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!resolvedUnitId) return
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
+      const eligibleTargetIds = new Set(Object.keys(state.units))
 
       const visited = new Set<string>([actingUnit.id])
       const path: string[] = []
       let currentOrigin = { ...actingUnit.pos }
       while (state.winner === null) {
-        const candidates = getAdjacentChainLightningTargets(state, currentOrigin, visited, order.defId)
+        const candidates = getAdjacentChainLightningTargets(state, currentOrigin, visited, order.defId).filter((target) =>
+          eligibleTargetIds.has(target.id)
+        )
         if (candidates.length === 0) break
         const choiceIndex = Math.floor(Math.random() * candidates.length)
         const target = candidates[Math.max(0, Math.min(choiceIndex, candidates.length - 1))]
@@ -3037,18 +3324,23 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
 
+      const targetsByDirection: Array<{ direction: Direction; targetId: UnitId }> = []
       for (let dir = 0 as Direction; dir < 6; dir += 1) {
         const targetTile = neighbor(actingUnit.pos, dir)
         if (!inBounds(state.boardRows, state.boardCols, targetTile)) continue
         const target = getUnitAt(state, targetTile)
         if (!target) continue
         if (!canCardTargetUnit(order.defId, target)) continue
-        applyDamage(state, target, effect.damage, actingUnit)
-
-        const surviving = state.units[target.id]
-        if (!surviving) continue
-        pushUnit(state, surviving, dir, effect.pushDistance)
+        targetsByDirection.push({ direction: dir, targetId: target.id })
       }
+      targetsByDirection.forEach(({ direction, targetId }) => {
+        const target = state.units[targetId]
+        if (!target) return
+        applyDamage(state, target, effect.damage, actingUnit)
+        const surviving = state.units[targetId]
+        if (!surviving) return
+        pushUnit(state, surviving, direction, effect.pushDistance)
+      })
       return
     }
     case 'moveAdjacentFriendlyGroup': {
@@ -3087,7 +3379,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const resolvedUnitId = params.unitId ? resolveUnitId(state, order.player, params.unitId) : null
       if (!resolvedUnitId || params.direction === undefined) return
       const actingUnit = state.units[resolvedUnitId]
-      if (!actingUnit || !canActAsUnit(actingUnit)) return
+      if (!actingUnit || !canUnitActWithCard(order.defId, actingUnit)) return
       actingUnit.facing = params.direction
       moveUnit(state, actingUnit, params.direction, effect.moveDistance)
       const actorAfterMove = state.units[resolvedUnitId]
@@ -3112,36 +3404,39 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!targetUnit) return
       if (!isCardTargetUnitAllowedForPlayer(order.defId, order.player, targetUnit)) return
       const targetPos = { ...targetUnit.pos }
-      const allies = Object.values(state.units)
+      const plans = Object.values(state.units)
         .filter((unit) => unit.owner === order.player && canActAsUnit(unit))
         .sort((a, b) => hexDistance(b.pos, targetPos) - hexDistance(a.pos, targetPos))
-      allies.forEach((ally) => {
-        const live = state.units[ally.id]
-        if (!live || !canActAsUnit(live)) return
-        const direction = getClosestDirectionToward(state, live, targetPos)
-        if (direction === null) return
-        moveUnit(state, live, direction, effect.distance)
-      })
+        .map<SimultaneousMovePlan | null>((ally) => {
+          const live = state.units[ally.id]
+          if (!live || !canActAsUnit(live)) return null
+          const direction = getClosestDirectionToward(state, live, targetPos)
+          if (direction === null) return null
+          return { unitId: live.id, target: neighbor(live.pos, direction) }
+        })
+        .filter((plan): plan is SimultaneousMovePlan => plan !== null)
+      executeSimultaneousMoves(state, plans)
       return
     }
     case 'convergeTowardTile': {
       const tile = getOrderTileParam(params, effect.tileParam)
       if (!tile) return
-      const allies = Object.values(state.units)
+      const plans = Object.values(state.units)
         .filter((unit) => unit.owner === order.player && canActAsUnit(unit))
         .sort((a, b) => hexDistance(b.pos, tile) - hexDistance(a.pos, tile))
-      allies.forEach((ally) => {
-        const live = state.units[ally.id]
-        if (!live || !canActAsUnit(live)) return
-        const direction = getClosestDirectionToward(state, live, tile)
-        if (direction === null) return
-        const start = { ...live.pos }
-        moveUnit(state, live, direction, effect.distance)
-        const movedUnit = state.units[ally.id]
-        if (!movedUnit || sameHex(start, movedUnit.pos) || effect.faceMovedDirection !== true) return
-        movedUnit.facing = direction
-        state.log.push(`Unit ${movedUnit.id} faces ${direction}.`)
-      })
+        .map<SimultaneousMovePlan | null>((ally) => {
+          const live = state.units[ally.id]
+          if (!live || !canActAsUnit(live)) return null
+          const direction = getClosestDirectionToward(state, live, tile)
+          if (direction === null) return null
+          return {
+            unitId: live.id,
+            target: neighbor(live.pos, direction),
+            faceMovedDirection: effect.faceMovedDirection === true,
+          }
+        })
+        .filter((plan): plan is SimultaneousMovePlan => plan !== null)
+      executeSimultaneousMoves(state, plans)
       return
     }
     default:

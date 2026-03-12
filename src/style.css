@@ -548,7 +548,7 @@ input[type='number'] {
 }
 
 .winner-card {
-  width: min(420px, 100%);
+  width: min(980px, 100%);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 20px;
@@ -570,10 +570,12 @@ input[type='number'] {
 }
 
 .winner-extra {
-  display: grid;
-  gap: 8px;
-  max-height: 240px;
-  overflow-y: auto;
+  display: flex;
+  gap: 12px;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
 }
 
 .winner-extra:empty {
@@ -582,6 +584,17 @@ input[type='number'] {
 
 .winner-option {
   width: 100%;
+}
+
+.winner-reward-card {
+  --card-scale: 1;
+  flex: 0 0 auto;
+  width: var(--card-width);
+  min-height: var(--card-height);
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
 }
 
 .card-rows {

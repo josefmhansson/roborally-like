@@ -655,7 +655,7 @@ type HarpoonAnimation = {
 }
 type FlameThrowerAnimation = { type: 'flameThrower'; from: Hex; to: Hex; duration: number }
 type IceBoltAnimation = { type: 'iceBolt'; from: Hex; to: Hex; target?: Hex; duration: number }
-type FireballAnimation = { type: 'fireball'; from: Hex; to: Hex; duration: number }
+type FireballAnimation = { type: 'fireball'; from: Hex; to: Hex; duration: number; fizzle?: boolean }
 type BlizzardAnimation = { type: 'blizzard'; target: Hex; radius: number; duration: number }
 type LightningBarrierAnimation = { type: 'lightningBarrier'; arcs: Array<{ from: Hex; to: Hex }>; duration: number }
 type BrainFreezeAnimation = { type: 'brainFreeze'; duration: number }
@@ -923,7 +923,16 @@ let loadouts: { p1: CardDefId[]; p2: CardDefId[] } = {
   p2: STARTING_DECK.slice(0, gameSettings.deckSize),
 }
 let playerClasses: PlayerClasses = { ...DEFAULT_PLAYER_CLASSES }
-let state = createGameState(gameSettings, loadouts, playerClasses)
+
+function createStandardMatchState(
+  settings: GameSettings = gameSettings,
+  decks: { p1: CardDefId[]; p2: CardDefId[] } = loadouts,
+  classes: PlayerClasses = playerClasses
+): GameState {
+  return createGameState({ ...settings, randomizeFirstPlayer: true }, decks, classes)
+}
+
+let state = createStandardMatchState()
 let planningPlayer: PlayerId = 0
 let selectedCardId: string | null = null
 let pendingOrder: { cardId: string; params: OrderParams } | null = null
@@ -994,6 +1003,7 @@ const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
   extraAp: 2,
   extraStartingUnit: 5,
   unitStrength: 5,
+  removeCard: 4,
 } as const
 const ROGUELIKE_STARTING_DECK: CardDefId[] = [
   'reinforce_spawn',
@@ -1008,7 +1018,7 @@ const ROGUELIKE_STARTING_DECK: CardDefId[] = [
 ]
 
 type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
-type RoguelikeUiStage = 'reward_choice' | 'reward_notice' | 'run_over'
+type RoguelikeUiStage = 'reward_choice' | 'reward_notice' | 'remove_choice' | 'run_over'
 
 type RoguelikeEncounterUnitRole = NonNullable<Unit['roguelikeRole']>
 
@@ -1348,6 +1358,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   const uiStage =
     source.uiStage === 'reward_choice' ||
     source.uiStage === 'reward_notice' ||
+    source.uiStage === 'remove_choice' ||
     source.uiStage === 'run_over'
       ? source.uiStage
       : 'reward_choice'
@@ -2681,7 +2692,7 @@ function resetGameState(statusMessage: string): void {
   resetCardVisualState()
   clearActionAnimationState()
   sanitizeLoadoutsForCurrentClasses()
-  state = createGameState(gameSettings, loadouts, playerClasses)
+  state = createStandardMatchState()
   resetLocalTelemetryForCurrentMatch()
   suppressWinnerModalForRestoredOutcome = false
   planningPlayer = isBotControlledMode() ? BOT_HUMAN_PLAYER : 0
@@ -3533,7 +3544,7 @@ function drawStrengthDots(
   previewStrength: number | null,
   baseColor: string
 ): void {
-  const strength = previewStrength !== null ? Math.max(baseStrength, previewStrength) : baseStrength
+  const strength = previewStrength !== null ? Math.max(0, previewStrength) : baseStrength
   if (strength <= 0) return
   const dotRadius = Math.max(2, layout.size * 0.07)
   const orbHeight = dotRadius * 2
@@ -4388,7 +4399,7 @@ function applyTutorialBootstrap(bootstrap: TutorialScenarioBootstrap): void {
     state = cloneGameState(bootstrap.state)
     normalizeLeaderUnitsInState(state)
   } else {
-    state = createGameState(gameSettings, loadouts, playerClasses)
+    state = createStandardMatchState()
   }
   roguelikeRun = cloneRoguelikeRunState((bootstrap.roguelikeRun as RoguelikeRunState | null | undefined) ?? null)
   planningPlayer = bootstrap.planningPlayer ?? 0
@@ -5289,7 +5300,7 @@ function drawFireballAnimation(animation: FireballAnimation, progress: number): 
   ctx.arc(orb.x, orb.y, radius * 1.6, 0, Math.PI * 2)
   ctx.fill()
 
-  if (progress > 0.66) {
+  if (!animation.fizzle && progress > 0.66) {
     const burstT = (progress - 0.66) / 0.34
     const burstRadius = layout.size * (0.28 + burstT * 1.35)
     ctx.globalAlpha = Math.max(0.12, 0.88 - burstT * 0.58)
@@ -6130,13 +6141,16 @@ function drawPlannedMoves(snapshot: GameState): void {
 }
 
 function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringColor: string): void {
+  const ghostScale = Math.max(1, Math.ceil(window.devicePixelRatio || 1))
   const ghostSize = Math.ceil(layout.size * 4)
-  if (ghostCanvas.width !== ghostSize) {
-    ghostCanvas.width = ghostSize
-    ghostCanvas.height = ghostSize
+  const ghostPixelSize = ghostSize * ghostScale
+  if (ghostCanvas.width !== ghostPixelSize || ghostCanvas.height !== ghostPixelSize) {
+    ghostCanvas.width = ghostPixelSize
+    ghostCanvas.height = ghostPixelSize
   }
   ghostCtx.setTransform(1, 0, 0, 1, 0, 0)
   ghostCtx.clearRect(0, 0, ghostCanvas.width, ghostCanvas.height)
+  ghostCtx.setTransform(ghostScale, 0, 0, ghostScale, 0, 0)
 
   const localCenter = { x: ghostCanvas.width / 2, y: ghostCanvas.height / 2 }
   if (unit.kind === 'barricade') {
@@ -6232,7 +6246,17 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
 
   ctx.save()
   ctx.globalAlpha = GHOST_ALPHA
-  ctx.drawImage(ghostCanvas, center.x - localCenter.x, center.y - localCenter.y)
+  ctx.drawImage(
+    ghostCanvas,
+    0,
+    0,
+    ghostPixelSize,
+    ghostPixelSize,
+    center.x - localCenter.x,
+    center.y - localCenter.y,
+    ghostSize,
+    ghostSize
+  )
   ctx.restore()
 }
 
@@ -7511,7 +7535,7 @@ function applySeed(seed: string): void {
     p2: [...(payload.loadouts?.p2 ?? [])],
   }
   sanitizeLoadoutsForCurrentClasses()
-  state = createGameState(gameSettings, loadouts, playerClasses)
+  state = createStandardMatchState()
   resetLocalTelemetryForCurrentMatch()
   if (isBotControlledMode()) {
     planningPlayer = BOT_HUMAN_PLAYER
@@ -7833,7 +7857,9 @@ function startRoguelikeRun(): void {
 }
 
 function pickWeightedRoguelikeReward(): RoguelikeRandomReward {
-  const entries = Object.entries(ROGUELIKE_RANDOM_REWARD_WEIGHTS) as Array<[RoguelikeRandomReward, number]>
+  const entries = (Object.entries(ROGUELIKE_RANDOM_REWARD_WEIGHTS) as Array<[RoguelikeRandomReward, number]>).filter(
+    ([reward]) => reward !== 'removeCard' || (roguelikeRun?.deck.length ?? 0) > 1
+  )
   const totalWeight = entries.reduce((sum, [, weight]) => sum + weight, 0)
   let roll = Math.random() * totalWeight
   for (const [reward, weight] of entries) {
@@ -7845,11 +7871,24 @@ function pickWeightedRoguelikeReward(): RoguelikeRandomReward {
 
 function pickRandomCardOptions(count: number, classId: PlayerClassId): CardDefId[] {
   const pool = [...getCardPoolForClass(classId)]
-  for (let i = pool.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  const picks: CardDefId[] = []
+  while (pool.length > 0 && picks.length < count) {
+    const totalWeight = pool.reduce((sum, cardId) => sum + (getCardClassId(cardId) === classId ? 3 : 1), 0)
+    let roll = Math.random() * totalWeight
+    let pickedIndex = pool.length - 1
+    for (let i = 0; i < pool.length; i += 1) {
+      roll -= getCardClassId(pool[i]) === classId ? 3 : 1
+      if (roll <= 0) {
+        pickedIndex = i
+        break
+      }
+    }
+    const [picked] = pool.splice(pickedIndex, 1)
+    if (picked) {
+      picks.push(picked)
+    }
   }
-  return pool.slice(0, count)
+  return picks
 }
 
 function getRoguelikeRandomRewardLabel(reward: RoguelikeRandomReward): string {
@@ -7860,7 +7899,29 @@ function getRoguelikeRandomRewardLabel(reward: RoguelikeRandomReward): string {
   if (reward === 'extraDraw') return '+1 extra card each hand'
   if (reward === 'extraAp') return '+1 action budget'
   if (reward === 'extraStartingUnit') return '+1 starting unit'
+  if (reward === 'removeCard') return 'Remove a card'
   return '+1 starting unit strength'
+}
+
+function renderRoguelikeRewardCardOption(
+  cardId: CardDefId,
+  action: 'draft' | 'remove-card',
+  metaText: string,
+  extraData = ''
+): string {
+  const def = CARD_DEFS[cardId]
+  return `
+    <button
+      class="card winner-option winner-reward-card ${getCardTypeClassNames(def)} ${getCardClassName(def.id)}"
+      data-roguelike-action="${action}"
+      data-card-id="${cardId}"
+      ${extraData}
+      type="button"
+      ${getCardStyleAttr(def)}
+    >
+      ${renderCardFace(def, { metaText })}
+    </button>
+  `
 }
 
 function prepareRoguelikeRewardChoiceOptions(): void {
@@ -7893,6 +7954,15 @@ function applyRoguelikeRandomReward(reward: RoguelikeRandomReward): void {
   if (reward === 'extraStartingUnit') {
     roguelikeRun.bonusStartingUnits += 1
     showRoguelikeRewardNotice('Reward gained: +1 starting unit.')
+    return
+  }
+  if (reward === 'removeCard') {
+    if (roguelikeRun.deck.length <= 1) {
+      showRoguelikeRewardNotice('Reward gained: deck too small to remove a card.')
+      return
+    }
+    roguelikeRun.uiStage = 'remove_choice'
+    render()
     return
   }
   roguelikeRun.bonusStartingUnitStrength += 1
@@ -7973,6 +8043,20 @@ function renderRoguelikeWinnerModal(): void {
       winnerModal.classList.remove('hidden')
       return
     }
+    if (roguelikeRun.uiStage === 'remove_choice') {
+      winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
+      winnerNoteEl.textContent = 'Choose a card to remove before the next match.'
+      winnerMenuButton.textContent = 'End Run'
+      winnerResetButton.classList.add('hidden')
+      winnerRematchButton.classList.add('hidden')
+      winnerExtraEl.innerHTML = roguelikeRun.deck
+        .map((cardId, index) =>
+          renderRoguelikeRewardCardOption(cardId, 'remove-card', 'Remove from deck', `data-deck-index="${index}"`)
+        )
+        .join('')
+      winnerModal.classList.remove('hidden')
+      return
+    }
     prepareRoguelikeRewardChoiceOptions()
     winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
     winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.leaderHp}. Choose your reward for match ${nextMatch}.`
@@ -7984,10 +8068,7 @@ function renderRoguelikeWinnerModal(): void {
     winnerRematchButton.textContent = `Random: ${getRoguelikeRandomRewardLabel(randomReward)}`
     winnerRematchButton.disabled = false
     winnerExtraEl.innerHTML = roguelikeRun.draftOptions
-      .map((cardId) => {
-        const def = CARD_DEFS[cardId]
-        return `<button class="btn ghost winner-option" data-roguelike-action="draft" data-card-id="${cardId}" type="button">${def.name}</button>`
-      })
+      .map((cardId) => renderRoguelikeRewardCardOption(cardId, 'draft', 'Add to deck'))
       .join('')
   } else {
     winnerTextEl.textContent = 'Roguelike run ended.'
@@ -8167,7 +8248,11 @@ function render(): void {
   }
   const roguelikeRewardVisible =
     mode === 'roguelike' &&
-    Boolean(roguelikeRun && state.winner === BOT_HUMAN_PLAYER && roguelikeRun.uiStage === 'reward_choice') &&
+    Boolean(
+      roguelikeRun &&
+        state.winner === BOT_HUMAN_PLAYER &&
+        (roguelikeRun.uiStage === 'reward_choice' || roguelikeRun.uiStage === 'remove_choice')
+    ) &&
     !winnerModal.classList.contains('hidden')
   if (roguelikeRewardVisible && !lastObservedRoguelikeRewardVisible) {
     notifyTutorialEvent('roguelike_reward_shown')
@@ -9037,7 +9122,7 @@ function buildAnimations(
       continue
     }
 
-    if (effect.type === 'convergeTowardTile') {
+    if (effect.type === 'convergeTowardTile' || effect.type === 'markAdvanceToward') {
       const formationMoves: Array<{ unitId: string; from: Hex; to: Hex; index: number }> = []
       loggedMoveEvents.forEach((entries, unitId) => {
         if (entries.length === 0) return
@@ -9350,6 +9435,7 @@ function buildAnimations(
         from: beforeUnit.pos,
         to: destination,
         duration: FIREBALL_DURATION_MS,
+        fizzle: !target,
       })
       continue
     }
@@ -9860,7 +9946,17 @@ function resolveNextActionAnimated(): void {
         })
         .filter((animation): animation is BoardAnimation => animation !== null)
       if (lightningBarrierAnimations.length > 0 || lightningFizzleAnimations.length > 0 || burnAnimations.length > 0) {
-        animationQueue.push(...lightningBarrierAnimations, ...lightningFizzleAnimations, ...burnAnimations)
+        startAnimationBoardSync(before, turnEndLogs)
+        animationQueue.push(
+          ...lightningBarrierAnimations,
+          ...lightningFizzleAnimations,
+          ...burnAnimations,
+          {
+            type: 'stateSync',
+            upToLogIndex: Math.max(0, turnEndLogs.length - 1),
+            duration: 0,
+          }
+        )
         if (!currentAnimation) runNextAnimation()
         return
       }
@@ -10101,10 +10197,13 @@ function resolveDistanceClick(
 function getNextRequirement(defId: CardDefId, params: OrderParams): SelectionStep | null {
   const def = CARD_DEFS[defId]
   if (defId === 'move_double_steps') {
+    const selectionState = simulatePlannedState(state, planningPlayer)
     if (!params.unitId) return 'unit'
     if (!params.tile) return 'tile'
-    if (!params.unitId2) return 'unit2'
-    if (!params.tile2) return 'tile2'
+    if (!params.unitId2) {
+      if (hasResolvableDoubleStepsFollowUpSelection(selectionState, planningPlayer, params)) return 'unit2'
+    }
+    if (params.unitId2 && !params.tile2) return 'tile2'
   }
   if (def.requires.unit && !params.unitId) return 'unit'
   if (def.requires.unit2 && params.unitId && !params.unitId2) return 'unit2'
@@ -10146,6 +10245,121 @@ function hasSecondaryBoostTarget(snapshot: GameState, player: PlayerId, selected
   const unitHexes = units.map((unit) => ({ ...unit.pos }))
   const planned = getPlannedSpawnTiles(player)
   return [...unitHexes, ...planned].some((hex) => hex.q !== selected.pos.q || hex.r !== selected.pos.r)
+}
+
+type SnapshotMovePlan = {
+  unitId: string
+  target: Hex
+}
+
+function canSnapshotUnitMove(unit: Unit): boolean {
+  return unit.kind === 'unit' || unit.kind === 'leader'
+}
+
+function getSnapshotDirectionToAdjacentTile(from: Hex, to: Hex): Direction | null {
+  for (let direction = 0 as Direction; direction < 6; direction += 1) {
+    const candidate = neighbor(from, direction)
+    if (candidate.q === to.q && candidate.r === to.r) return direction
+  }
+  return null
+}
+
+function canResolveSnapshotSimultaneousMoves(snapshot: GameState, plans: SnapshotMovePlan[]): boolean {
+  const resolvedPlans = new Map<string, { unit: Unit; target: Hex }>()
+  plans.forEach((plan) => {
+    const unit = snapshot.units[plan.unitId]
+    if (!unit || !canSnapshotUnitMove(unit)) return
+    const direction = getSnapshotDirectionToAdjacentTile(unit.pos, plan.target)
+    if (direction === null || !isTile(plan.target)) return
+    resolvedPlans.set(plan.unitId, { unit, target: { ...plan.target } })
+  })
+  if (resolvedPlans.size === 0) return false
+
+  const movable = new Set(
+    [...resolvedPlans.entries()]
+      .filter(([, plan]) =>
+        !plan.unit.modifiers.some(
+          (modifier) =>
+            (modifier.type === 'cannotMove' || modifier.type === 'stunned') &&
+            (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
+        )
+      )
+      .map(([unitId]) => unitId)
+  )
+
+  let changed = true
+  while (changed) {
+    changed = false
+    const targetCounts = new Map<string, number>()
+    movable.forEach((unitId) => {
+      const plan = resolvedPlans.get(unitId)
+      if (!plan) return
+      const key = `${plan.target.q},${plan.target.r}`
+      targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1)
+    })
+    for (const unitId of [...movable]) {
+      const plan = resolvedPlans.get(unitId)
+      if (!plan) {
+        movable.delete(unitId)
+        changed = true
+        continue
+      }
+      const key = `${plan.target.q},${plan.target.r}`
+      if ((targetCounts.get(key) ?? 0) > 1) {
+        movable.delete(unitId)
+        changed = true
+        continue
+      }
+      const occupant = Object.values(snapshot.units).find(
+        (unit) => unit.pos.q === plan.target.q && unit.pos.r === plan.target.r
+      )
+      if (!occupant || occupant.id === unitId) continue
+      if (!resolvedPlans.has(occupant.id) || !movable.has(occupant.id)) {
+        movable.delete(unitId)
+        changed = true
+      }
+    }
+  }
+
+  return movable.size === resolvedPlans.size
+}
+
+function hasResolvableDoubleStepsFollowUpSelection(snapshot: GameState, player: PlayerId, params: OrderParams): boolean {
+  const firstUnitId = resolveSnapshotUnitId(snapshot, params.unitId ?? '', player)
+  const firstTile = params.tile
+  if (!firstUnitId || !firstTile) return false
+  return Object.values(snapshot.units).some((unit) => {
+    if (unit.owner !== player || unit.id === firstUnitId || !canCardSelectUnit('move_double_steps', unit)) {
+      return false
+    }
+    return DIRECTIONS.some((_, index) => {
+      const candidate = neighbor(unit.pos, index as Direction)
+      if (!isTile(candidate)) return false
+      return canResolveSnapshotSimultaneousMoves(snapshot, [
+        { unitId: firstUnitId, target: firstTile },
+        { unitId: unit.id, target: candidate },
+      ])
+    })
+  })
+}
+
+function unitHasResolvableDoubleStepsTarget(
+  snapshot: GameState,
+  player: PlayerId,
+  params: OrderParams,
+  secondUnitId: string
+): boolean {
+  const firstUnitId = resolveSnapshotUnitId(snapshot, params.unitId ?? '', player)
+  const firstTile = params.tile
+  if (!firstUnitId || !firstTile) return false
+  return DIRECTIONS.some((_, index) => {
+    const candidate = neighbor(snapshot.units[secondUnitId].pos, index as Direction)
+    if (!isTile(candidate)) return false
+    return canResolveSnapshotSimultaneousMoves(snapshot, [
+      { unitId: firstUnitId, target: firstTile },
+      { unitId: secondUnitId, target: candidate },
+    ])
+  })
 }
 
 function dedupeHexes(hexes: Hex[]): Hex[] {
@@ -10228,13 +10442,38 @@ function getCustomTileSelectionTargets(
     return getAdjacentTileSelectionTargets(snapshot, params.unitId ?? '', player, true)
   }
   if (defId === 'move_double_steps' && step === 'tile') {
-    return getAdjacentTileSelectionTargets(snapshot, params.unitId ?? '', player, false)
+    const firstUnitId = resolveSnapshotUnitId(snapshot, params.unitId ?? '', player)
+    if (!firstUnitId) return []
+    const firstUnit = snapshot.units[firstUnitId]
+    if (!firstUnit) return []
+    return DIRECTIONS.map((_, index) => neighbor(firstUnit.pos, index as Direction))
+      .filter((hex) => isTile(hex))
+      .filter((hex) => {
+        const occupant = Object.values(snapshot.units).find((unit) => unit.pos.q === hex.q && unit.pos.r === hex.r)
+        if (!occupant) return true
+        if (occupant.owner !== player || !canCardSelectUnit(defId, occupant) || occupant.id === firstUnitId) {
+          return false
+        }
+        return hasResolvableDoubleStepsFollowUpSelection(snapshot, player, {
+          ...params,
+          tile: { ...hex },
+        })
+      })
   }
   if (defId === 'move_double_steps' && step === 'tile2') {
-    return getAdjacentTileSelectionTargets(snapshot, params.unitId2 ?? '', player, false).filter((hex) => {
-      if (!params.tile) return true
-      return hex.q !== params.tile.q || hex.r !== params.tile.r
-    })
+    const secondUnitId = resolveSnapshotUnitId(snapshot, params.unitId2 ?? '', player)
+    const firstUnitId = resolveSnapshotUnitId(snapshot, params.unitId ?? '', player)
+    if (!secondUnitId || !firstUnitId || !params.tile) return []
+    const secondUnit = snapshot.units[secondUnitId]
+    if (!secondUnit) return []
+    return DIRECTIONS.map((_, index) => neighbor(secondUnit.pos, index as Direction))
+      .filter((hex) => isTile(hex))
+      .filter((hex) =>
+        canResolveSnapshotSimultaneousMoves(snapshot, [
+          { unitId: firstUnitId, target: params.tile! },
+          { unitId: secondUnitId, target: hex },
+        ])
+      )
   }
   if (defId === 'attack_volley' && step === 'tile') {
     const unitSnapshot = getUnitSnapshot(snapshot, params.unitId ?? '', player)
@@ -10470,6 +10709,18 @@ function getSelectableHexes(
   }
 
   if (step === 'unit2') {
+    if (defId === 'move_double_steps') {
+      const selected = params.unitId ? getUnitSnapshot(snapshot, params.unitId, player) : null
+      return Object.values(snapshot.units)
+        .filter(
+          (unit) =>
+            unit.owner === player &&
+            canCardSelectUnit(defId, unit) &&
+            (!selected || unit.pos.q !== selected.pos.q || unit.pos.r !== selected.pos.r) &&
+            unitHasResolvableDoubleStepsTarget(snapshot, player, params, unit.id)
+        )
+        .map((unit) => ({ ...unit.pos }))
+    }
     const requirement = CARD_DEFS[defId].requires.unit2 ?? 'friendly'
     const units = Object.values(snapshot.units).filter(
       (unit) =>
@@ -11546,6 +11797,14 @@ winnerExtraEl.addEventListener('click', (event) => {
   const action = target.dataset.roguelikeAction
   if (action === 'continue-reward') {
     continueAfterRoguelikeRewardNotice()
+    return
+  }
+  if (action === 'remove-card' && roguelikeRun.uiStage === 'remove_choice') {
+    const deckIndex = Number(target.dataset.deckIndex)
+    if (!Number.isInteger(deckIndex) || deckIndex < 0 || deckIndex >= roguelikeRun.deck.length) return
+    const [removed] = roguelikeRun.deck.splice(deckIndex, 1)
+    if (!removed) return
+    startRoguelikeMatchAfterReward(`Reward gained: removed ${CARD_DEFS[removed].name}.`)
     return
   }
   const cardId = target.dataset.cardId as CardDefId | undefined

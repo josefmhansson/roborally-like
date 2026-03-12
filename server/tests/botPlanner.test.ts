@@ -448,7 +448,7 @@ test('slime bot prefers enemy target over adjacent ally for roguelike slow attac
   assert.equal(result.orders[0]?.params.direction, 3)
 })
 
-test('slime bot avoids deliberate ally hit with pack hunt', () => {
+test('wolf bot avoids deliberate ally hit with alpha pack hunt', () => {
   const state = setupBotPlanningState()
   state.actionBudgets = [3, 1]
   state.players[1].hand = [{ id: 'bot-pack', defId: 'attack_roguelike_pack_hunt' }]
@@ -463,7 +463,7 @@ test('slime bot avoids deliberate ally hit with pack hunt', () => {
     pos: neighbor(allyTargetTile, 3),
     facing: 0,
     modifiers: [],
-    roguelikeRole: 'slime_grand',
+    roguelikeRole: 'alpha_wolf',
   }
   state.units['ally-pack-target'] = {
     id: 'ally-pack-target',
@@ -473,7 +473,7 @@ test('slime bot avoids deliberate ally hit with pack hunt', () => {
     pos: { ...allyTargetTile },
     facing: 0,
     modifiers: [],
-    roguelikeRole: 'slime_grand',
+    roguelikeRole: 'wolf',
   }
   state.units['ally-pack-a'] = {
     id: 'ally-pack-a',

@@ -455,6 +455,7 @@ export type GameSettings = {
   maxCopies: number
   actionBudgetP1: number
   actionBudgetP2: number
+  randomizeFirstPlayer?: boolean
   victoryCondition?: VictoryCondition
   roguelikeMatchNumber?: number
   roguelikeEncounterId?: RoguelikeEncounterId

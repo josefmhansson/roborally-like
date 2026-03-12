@@ -185,7 +185,7 @@ test('pitfall trap card is renamed to bear trap', () => {
   assert.equal(CARD_DEFS.spell_pitfall_trap.name, 'Bear Trap')
 })
 
-test('joint attack only counts other adjacent friendly units', () => {
+test('joint attack includes the originating unit plus adjacent friendly units', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'attack_joint_attack'),
@@ -288,7 +288,7 @@ test('joint attack uses adjacent allies as individual damage sources', () => {
   assert.ok(planOrder(state, 0, cardId, { unitId: 'joint-user', tile: targetTile }))
   readyAndResolve(state)
 
-  assert.equal(state.units['joint-target']?.strength, 4)
+  assert.equal(state.units['joint-target']?.strength, 3)
 })
 
 test('double steps moves two different units to chosen adjacent tiles', () => {
@@ -335,8 +335,50 @@ test('double steps moves two different units to chosen adjacent tiles', () => {
   assert.equal(state.units['double-b']?.facing, 3)
 })
 
+test('double steps can swap into tiles vacated by the other selected unit', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_double_steps'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['swap-a'] = {
+    id: 'swap-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['swap-b'] = {
+    id: 'swap-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_double_steps')
+  assert.ok(
+    planOrder(state, 0, cardId, {
+      unitId: 'swap-a',
+      tile: { q: 3, r: 2 },
+      unitId2: 'swap-b',
+      tile2: { q: 2, r: 2 },
+    })
+  )
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['swap-a']?.pos, { q: 3, r: 2 })
+  assert.deepEqual(state.units['swap-b']?.pos, { q: 2, r: 2 })
+})
+
 test('pincer attack damages surrounded enemy units only', () => {
-  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 3 }
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6, actionBudgetP1: 1 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'attack_pincer_attack'),
     p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
@@ -548,6 +590,41 @@ test('converge moves friendly units one tile toward the chosen tile and faces th
   assert.equal(state.units['converge-left']?.facing, 0)
   assert.deepEqual(state.units['converge-right']?.pos, { q: 3, r: 2 })
   assert.equal(state.units['converge-right']?.facing, 3)
+})
+
+test('converge resolves movement simultaneously so units can fill vacated tiles', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_converge'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['conv-back'] = {
+    id: 'conv-back',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['conv-front'] = {
+    id: 'conv-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'move_converge')
+  assert.ok(planOrder(state, 0, cardId, { tile: { q: 4, r: 2 } }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['conv-back']?.pos, { q: 2, r: 2 })
+  assert.deepEqual(state.units['conv-front']?.pos, { q: 3, r: 2 })
 })
 
 test('warleader leader can move full distance without Slow restriction', () => {
@@ -1019,6 +1096,52 @@ test('chain lightning jumps across adjacent unique units and never hits the orig
   assert.equal(state.units['cl-c']?.strength, 1)
 })
 
+test('chain lightning does not jump onto slimes spawned earlier in the same resolution', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'slimes' as const,
+    roguelikeMatchNumber: 8,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_chain_lightning'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['cl-user'] = {
+    id: 'cl-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['split-target'] = {
+    id: 'split-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'slime_mid',
+  }
+
+  const cardId = findCardId(state, 0, 'attack_chain_lightning')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'cl-user' }))
+  readyAndResolve(state)
+
+  const children = Object.values(state.units).filter((unit) => unit.owner === 1 && unit.roguelikeRole === 'slime_small')
+  assert.equal(children.length, 2)
+  children.forEach((child) => {
+    assert.equal(child.strength, 1 + Math.floor(settings.roguelikeMatchNumber! / 8))
+  })
+})
+
 test('archmage card renames and flame thrower range updates apply', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -1343,7 +1466,7 @@ test('fireball damages the first unit in line and adjacent tiles around it', () 
   assert.equal(state.units['fireball-far']?.strength, 4)
 })
 
-test('blizzard damages and slows all units within a 3 tile radius', () => {
+test('blizzard damages and slows all units within a 2 tile radius', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
     p1: Array.from({ length: settings.deckSize }, () => 'spell_blizzard'),
@@ -1365,7 +1488,7 @@ test('blizzard damages and slows all units within a 3 tile radius', () => {
     owner: 1,
     kind: 'unit',
     strength: 5,
-    pos: { q: 5, r: 2 },
+    pos: { q: 4, r: 2 },
     facing: 3,
     modifiers: [],
   }
@@ -1374,7 +1497,7 @@ test('blizzard damages and slows all units within a 3 tile radius', () => {
     owner: 1,
     kind: 'unit',
     strength: 5,
-    pos: { q: 5, r: 5 },
+    pos: { q: 5, r: 2 },
     facing: 3,
     modifiers: [],
   }
@@ -3295,6 +3418,61 @@ test('slime split spawn tiles stay deterministic across repeated identical resol
   assert.equal(outcomes.size, 1)
 })
 
+test('multiple slimes killed by the same attack all split before elimination victory is checked', () => {
+  const matchNumber = 8
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'slimes' as const,
+    roguelikeMatchNumber: matchNumber,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_whirlwind'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['whirl-user'] = {
+    id: 'whirl-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['slime-a'] = {
+    id: 'slime-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'slime_mid',
+  }
+  state.units['slime-b'] = {
+    id: 'slime-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 1 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'slime_mid',
+  }
+
+  const cardId = findCardId(state, 0, 'attack_whirlwind')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'whirl-user' }))
+  readyAndResolve(state)
+
+  const children = Object.values(state.units).filter((unit) => unit.owner === 1 && unit.roguelikeRole === 'slime_small')
+  assert.equal(children.length, 4)
+  assert.equal(state.winner, null)
+})
+
 test('stomp stuns adjacent enemies and blocks their later orders this turn', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -3424,6 +3602,40 @@ test('pack hunt uses scaled damage per adjacent ally', () => {
   assert.equal(state.units['pack-prey']?.strength, 8)
 })
 
+test('pack hunt can only be planned by alpha wolves', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_roguelike_pack_hunt'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['alpha'] = {
+    id: 'alpha',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'alpha_wolf',
+  }
+  state.units['wolf'] = {
+    id: 'wolf',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'wolf',
+  }
+
+  const cardId = findCardId(state, 1, 'attack_roguelike_pack_hunt')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'alpha', direction: 0 }))
+  assert.equal(planOrder(state, 1, cardId, { unitId: 'wolf', direction: 0 }), null)
+})
+
 test('mark only targets enemies and advances allied units toward the target', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -3467,6 +3679,50 @@ test('mark only targets enemies and advances allied units toward the target', ()
 
   assert.deepEqual(state.units['mark-a']?.pos, { q: 2, r: 1 })
   assert.deepEqual(state.units['mark-b']?.pos, { q: 1, r: 2 })
+})
+
+test('mark resolves movement simultaneously so trailing allies can move into vacated tiles', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_roguelike_mark'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['mark-back'] = {
+    id: 'mark-back',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['mark-front'] = {
+    id: 'mark-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['mark-target'] = {
+    id: 'mark-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'spell_roguelike_mark')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'mark-target' }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['mark-back']?.pos, { q: 2, r: 2 })
+  assert.deepEqual(state.units['mark-front']?.pos, { q: 3, r: 2 })
 })
 
 test('roguelike basic attack scales damage with match number', () => {

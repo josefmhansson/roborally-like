@@ -520,7 +520,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   attack_joint_attack: {
     id: 'attack_joint_attack',
     name: 'Joint Attack',
-    description: 'Choose a tile adjacent to a friendly unit. Each other adjacent friendly unit deals 3 damage there.',
+    description: 'Choose a tile adjacent to a friendly unit. That unit and each other adjacent friendly unit deal 2 damage there.',
     type: 'attack',
     classId: 'commander',
     requires: { unit: 'friendly', tile: 'any' },
@@ -529,7 +529,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'jointAttack',
         unitParam: 'unitId',
         tileParam: 'tile',
-        damagePerAdjacentAlly: 3,
+        damagePerAdjacentAlly: 2,
       },
     ],
   },
@@ -864,7 +864,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     description: 'Deal 4 damage to all enemy units fully surrounded by friendly units.',
     type: 'attack',
     classId: 'commander',
-    actionCost: 3,
+    actionCost: 1,
     requires: {},
     effects: [
       {
@@ -1009,7 +1009,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
     id: 'attack_roguelike_pack_hunt',
     name: 'Pack Hunt',
     description:
-      'Move 1 tile in any direction, then attack the tile in front for each allied unit adjacent to that tile.',
+      'Alpha wolf only. Move 1 tile in any direction, then attack the tile in front for each allied unit adjacent to that tile.',
     type: 'attack',
     countsAs: ['movement'],
     roguelikeOnly: true,
@@ -1144,7 +1144,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   spell_blizzard: {
     id: 'spell_blizzard',
     name: 'Blizzard',
-    description: 'Choose a tile. All units within 3 tiles take 2 damage and are Slowed for 2 turns.',
+    description: 'Choose a tile. All units within 2 tiles take 2 damage and are Slowed for 2 turns.',
     type: 'spell',
     classId: 'archmage',
     actionCost: 3,
@@ -1153,7 +1153,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       {
         type: 'damageRadius',
         tileParam: 'tile',
-        radius: 3,
+        radius: 2,
         amount: 2,
         modifier: 'slow',
         turns: 2,

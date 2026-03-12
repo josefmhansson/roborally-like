@@ -168,9 +168,9 @@ export type TutorialRoguelikeRunState = {
   bonusStartingUnits: number
   bonusStartingUnitStrength: number
   resultHandled: boolean
-  uiStage: 'reward_choice' | 'reward_notice' | 'run_over'
+  uiStage: 'reward_choice' | 'reward_notice' | 'remove_choice' | 'run_over'
   draftOptions: CardDefId[]
-  pendingRandomReward: 'leaderHp' | 'extraDraw' | 'extraAp' | 'extraStartingUnit' | 'unitStrength' | null
+  pendingRandomReward: 'leaderHp' | 'extraDraw' | 'extraAp' | 'extraStartingUnit' | 'unitStrength' | 'removeCard' | null
   rewardNoticeMessage: string | null
   currentEncounterId: 'slimes' | 'trolls' | 'wolf_pack' | null
   currentMatchNumber: number
