@@ -46,6 +46,7 @@ Use `build` after client/rendering changes. Use `test:server` after engine/serve
 ## Sprite/Tint Pipeline
 
 - Units and spawn village still use the `base + team` runtime tint pipeline.
+- Roguelike monster recolors can also be done at runtime in `src/main.ts`; slime monsters currently use an orange runtime tint rather than dedicated recolored PNGs.
 - Source art for these assets is in `public/assets/new style/`.
 - Generated outputs currently overwrite files in:
   - `public/assets/units/*_base.png`
@@ -59,16 +60,24 @@ Use `build` after client/rendering changes. Use `test:server` after engine/serve
 - `stronghold` is legacy and should not be reintroduced as active board art. Some code/tests still accept legacy identifiers for compatibility.
 - Spawn village is still used and has active art.
 - Bear trap art replaces the old pitfall art, but the internal trap kind/card id still uses legacy `pitfall` naming in several code paths for compatibility.
+- Trap markers are intentionally drawn larger than the source PNG and currently do not use a separate ground-shadow oval.
 - Wolf enemies currently use a single art variant.
 - `attack_roguelike_pack_hunt` is intentionally alpha-wolf-only.
 - `Double Steps`, `Converge`, and `Mark` intentionally resolve movement simultaneously, including moves into tiles vacated in the same step.
 - Multi-target damage and chain effects should snapshot eligible targets at effect start so newly spawned slimes are not hit again by the same resolving effect.
+- Arrow, Ice Bolt, and Fireball share a line-projectile animation path; fizzles should travel off the board and fade out rather than playing a hit burst.
 - `GameSettings.randomizeFirstPlayer` is used for online and standard local matches; roguelike runs intentionally keep their fixed opener.
 
 ## Roguelike UI Notes
 
 - Roguelike reward selection uses rendered card UI, not plain text buttons.
 - Remove-card rewards use the winner modal with `uiStage = 'remove_choice'` and present the current deck as removable card options.
+- Slime monsters are intentionally rendered a bit lower than other roguelike monsters to sit better on the current board art.
+
+## Animation/UI Notes
+
+- Turn-end burn/lightning-barrier replay may be embedded in the final order's log slice; client replay code needs to split those logs out instead of assuming they only appear in a separate no-order resolution step.
+- On touch, tapping an already zoomed hand card should collapse the zoom and clear that in-progress selection.
 
 ## Good Places To Tune Visuals
 

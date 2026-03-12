@@ -621,7 +621,15 @@ type WhirlwindAnimation = { type: 'whirlwind'; origin: Hex; duration: number }
 type AdjacentStrikeAnimation = { type: 'adjacentStrike'; origin: Hex; duration: number }
 type TrapTriggerAnimation = { type: 'trapTrigger'; target: Hex; trapKind: 'pitfall' | 'explosive'; duration: number }
 type MeteorAnimation = { type: 'meteor'; target: Hex; duration: number }
-type ArrowAnimation = { type: 'arrow'; from: Hex; to: Hex; duration: number }
+type LineProjectileAnimation = {
+  type: 'lineProjectile'
+  projectile: 'arrow' | 'iceBolt' | 'fireball'
+  from: Hex
+  to: Hex
+  target?: Hex
+  fizzle?: boolean
+  duration: number
+}
 type StateSyncAnimation = { type: 'stateSync'; upToLogIndex: number; duration: 0 }
 type TeleportAnimation = {
   type: 'teleport'
@@ -654,8 +662,6 @@ type HarpoonAnimation = {
   }
 }
 type FlameThrowerAnimation = { type: 'flameThrower'; from: Hex; to: Hex; duration: number }
-type IceBoltAnimation = { type: 'iceBolt'; from: Hex; to: Hex; target?: Hex; duration: number }
-type FireballAnimation = { type: 'fireball'; from: Hex; to: Hex; duration: number; fizzle?: boolean }
 type BlizzardAnimation = { type: 'blizzard'; target: Hex; radius: number; duration: number }
 type LightningBarrierAnimation = { type: 'lightningBarrier'; arcs: Array<{ from: Hex; to: Hex }>; duration: number }
 type BrainFreezeAnimation = { type: 'brainFreeze'; duration: number }
@@ -675,7 +681,7 @@ type BoardAnimation =
   | AdjacentStrikeAnimation
   | TrapTriggerAnimation
   | MeteorAnimation
-  | ArrowAnimation
+  | LineProjectileAnimation
   | StateSyncAnimation
   | TeleportAnimation
   | ChainLightningAnimation
@@ -685,8 +691,6 @@ type BoardAnimation =
   | PincerAnimation
   | HarpoonAnimation
   | FlameThrowerAnimation
-  | IceBoltAnimation
-  | FireballAnimation
   | BlizzardAnimation
   | LightningBarrierAnimation
   | BrainFreezeAnimation
@@ -845,6 +849,7 @@ const monsterRoleImages: Record<RoguelikeEncounterUnitRole, ImageAsset[]> = {
 const roguelikeMonsterVariantByUnitId = new Map<string, number>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
+const monsterTintCache = new Map<string, HTMLCanvasElement>()
 
 function getStableVariantIndex(seed: string, variantCount: number): number {
   if (variantCount <= 1) return 0
@@ -3255,9 +3260,9 @@ function getRingTint(owner: PlayerId): string {
 }
 
 function getEncounterRoleColor(role: Unit['roguelikeRole']): string | null {
-  if (role === 'slime_grand') return '#63ff95'
-  if (role === 'slime_mid') return '#4cd982'
-  if (role === 'slime_small') return '#2cb86a'
+  if (role === 'slime_grand') return '#ffb75d'
+  if (role === 'slime_mid') return '#ff953d'
+  if (role === 'slime_small') return '#df6f2f'
   if (role === 'troll') return '#9aa26f'
   if (role === 'alpha_wolf') return '#b8c4d6'
   if (role === 'wolf') return '#9ca8bd'
@@ -3275,6 +3280,23 @@ function getUnitRingColor(unit: Unit): string {
 function getUnitRenderScale(unit: Unit): number {
   if (mode !== 'roguelike' || unit.owner !== BOT_PLAYER) return 1
   return getEncounterRoleScale(unit.roguelikeRole)
+}
+
+function getEncounterRoleRenderStyle(role: Unit['roguelikeRole']): {
+  tint: string | null
+  offsetX: number
+  offsetY: number
+} {
+  if (role === 'slime_grand') {
+    return { tint: '#ffb75d', offsetX: 0, offsetY: 0.09 }
+  }
+  if (role === 'slime_mid') {
+    return { tint: '#ff953d', offsetX: 0, offsetY: 0.07 }
+  }
+  if (role === 'slime_small') {
+    return { tint: '#df6f2f', offsetX: 0, offsetY: 0.055 }
+  }
+  return { tint: null, offsetX: 0, offsetY: 0 }
 }
 
 function pruneRoguelikeMonsterVariants(sourceState: GameState, preview: GameState | null): void {
@@ -3314,6 +3336,68 @@ function getRoguelikeMonsterImage(unit: Unit): ImageAsset | null {
   const picked = loaded[Math.floor(Math.random() * loaded.length)]
   roguelikeMonsterVariantByUnitId.set(unit.id, picked.index)
   return picked.asset
+}
+
+function getTintedMonsterLayer(asset: ImageAsset, tint: string): HTMLCanvasElement | null {
+  if (!asset.loaded) return null
+  const sourceId = asset.img.currentSrc || asset.img.src
+  const cacheKey = `${sourceId}|${tint}`
+  const cached = monsterTintCache.get(cacheKey)
+  if (cached) return cached
+
+  const canvasEl = document.createElement('canvas')
+  canvasEl.width = asset.img.width
+  canvasEl.height = asset.img.height
+  const context = canvasEl.getContext('2d')
+  if (!context) return null
+
+  context.drawImage(asset.img, 0, 0)
+  const imageData = context.getImageData(0, 0, canvasEl.width, canvasEl.height)
+  const data = imageData.data
+  const tintRgb = hexToRgb(tint)
+  for (let index = 0; index < data.length; index += 4) {
+    if (data[index + 3] === 0) continue
+    const luminance = (data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722) / 255
+    const shade = 0.18 + luminance * 0.82
+    data[index] = Math.round(tintRgb.r * shade)
+    data[index + 1] = Math.round(tintRgb.g * shade)
+    data[index + 2] = Math.round(tintRgb.b * shade)
+  }
+  context.putImageData(imageData, 0, 0)
+  monsterTintCache.set(cacheKey, canvasEl)
+  return canvasEl
+}
+
+function drawMonsterSprite(
+  context: CanvasRenderingContext2D,
+  center: { x: number; y: number },
+  unit: Unit,
+  scale = UNIT_IMAGE_SCALE
+): boolean {
+  const monsterImage = getRoguelikeMonsterImage(unit)
+  if (!monsterImage) return false
+
+  const style = getEncounterRoleRenderStyle(unit.roguelikeRole)
+  if (style.tint) {
+    const tinted = getTintedMonsterLayer(monsterImage, style.tint)
+    if (tinted) {
+      drawAnchoredSource(
+        context,
+        tinted,
+        tinted.width,
+        tinted.height,
+        center,
+        scale,
+        UNIT_ANCHOR_Y,
+        style.offsetX,
+        style.offsetY
+      )
+      return true
+    }
+  }
+
+  drawAnchoredImageTo(context, monsterImage, center, scale, UNIT_ANCHOR_Y, style.offsetX, style.offsetY)
+  return true
 }
 
 function getSpriteSetForOwner(owner: PlayerId): ClassSpriteSet {
@@ -4954,7 +5038,7 @@ function drawTrapTriggerAnimation(animation: TrapTriggerAnimation, progress: num
   ctx.globalAlpha = alpha
   const trapImage = trapImages[animation.trapKind]
   if (trapImage?.loaded) {
-    drawAnchoredImageTo(ctx, trapImage, center, 0.74 + t * 0.18, 0.78)
+    drawAnchoredImageTo(ctx, trapImage, center, 1.15 + t * 0.18, 0.78)
   }
 
   if (animation.trapKind === 'pitfall') {
@@ -5031,15 +5115,28 @@ function drawMeteorImpact(target: Hex, progress: number): void {
   ctx.restore()
 }
 
-function drawArrowTrail(from: Hex, to: Hex, progress: number): void {
-  const start = projectHex(from)
-  const end = projectHex(to)
-  const t = easeInOutCubic(progress)
+function getLineProjectilePose(
+  animation: LineProjectileAnimation,
+  progress: number,
+  hitTravelEnd: number
+): {
+  start: { x: number; y: number }
+  current: { x: number; y: number }
+  nx: number
+  ny: number
+  perpX: number
+  perpY: number
+  fadeAlpha: number
+} {
+  const start = projectHex(animation.from)
+  const end = projectHex(animation.to)
+  const travelWindow = animation.fizzle ? 1 : hitTravelEnd
+  const travelProgress = clamp(progress / travelWindow, 0, 1)
+  const travelT = easeInOutCubic(travelProgress)
   const current = {
-    x: start.x + (end.x - start.x) * t,
-    y: start.y + (end.y - start.y) * t,
+    x: start.x + (end.x - start.x) * travelT,
+    y: start.y + (end.y - start.y) * travelT,
   }
-
   const dx = end.x - start.x
   const dy = (end.y - start.y) / BOARD_TILT
   const len = Math.hypot(dx, dy) || 1
@@ -5047,26 +5144,39 @@ function drawArrowTrail(from: Hex, to: Hex, progress: number): void {
   const ny = dy / len
   const perpX = -ny
   const perpY = nx
+  const fadeAlpha = animation.fizzle ? 1 - clamp((progress - 0.72) / 0.28, 0, 1) : 1
+  return { start, current, nx, ny, perpX, perpY, fadeAlpha }
+}
+
+function drawArrowProjectile(animation: LineProjectileAnimation, progress: number): void {
+  const pose = getLineProjectilePose(animation, progress, 1)
   const headLength = layout.size * 0.22
   const baseWidth = layout.size * 0.08
   const tailLength = layout.size * 0.28
 
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
+  ctx.globalAlpha = pose.fadeAlpha
   ctx.strokeStyle = 'rgba(25, 20, 18, 0.8)'
   ctx.lineWidth = 2
 
-  const tailX = current.x - nx * tailLength
-  const tailY = current.y - ny * tailLength
+  const tailX = pose.current.x - pose.nx * tailLength
+  const tailY = pose.current.y - pose.ny * tailLength
   ctx.beginPath()
   ctx.moveTo(tailX, tailY)
-  ctx.lineTo(current.x, current.y)
+  ctx.lineTo(pose.current.x, pose.current.y)
   ctx.stroke()
 
   ctx.beginPath()
-  ctx.moveTo(current.x, current.y)
-  ctx.lineTo(current.x - nx * headLength + perpX * baseWidth, current.y - ny * headLength + perpY * baseWidth)
-  ctx.lineTo(current.x - nx * headLength - perpX * baseWidth, current.y - ny * headLength - perpY * baseWidth)
+  ctx.moveTo(pose.current.x, pose.current.y)
+  ctx.lineTo(
+    pose.current.x - pose.nx * headLength + pose.perpX * baseWidth,
+    pose.current.y - pose.ny * headLength + pose.perpY * baseWidth
+  )
+  ctx.lineTo(
+    pose.current.x - pose.nx * headLength - pose.perpX * baseWidth,
+    pose.current.y - pose.ny * headLength - pose.perpY * baseWidth
+  )
   ctx.closePath()
   ctx.fillStyle = 'rgba(25, 20, 18, 0.9)'
   ctx.fill()
@@ -5202,56 +5312,56 @@ function drawFlameThrower(from: Hex, to: Hex, progress: number): void {
   ctx.restore()
 }
 
-function drawIceBoltAnimation(animation: IceBoltAnimation, progress: number): void {
-  const from = projectHex(animation.from)
-  const to = projectHex(animation.to)
-  const t = easeInOutCubic(progress)
-  const current = {
-    x: from.x + (to.x - from.x) * t,
-    y: from.y + (to.y - from.y) * t,
-  }
-  const dx = to.x - from.x
-  const dy = (to.y - from.y) / BOARD_TILT
-  const len = Math.hypot(dx, dy) || 1
-  const nx = dx / len
-  const ny = dy / len
-  const perpX = -ny
-  const perpY = nx
+function drawIceBoltProjectile(animation: LineProjectileAnimation, progress: number): void {
+  const pose = getLineProjectilePose(animation, progress, 0.82)
   const headLength = layout.size * 0.28
   const baseWidth = layout.size * 0.1
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
-  ctx.globalAlpha = 0.95
+  ctx.globalAlpha = 0.95 * pose.fadeAlpha
   ctx.strokeStyle = 'rgba(180, 235, 255, 0.95)'
   ctx.lineWidth = 2
   ctx.beginPath()
-  ctx.moveTo(current.x - nx * headLength * 0.95, current.y - ny * headLength * 0.95)
-  ctx.lineTo(current.x, current.y)
+  ctx.moveTo(pose.current.x - pose.nx * headLength * 0.95, pose.current.y - pose.ny * headLength * 0.95)
+  ctx.lineTo(pose.current.x, pose.current.y)
   ctx.stroke()
 
   ctx.beginPath()
-  ctx.moveTo(current.x, current.y)
-  ctx.lineTo(current.x - nx * headLength + perpX * baseWidth, current.y - ny * headLength + perpY * baseWidth)
-  ctx.lineTo(current.x - nx * headLength * 0.3, current.y - ny * headLength * 0.3)
-  ctx.lineTo(current.x - nx * headLength - perpX * baseWidth, current.y - ny * headLength - perpY * baseWidth)
+  ctx.moveTo(pose.current.x, pose.current.y)
+  ctx.lineTo(
+    pose.current.x - pose.nx * headLength + pose.perpX * baseWidth,
+    pose.current.y - pose.ny * headLength + pose.perpY * baseWidth
+  )
+  ctx.lineTo(pose.current.x - pose.nx * headLength * 0.3, pose.current.y - pose.ny * headLength * 0.3)
+  ctx.lineTo(
+    pose.current.x - pose.nx * headLength - pose.perpX * baseWidth,
+    pose.current.y - pose.ny * headLength - pose.perpY * baseWidth
+  )
   ctx.closePath()
   ctx.fillStyle = 'rgba(205, 245, 255, 0.96)'
   ctx.fill()
 
   const glowRadius = layout.size * 0.22
-  const glow = ctx.createRadialGradient(current.x, current.y, glowRadius * 0.15, current.x, current.y, glowRadius)
+  const glow = ctx.createRadialGradient(
+    pose.current.x,
+    pose.current.y,
+    glowRadius * 0.15,
+    pose.current.x,
+    pose.current.y,
+    glowRadius
+  )
   glow.addColorStop(0, 'rgba(255, 255, 255, 0.95)')
   glow.addColorStop(0.55, 'rgba(130, 205, 255, 0.88)')
   glow.addColorStop(1, 'rgba(78, 150, 255, 0)')
   ctx.fillStyle = glow
   ctx.beginPath()
-  ctx.arc(current.x, current.y, glowRadius, 0, Math.PI * 2)
+  ctx.arc(pose.current.x, pose.current.y, glowRadius, 0, Math.PI * 2)
   ctx.fill()
 
-  if (animation.target) {
+  if (!animation.fizzle && animation.target) {
     const target = projectHex(animation.target)
-    const tint = Math.max(0, 1 - Math.abs(progress - 0.72) / 0.28)
+    const tint = clamp((progress - 0.58) / 0.42, 0, 1)
     if (tint > 0) {
       const radius = layout.size * (0.42 + tint * 0.12)
       const frost = ctx.createRadialGradient(target.x, target.y, radius * 0.15, target.x, target.y, radius)
@@ -5268,49 +5378,64 @@ function drawIceBoltAnimation(animation: IceBoltAnimation, progress: number): vo
   ctx.restore()
 }
 
-function drawFireballAnimation(animation: FireballAnimation, progress: number): void {
-  const from = projectHex(animation.from)
-  const to = projectHex(animation.to)
-  const travelT = Math.min(1, progress / 0.72)
-  const orb = {
-    x: from.x + (to.x - from.x) * easeInOutCubic(travelT),
-    y: from.y + (to.y - from.y) * easeInOutCubic(travelT),
-  }
+function drawFireballProjectile(animation: LineProjectileAnimation, progress: number): void {
+  const pose = getLineProjectilePose(animation, progress, 0.72)
   const radius = layout.size * (0.18 + 0.06 * Math.sin(progress * Math.PI))
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
-  const trail = ctx.createLinearGradient(from.x, from.y, orb.x, orb.y)
+  ctx.globalAlpha = pose.fadeAlpha
+  const trail = ctx.createLinearGradient(pose.start.x, pose.start.y, pose.current.x, pose.current.y)
   trail.addColorStop(0, 'rgba(255, 120, 40, 0)')
   trail.addColorStop(1, 'rgba(255, 188, 90, 0.82)')
   ctx.strokeStyle = trail
   ctx.lineWidth = Math.max(2, layout.size * 0.11)
   ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.moveTo(from.x, from.y)
-  ctx.lineTo(orb.x, orb.y)
+  ctx.moveTo(pose.start.x, pose.start.y)
+  ctx.lineTo(pose.current.x, pose.current.y)
   ctx.stroke()
 
-  const glow = ctx.createRadialGradient(orb.x, orb.y, radius * 0.15, orb.x, orb.y, radius * 1.8)
+  const glow = ctx.createRadialGradient(
+    pose.current.x,
+    pose.current.y,
+    radius * 0.15,
+    pose.current.x,
+    pose.current.y,
+    radius * 1.8
+  )
   glow.addColorStop(0, 'rgba(255, 255, 225, 0.95)')
   glow.addColorStop(0.45, 'rgba(255, 180, 70, 0.95)')
   glow.addColorStop(1, 'rgba(220, 78, 18, 0)')
   ctx.fillStyle = glow
   ctx.beginPath()
-  ctx.arc(orb.x, orb.y, radius * 1.6, 0, Math.PI * 2)
+  ctx.arc(pose.current.x, pose.current.y, radius * 1.6, 0, Math.PI * 2)
   ctx.fill()
 
-  if (!animation.fizzle && progress > 0.66) {
+  if (!animation.fizzle && animation.target && progress > 0.66) {
+    const target = projectHex(animation.target)
     const burstT = (progress - 0.66) / 0.34
     const burstRadius = layout.size * (0.28 + burstT * 1.35)
     ctx.globalAlpha = Math.max(0.12, 0.88 - burstT * 0.58)
     ctx.strokeStyle = 'rgba(255, 165, 90, 0.95)'
     ctx.lineWidth = 3
     ctx.beginPath()
-    ctx.arc(to.x, to.y, burstRadius, 0, Math.PI * 2)
+    ctx.arc(target.x, target.y, burstRadius, 0, Math.PI * 2)
     ctx.stroke()
   }
   ctx.restore()
+}
+
+function drawLineProjectileAnimation(animation: LineProjectileAnimation, progress: number): void {
+  if (animation.projectile === 'arrow') {
+    drawArrowProjectile(animation, progress)
+    return
+  }
+  if (animation.projectile === 'iceBolt') {
+    drawIceBoltProjectile(animation, progress)
+    return
+  }
+  drawFireballProjectile(animation, progress)
 }
 
 function drawBlizzardAnimation(animation: BlizzardAnimation, progress: number): void {
@@ -5492,27 +5617,13 @@ function drawTrapMarker(trap: Trap): void {
   const center = projectHex(trap.pos)
   const trapImage = trapImages[trap.kind]
   if (trapImage?.loaded) {
-    const glowColor =
-      trap.kind === 'pitfall' ? 'rgba(172, 125, 72, 0.5)' : 'rgba(255, 166, 85, 0.58)'
     ctx.save()
-    ctx.fillStyle = glowColor
-    ctx.beginPath()
-    ctx.ellipse(
-      center.x,
-      center.y + layout.size * 0.06,
-      layout.size * 0.28,
-      layout.size * 0.19 * BOARD_TILT,
-      0,
-      0,
-      Math.PI * 2
-    )
-    ctx.fill()
-    drawAnchoredImageTo(ctx, trapImage, center, 0.72, 0.78)
+    drawAnchoredImageTo(ctx, trapImage, center, 1.15, 0.78)
     ctx.restore()
     return
   }
 
-  const size = layout.size * 0.3
+  const size = layout.size * 0.48
   const half = size / 2
   const baseFill = trap.kind === 'pitfall' ? 'rgba(122, 82, 38, 0.9)' : 'rgba(164, 88, 34, 0.9)'
   const innerFill = trap.kind === 'pitfall' ? 'rgba(81, 53, 22, 0.92)' : 'rgba(231, 136, 58, 0.94)'
@@ -5671,16 +5782,8 @@ function drawBoard(): void {
     drawMeteorImpact(currentAnimation.target, animationProgress)
   }
 
-  if (currentAnimation?.type === 'arrow') {
-    drawArrowTrail(currentAnimation.from, currentAnimation.to, animationProgress)
-  }
-
-  if (currentAnimation?.type === 'iceBolt') {
-    drawIceBoltAnimation(currentAnimation, animationProgress)
-  }
-
-  if (currentAnimation?.type === 'fireball') {
-    drawFireballAnimation(currentAnimation, animationProgress)
+  if (currentAnimation?.type === 'lineProjectile') {
+    drawLineProjectileAnimation(currentAnimation, animationProgress)
   }
 
   if (currentAnimation?.type === 'chainLightning') {
@@ -6093,10 +6196,7 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
 
   if (unit.kind === 'unit') {
     const unitScale = UNIT_IMAGE_SCALE * getUnitRenderScale(unit)
-    const monsterImage = getRoguelikeMonsterImage(unit)
-    if (monsterImage) {
-      drawAnchoredImage(monsterImage, center, unitScale, UNIT_ANCHOR_Y)
-    } else {
+    if (!drawMonsterSprite(ctx, center, unit, unitScale)) {
       drawUnitSprite(center, unit.owner, unitScale)
     }
   } else if (unit.kind === 'leader') {
@@ -6151,8 +6251,9 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
   ghostCtx.setTransform(1, 0, 0, 1, 0, 0)
   ghostCtx.clearRect(0, 0, ghostCanvas.width, ghostCanvas.height)
   ghostCtx.setTransform(ghostScale, 0, 0, ghostScale, 0, 0)
+  ghostCtx.imageSmoothingEnabled = true
 
-  const localCenter = { x: ghostCanvas.width / 2, y: ghostCanvas.height / 2 }
+  const localCenter = { x: ghostSize / 2, y: ghostSize / 2 }
   if (unit.kind === 'barricade') {
     ghostCtx.save()
     ghostCtx.translate(localCenter.x, localCenter.y)
@@ -6221,20 +6322,24 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
 
     const spriteSet = getSpriteSetForOwner(unit.owner)
     const troopBaseImage = unit.kind === 'leader' ? spriteSet.leaderBaseImage : spriteSet.unitBaseImage
-    const monsterImage = unit.kind === 'unit' ? getRoguelikeMonsterImage(unit) : null
-    const spriteImage = monsterImage ?? troopBaseImage
-    const spriteOffsetX =
-      monsterImage !== null ? 0 : unit.kind === 'leader' ? spriteSet.leaderOffsetX : spriteSet.unitOffsetX
-    const spriteOffsetY =
-      monsterImage !== null ? 0 : unit.kind === 'leader' ? spriteSet.leaderOffsetY : spriteSet.unitOffsetY
-    if (spriteImage.loaded) {
+    let monsterDrawn = false
+    if (unit.kind === 'unit') {
+      ghostCtx.save()
+      ghostCtx.filter = 'grayscale(1) brightness(1.8)'
+      monsterDrawn = drawMonsterSprite(ghostCtx, localCenter, unit, unitSpriteScale * getUnitRenderScale(unit))
+      ghostCtx.filter = 'none'
+      ghostCtx.restore()
+    }
+    if (!monsterDrawn && troopBaseImage.loaded) {
+      const spriteOffsetX = unit.kind === 'leader' ? spriteSet.leaderOffsetX : spriteSet.unitOffsetX
+      const spriteOffsetY = unit.kind === 'leader' ? spriteSet.leaderOffsetY : spriteSet.unitOffsetY
       ghostCtx.save()
       ghostCtx.filter = 'grayscale(1) brightness(1.8)'
       drawAnchoredImageTo(
         ghostCtx,
-        spriteImage,
+        troopBaseImage,
         localCenter,
-        unitSpriteScale * (unit.kind === 'unit' ? getUnitRenderScale(unit) : 1),
+        unitSpriteScale,
         UNIT_ANCHOR_Y,
         spriteOffsetX,
         spriteOffsetY
@@ -6565,6 +6670,7 @@ function bindCardStripReorder(options: CardStripReorderOptions): void {
       if (event.pointerType === 'mouse' && event.button !== 0) return
       if (!options.canReorder()) return
       if (cardReorderDrag) return
+      lastInputWasTouch = event.pointerType === 'touch'
       event.preventDefault()
       const fromId = options.getCardId(card)
       if (!fromId) return
@@ -6687,9 +6793,24 @@ function handleHandCardActivation(button: HTMLButtonElement): void {
   if (state.ready[planningPlayer]) return
   const cardId = button.dataset.cardId ?? null
   if (!cardId) return
+  const buttonKey = getCardVisualKey(button)
+  if (
+    lastInputWasTouch &&
+    overlayLocked &&
+    selectedCardId === cardId &&
+    buttonKey &&
+    getOverlaySourceKey() === buttonKey
+  ) {
+    selectedCardId = null
+    pendingOrder = null
+    hoverCardKey = null
+    clearOverlayClone()
+    statusEl.textContent = 'Select a card to start planning.'
+    render()
+    return
+  }
   const defId = button.dataset.cardDefId as CardDefId | undefined
   if (!guardTutorialAction('hand_card_select', { cardId, defId: defId ?? null })) return
-  const buttonKey = getCardVisualKey(button)
   if (overlayLocked && buttonKey && getOverlaySourceKey() !== buttonKey) {
     overlayLocked = false
     clearOverlayClone()
@@ -8554,6 +8675,15 @@ function findLineEndHex(origin: Hex, dir: Direction, maxRange?: number): Hex | n
   return lastValid
 }
 
+function findLineExitHex(origin: Hex, dir: Direction): Hex {
+  let cursor = { ...origin }
+  for (;;) {
+    const next = neighbor(cursor, dir)
+    if (!isTile(next)) return next
+    cursor = next
+  }
+}
+
 function getDirectionToNeighbor(from: Hex, to: Hex): Direction | null {
   for (let direction = 0 as Direction; direction < 6; direction += 1) {
     const candidate = neighbor(from, direction)
@@ -8746,6 +8876,81 @@ function parseLightningBarrierEvents(logEntries: string[]): {
     }
   })
   return { arcs, fizzles }
+}
+
+function findTurnEndEffectLogStart(logEntries: string[]): number {
+  return logEntries.findIndex(
+    (entry) =>
+      /^Burn deals \d+ damage to unit .+\.$/.test(entry) ||
+      /^Regeneration heals unit .+ for \d+\.$/.test(entry) ||
+      /^Lightning barrier arcs from unit .+ to unit .+\.$/.test(entry) ||
+      /^Lightning barrier on unit .+ crackles but finds no adjacent targets\.$/.test(entry)
+  )
+}
+
+function buildTurnEndReplayAnimations(
+  before: Record<string, UnitSnapshot>,
+  turnEndLogs: string[],
+  logOffset = 0
+): BoardAnimation[] {
+  if (turnEndLogs.length === 0) return []
+
+  const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
+  const lightningBarrierEvents = parseLightningBarrierEvents(turnEndLogs)
+  const groupedBarrierArcs = new Map<string, Array<{ from: Hex; to: Hex }>>()
+  lightningBarrierEvents.arcs.forEach((event) => {
+    const from =
+      turnEndPositions.get(event.sourceUnitId) ?? state.units[event.sourceUnitId]?.pos ?? before[event.sourceUnitId]?.pos
+    const to =
+      turnEndPositions.get(event.targetUnitId) ??
+      state.units[event.targetUnitId]?.pos ??
+      before[event.targetUnitId]?.pos
+    if (!from || !to) return
+    const arcs = groupedBarrierArcs.get(event.sourceUnitId) ?? []
+    arcs.push({ from: { ...from }, to: { ...to } })
+    groupedBarrierArcs.set(event.sourceUnitId, arcs)
+  })
+
+  const animations: BoardAnimation[] = [...groupedBarrierArcs.values()].map(
+    (arcs) =>
+      ({
+        type: 'lightningBarrier',
+        arcs,
+        duration: LIGHTNING_BARRIER_DURATION_MS,
+      }) as BoardAnimation
+  )
+
+  const lightningBarrierFizzles = lightningBarrierEvents.fizzles
+    .map((unitId) => turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos)
+    .filter((center): center is Hex => center !== undefined)
+  if (lightningBarrierFizzles.length > 0) {
+    animations.push({
+      type: 'lightningFizzle',
+      centers: lightningBarrierFizzles.map((center) => ({ ...center })),
+      duration: LIGHTNING_FIZZLE_DURATION_MS,
+    })
+  }
+
+  animations.push(
+    ...parseBurnDamageTargets(turnEndLogs)
+      .map((unitId) => {
+        const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
+        if (!targetPos) return null
+        return {
+          type: 'burn',
+          target: { ...targetPos },
+          duration: BURN_DURATION_MS,
+        } as BoardAnimation
+      })
+      .filter((animation): animation is BoardAnimation => animation !== null)
+  )
+
+  animations.push({
+    type: 'stateSync',
+    upToLogIndex: logOffset + turnEndLogs.length - 1,
+    duration: 0,
+  })
+  return animations
 }
 
 function snapshotCanActAsUnit(snapshot: Pick<UnitSnapshot, 'kind'>): boolean {
@@ -9385,27 +9590,26 @@ function buildAnimations(
         })
         if (order.defId === 'attack_arrow') {
           const target = findFirstUnitInLine(before, beforeUnit.pos, dir)
-          const end = target ? { ...target.pos } : findLineEndHex(beforeUnit.pos, dir)
-          if (end) {
-            animations.push({
-              type: 'arrow',
-              from: beforeUnit.pos,
-              to: end,
-              duration: ARROW_DURATION_MS,
-            })
-          }
+          animations.push({
+            type: 'lineProjectile',
+            projectile: 'arrow',
+            from: beforeUnit.pos,
+            to: target ? { ...target.pos } : findLineExitHex(beforeUnit.pos, dir),
+            target: target ? { ...target.pos } : undefined,
+            fizzle: !target,
+            duration: ARROW_DURATION_MS,
+          })
         } else if (order.defId === 'attack_ice_bolt') {
           const target = findFirstUnitInLine(before, beforeUnit.pos, dir)
-          const end = target ? { ...target.pos } : findLineEndHex(beforeUnit.pos, dir)
-          if (end) {
-            animations.push({
-              type: 'iceBolt',
-              from: beforeUnit.pos,
-              to: end,
-              target: target ? { ...target.pos } : undefined,
-              duration: ICE_BOLT_DURATION_MS,
-            })
-          }
+          animations.push({
+            type: 'lineProjectile',
+            projectile: 'iceBolt',
+            from: beforeUnit.pos,
+            to: target ? { ...target.pos } : findLineExitHex(beforeUnit.pos, dir),
+            target: target ? { ...target.pos } : undefined,
+            fizzle: !target,
+            duration: ICE_BOLT_DURATION_MS,
+          })
         } else if (order.defId === 'attack_line') {
           const end = findLineEndHex(beforeUnit.pos, dir, effect.maxRange)
           if (end) {
@@ -9428,12 +9632,12 @@ function buildAnimations(
       if (!beforeUnit || !afterUnit) continue
       const direction = afterUnit.facing
       const target = findFirstUnitInLine(before, beforeUnit.pos, direction, effect.maxRange)
-      const destination = target ? { ...target.pos } : findLineEndHex(beforeUnit.pos, direction, effect.maxRange)
-      if (!destination) continue
       animations.push({
-        type: 'fireball',
+        type: 'lineProjectile',
+        projectile: 'fireball',
         from: beforeUnit.pos,
-        to: destination,
+        to: target ? { ...target.pos } : findLineExitHex(beforeUnit.pos, direction),
+        target: target ? { ...target.pos } : undefined,
         duration: FIREBALL_DURATION_MS,
         fizzle: !target,
       })
@@ -9903,60 +10107,10 @@ function resolveNextActionAnimated(): void {
     resolveNextAction(state)
     if (!order) {
       const turnEndLogs = state.log.slice(logStart)
-      const turnEndPositions = parseUnitPositionUpdates(turnEndLogs)
-      const lightningBarrierEvents = parseLightningBarrierEvents(turnEndLogs)
-      const groupedBarrierArcs = new Map<string, Array<{ from: Hex; to: Hex }>>()
-      lightningBarrierEvents.arcs.forEach((event) => {
-        const from = before[event.sourceUnitId]?.pos ?? state.units[event.sourceUnitId]?.pos
-        const to =
-          turnEndPositions.get(event.targetUnitId) ?? state.units[event.targetUnitId]?.pos ?? before[event.targetUnitId]?.pos
-        if (!from || !to) return
-        const arcs = groupedBarrierArcs.get(event.sourceUnitId) ?? []
-        arcs.push({ from: { ...from }, to: { ...to } })
-        groupedBarrierArcs.set(event.sourceUnitId, arcs)
-      })
-      const lightningBarrierAnimations = [...groupedBarrierArcs.values()].map(
-        (arcs) =>
-          ({
-            type: 'lightningBarrier',
-            arcs,
-            duration: LIGHTNING_BARRIER_DURATION_MS,
-          }) as BoardAnimation
-      )
-      const lightningBarrierFizzles = lightningBarrierEvents.fizzles
-        .map((unitId) => before[unitId]?.pos ?? state.units[unitId]?.pos)
-        .filter((center): center is Hex => center !== undefined)
-      const lightningFizzleAnimations: BoardAnimation[] = []
-      if (lightningBarrierFizzles.length > 0) {
-        lightningFizzleAnimations.push({
-          type: 'lightningFizzle',
-          centers: lightningBarrierFizzles.map((center) => ({ ...center })),
-          duration: LIGHTNING_FIZZLE_DURATION_MS,
-        })
-      }
-      const burnAnimations = parseBurnDamageTargets(turnEndLogs)
-        .map((unitId) => {
-          const targetPos = turnEndPositions.get(unitId) ?? state.units[unitId]?.pos ?? before[unitId]?.pos
-          if (!targetPos) return null
-          return {
-            type: 'burn',
-            target: { ...targetPos },
-            duration: BURN_DURATION_MS,
-          } as BoardAnimation
-        })
-        .filter((animation): animation is BoardAnimation => animation !== null)
-      if (lightningBarrierAnimations.length > 0 || lightningFizzleAnimations.length > 0 || burnAnimations.length > 0) {
+      const turnEndAnimations = buildTurnEndReplayAnimations(before, turnEndLogs)
+      if (turnEndAnimations.length > 0) {
         startAnimationBoardSync(before, turnEndLogs)
-        animationQueue.push(
-          ...lightningBarrierAnimations,
-          ...lightningFizzleAnimations,
-          ...burnAnimations,
-          {
-            type: 'stateSync',
-            upToLogIndex: Math.max(0, turnEndLogs.length - 1),
-            duration: 0,
-          }
-        )
+        animationQueue.push(...turnEndAnimations)
         if (!currentAnimation) runNextAnimation()
         return
       }
@@ -9966,9 +10120,28 @@ function resolveNextActionAnimated(): void {
       render()
       return
     }
-    const orderLogs = state.log.slice(logStart)
+    const allLogs = state.log.slice(logStart)
+    let orderLogs = allLogs
+    let turnEndStartIndex = -1
+    let turnEndAnimations: BoardAnimation[] = []
+    if (state.phase === 'planning' && state.winner === null) {
+      turnEndStartIndex = findTurnEndEffectLogStart(allLogs)
+      if (turnEndStartIndex !== -1) {
+        orderLogs = allLogs.slice(0, turnEndStartIndex)
+        turnEndAnimations = buildTurnEndReplayAnimations(before, allLogs.slice(turnEndStartIndex), turnEndStartIndex)
+      }
+    }
     const animations = buildAnimations(order, before, orderLogs)
-    if (animations.length === 0) {
+    const combinedAnimations = [...animations]
+    if (turnEndAnimations.length > 0 && turnEndStartIndex > 0) {
+      combinedAnimations.push({
+        type: 'stateSync',
+        upToLogIndex: turnEndStartIndex - 1,
+        duration: 0,
+      })
+    }
+    combinedAnimations.push(...turnEndAnimations)
+    if (combinedAnimations.length === 0) {
       clearAnimationBoardSync()
       isAnimating = false
       finalizeOnlineResolutionReplay()
@@ -9978,8 +10151,8 @@ function resolveNextActionAnimated(): void {
       }
       return
     }
-    startAnimationBoardSync(before, orderLogs)
-    animationQueue.push(...animations)
+    startAnimationBoardSync(before, allLogs)
+    animationQueue.push(...combinedAnimations)
     if (!currentAnimation) {
       runNextAnimation()
     }
