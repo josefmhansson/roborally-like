@@ -513,6 +513,13 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
     return getFriendlyUnitRefs(state, projected, player, true).map((ref) => ({ unitId: ref.refId }))
   }
 
+  if (defId === 'reinforce_roguelike_split') {
+    return getFriendlyUnitRefs(state, projected, player)
+      .filter((ref) => ref.snapshot.kind === 'unit')
+      .filter((ref) => getAdjacentOpenTiles(projected, ref.snapshot.pos).length > 0)
+      .map((ref) => ({ unitId: ref.refId }))
+  }
+
   if (
     defId === 'reinforce_rage' ||
     defId === 'reinforce_bolster' ||
@@ -829,7 +836,26 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
 }
 
 function generateSpellParams(_state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
-  if (defId === 'spell_invest' || defId === 'spell_divination' || defId === 'spell_brain_freeze') return [{}]
+  if (
+    defId === 'spell_invest' ||
+    defId === 'spell_divination' ||
+    defId === 'spell_brain_freeze' ||
+    defId === 'spell_roguelike_thunderstorm'
+  ) {
+    return [{}]
+  }
+
+  if (defId === 'spell_roguelike_raise') {
+    const params: OrderParams[] = []
+    getFriendlyUnitRefs(_state, projected, player)
+      .filter((ref) => ref.snapshot.roguelikeRole === 'necromancer')
+      .forEach((ref) => {
+        getAdjacentOpenTiles(projected, ref.snapshot.pos).forEach((tile) => {
+          params.push({ unitId: ref.refId, tile: { ...tile } })
+        })
+      })
+    return params
+  }
 
   if (defId === 'spell_pitfall_trap' || defId === 'spell_explosive_trap') {
     return getBarricadeSpawnTiles(projected, player).map((tile) => ({ tile: { ...tile } }))
@@ -993,8 +1019,12 @@ function evaluatePlanningState(
   const ownLeaderStrength = eliminateUnitsMode ? 0 : ownLeader?.strength ?? 0
   const enemyLeaderStrength = eliminateUnitsMode ? 0 : enemyLeader?.strength ?? 0
 
-  const ownUnits = Object.values(projected.units).filter((unit) => unit.owner === player && unit.kind === 'unit')
-  const enemyUnits = Object.values(projected.units).filter((unit) => unit.owner === opponent && unit.kind === 'unit')
+  const ownUnits = Object.values(projected.units).filter(
+    (unit) => unit.owner === player && unit.kind === 'unit' && (!eliminateUnitsMode || !unit.isMinion)
+  )
+  const enemyUnits = Object.values(projected.units).filter(
+    (unit) => unit.owner === opponent && unit.kind === 'unit' && (!eliminateUnitsMode || !unit.isMinion)
+  )
   const ownCombatants = Object.values(projected.units).filter((unit) => unit.owner === player && isCombatUnit(unit))
   const enemyCombatants = Object.values(projected.units).filter((unit) => unit.owner === opponent && isCombatUnit(unit))
   const ownStrength = ownUnits.reduce((sum, unit) => sum + unit.strength, 0)

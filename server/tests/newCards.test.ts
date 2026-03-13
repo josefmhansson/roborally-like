@@ -3473,6 +3473,348 @@ test('multiple slimes killed by the same attack all split before elimination vic
   assert.equal(state.winner, null)
 })
 
+test('roguelike elimination victory ignores enemy minions', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'necromancer' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['hero'] = {
+    id: 'hero',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 4 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['only-minion'] = {
+    id: 'only-minion',
+    owner: 1,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'skeleton_soldier',
+    isMinion: true,
+  }
+
+  const cardId = findCardId(state, 0, 'move_pivot')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'hero', direction: 1 }))
+  readyAndResolve(state)
+
+  assert.equal(state.winner, 0)
+  assert.ok(state.units['only-minion'])
+  assert.ok(state.log.some((entry) => entry === 'Player 1 wins by eliminating all enemy units.'))
+})
+
+test('roguelike split keeps the original unit as the objective target and marks the clone as a minion', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'fire_spirits' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'reinforce_roguelike_split'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['fire-spirit'] = {
+    id: 'fire-spirit',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'fire_spirit',
+  }
+
+  const cardId = findCardId(state, 1, 'reinforce_roguelike_split')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'fire-spirit' }))
+  readyAndResolve(state)
+
+  const spirits = Object.values(state.units).filter((unit) => unit.owner === 1 && unit.roguelikeRole === 'fire_spirit')
+  assert.equal(spirits.length, 2)
+  assert.equal(spirits.filter((unit) => unit.isMinion).length, 1)
+  assert.equal(spirits.filter((unit) => !unit.isMinion).length, 1)
+  spirits.forEach((unit) => {
+    assert.equal(unit.strength, 2)
+  })
+  assert.equal(state.winner, null)
+})
+
+test('ice spirits chill player units and freeze ones that are already slowed', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'ice_spirits' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_forward'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['ice-hero'] = {
+    id: 'ice-hero',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 3 },
+    facing: 0,
+    modifiers: [{ type: 'slow', turnsRemaining: 2 }],
+  }
+  state.units['ice-spirit'] = {
+    id: 'ice-spirit',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 4, r: 1 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'ice_spirit',
+  }
+
+  const cardId = findCardId(state, 0, 'move_forward')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'ice-hero', direction: 0, distance: 1 }))
+  readyAndResolve(state)
+
+  assert.deepEqual(state.units['ice-hero']?.pos, { q: 2, r: 3 })
+  assert.ok(state.units['ice-hero']?.modifiers.some((modifier) => modifier.type === 'chilled'))
+  assert.ok(state.units['ice-hero']?.modifiers.some((modifier) => modifier.type === 'frozen'))
+  assert.ok(state.log.some((entry) => entry === 'Unit ice-hero cannot move this turn.'))
+})
+
+test('fire spirit attacks inflict burn through scalding', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'fire_spirits' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_roguelike_basic'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['fire-spirit'] = {
+    id: 'fire-spirit',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'fire_spirit',
+  }
+  state.units['burn-target'] = {
+    id: 'burn-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 1, 'attack_roguelike_basic')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'fire-spirit', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.ok(state.units['burn-target']?.modifiers.some((modifier) => modifier.type === 'burn'))
+})
+
+test('lightning spirits are immune to friendly chain lightning damage but still conduct it', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'lightning_spirits' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_chain_lightning'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['storm-origin'] = {
+    id: 'storm-origin',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'lightning_spirit',
+  }
+  state.units['storm-conductor'] = {
+    id: 'storm-conductor',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'lightning_spirit',
+  }
+  state.units['storm-target'] = {
+    id: 'storm-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 1, 'attack_chain_lightning')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'storm-origin' }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['storm-conductor']?.strength, 4)
+  assert.equal(state.units['storm-target']?.strength, 2)
+})
+
+test('killing the necromancer wins even if skeleton minions remain', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'necromancer' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['necro-hunter'] = {
+    id: 'necro-hunter',
+    owner: 0,
+    kind: 'unit',
+    strength: 6,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['boss-necro'] = {
+    id: 'boss-necro',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 3, r: 2 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'necromancer',
+  }
+  state.units['leftover-skeleton'] = {
+    id: 'leftover-skeleton',
+    owner: 1,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 4, r: 1 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'skeleton_soldier',
+    isMinion: true,
+  }
+
+  const cardId = findCardId(state, 0, 'attack_execute')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'necro-hunter' }))
+  readyAndResolve(state)
+
+  assert.equal(state.winner, 0)
+  assert.ok(state.units['leftover-skeleton'])
+  assert.equal(state.units['boss-necro'], undefined)
+})
+
+test('necromancer raises a matching skeleton when a player unit is killed', () => {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    victoryCondition: 'eliminate_units' as const,
+    roguelikeEncounterId: 'necromancer' as const,
+    roguelikeMatchNumber: 6,
+  }
+  const state = createGameState(
+    settings,
+    {
+      p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+      p2: Array.from({ length: settings.deckSize }, () => 'attack_execute'),
+    },
+    { p1: 'archmage', p2: null }
+  )
+
+  clearNonLeaderUnits(state)
+  state.units['fallen-mage'] = {
+    id: 'fallen-mage',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 3, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['boss-necro'] = {
+    id: 'boss-necro',
+    owner: 1,
+    kind: 'unit',
+    strength: 5,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'necromancer',
+  }
+  state.units['escort-skeleton'] = {
+    id: 'escort-skeleton',
+    owner: 1,
+    kind: 'unit',
+    strength: 2,
+    pos: { q: 4, r: 1 },
+    facing: 3,
+    modifiers: [],
+    roguelikeRole: 'skeleton_soldier',
+    isMinion: true,
+  }
+
+  const cardId = findCardId(state, 1, 'attack_execute')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'boss-necro' }))
+  readyAndResolve(state)
+
+  const raisedSkeleton = Object.values(state.units).find(
+    (unit) => unit.owner === 1 && unit.pos.q === 3 && unit.pos.r === 2 && unit.roguelikeRole === 'skeleton_mage'
+  )
+  assert.ok(raisedSkeleton)
+  assert.equal(raisedSkeleton.isMinion, true)
+  assert.ok(state.log.some((entry) => entry === `Necromancy raises ${raisedSkeleton.id} from fallen-mage's remains.`))
+})
+
 test('stomp stuns adjacent enemies and blocks their later orders this turn', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -3545,6 +3887,7 @@ test('pack hunt uses scaled damage per adjacent ally', () => {
     ...DEFAULT_SETTINGS,
     deckSize: 6,
     drawPerTurn: 6,
+    roguelikeEncounterId: 'wolf_pack' as const,
     roguelikeMatchNumber: matchNumber,
   }
   const state = createGameState(settings, {
@@ -3599,7 +3942,7 @@ test('pack hunt uses scaled damage per adjacent ally', () => {
   readyAndResolve(state)
 
   assert.deepEqual(state.units['alpha']?.pos, { q: 3, r: 2 })
-  assert.equal(state.units['pack-prey']?.strength, 8)
+  assert.equal(state.units['pack-prey']?.strength, 11)
 })
 
 test('pack hunt can only be planned by alpha wolves', () => {
@@ -3725,32 +4068,34 @@ test('mark resolves movement simultaneously so trailing allies can move into vac
   assert.deepEqual(state.units['mark-front']?.pos, { q: 3, r: 2 })
 })
 
-test('roguelike basic attack scales damage with match number', () => {
+test('monster roguelike basic attack uses the global roguelike damage modifier', () => {
   const matchNumber = 11
   const settings = {
     ...DEFAULT_SETTINGS,
     deckSize: 6,
     drawPerTurn: 6,
+    roguelikeEncounterId: 'slimes' as const,
     roguelikeMatchNumber: matchNumber,
   }
   const state = createGameState(settings, {
-    p1: Array.from({ length: settings.deckSize }, () => 'attack_roguelike_basic'),
-    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_roguelike_basic'),
   })
 
   clearNonLeaderUnits(state)
   state.units['scaled-user'] = {
     id: 'scaled-user',
-    owner: 0,
+    owner: 1,
     kind: 'unit',
     strength: 5,
     pos: { q: 2, r: 2 },
     facing: 0,
     modifiers: [],
+    roguelikeRole: 'slime_small',
   }
   state.units['scaled-target'] = {
     id: 'scaled-target',
-    owner: 1,
+    owner: 0,
     kind: 'unit',
     strength: 7,
     pos: { q: 3, r: 2 },
@@ -3758,9 +4103,51 @@ test('roguelike basic attack scales damage with match number', () => {
     modifiers: [],
   }
 
-  const cardId = findCardId(state, 0, 'attack_roguelike_basic')
-  assert.ok(planOrder(state, 0, cardId, { unitId: 'scaled-user', direction: 0 }))
+  const cardId = findCardId(state, 1, 'attack_roguelike_basic')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'scaled-user', direction: 0 }))
   readyAndResolve(state)
 
-  assert.equal(state.units['scaled-target']?.strength, 4)
+  assert.equal(state.units['scaled-target']?.strength, 5)
+})
+
+test('monster-owned non-roguelike damage cards also use the roguelike damage modifier', () => {
+  const matchNumber = 10
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    deckSize: 6,
+    drawPerTurn: 6,
+    roguelikeEncounterId: 'fire_spirits' as const,
+    roguelikeMatchNumber: matchNumber,
+  }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'attack_fireball'),
+  })
+
+  clearNonLeaderUnits(state)
+  state.units['fire-caster'] = {
+    id: 'fire-caster',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+    roguelikeRole: 'fire_spirit',
+  }
+  state.units['fire-target'] = {
+    id: 'fire-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 8,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 1, 'attack_fireball')
+  assert.ok(planOrder(state, 1, cardId, { unitId: 'fire-caster', direction: 0 }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['fire-target']?.strength, 3)
 })

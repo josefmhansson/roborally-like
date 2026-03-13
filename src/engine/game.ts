@@ -56,25 +56,26 @@ function hasEliminateUnitsVictory(state: GameState): boolean {
   return getVictoryCondition(state) === 'eliminate_units'
 }
 
-function getRoguelikeMatchNumber(state: GameState): number {
+function getRoguelikeMatchNumber(state: Pick<GameState, 'settings'>): number {
   const raw = state.settings.roguelikeMatchNumber
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return ROGUELIKE_DEFAULT_MATCH_NUMBER
   return Math.max(ROGUELIKE_DEFAULT_MATCH_NUMBER, Math.floor(raw))
 }
 
-function getRoguelikeBasicAttackDamage(state: GameState): number {
-  const n = getRoguelikeMatchNumber(state)
-  return 1 + Math.floor(n / 5)
+function isRoguelikeMonsterPlayer(state: Pick<GameState, 'settings'>, player: PlayerId): boolean {
+  return player === 1 && typeof state.settings.roguelikeEncounterId === 'string'
 }
 
-function getRoguelikeSlowAttackDamage(state: GameState): number {
-  const n = getRoguelikeMatchNumber(state)
-  return 5 + Math.floor(n / 2)
+function getRoguelikeMonsterDamageModifier(state: Pick<GameState, 'settings'>): number {
+  return 1 + getRoguelikeMatchNumber(state) / 10
 }
 
-function getRoguelikePackHuntDamagePerAdjacent(state: GameState): number {
-  const n = getRoguelikeMatchNumber(state)
-  return 2 + Math.floor(n / 3)
+function scaleRoguelikeMonsterCardDamage(state: Pick<GameState, 'settings'>, player: PlayerId, damage: number): number {
+  if (!Number.isFinite(damage)) return damage
+  const normalized = Math.max(0, damage)
+  if (normalized <= 0) return 0
+  if (!isRoguelikeMonsterPlayer(state, player)) return normalized
+  return Math.max(1, Math.round(normalized * getRoguelikeMonsterDamageModifier(state)))
 }
 
 function getRoguelikeUnitStrengthForRole(state: GameState, role: Unit['roguelikeRole']): number {
@@ -85,8 +86,20 @@ function getRoguelikeUnitStrengthForRole(state: GameState, role: Unit['roguelike
   if (role === 'troll') return 10 + Math.floor(n / 2)
   if (role === 'alpha_wolf') return 4 + Math.floor(n / 3)
   if (role === 'wolf') return 2 + Math.floor(n / 6)
+  if (role === 'ice_spirit' || role === 'fire_spirit' || role === 'lightning_spirit') {
+    return 2 + Math.floor(n / 3)
+  }
+  if (role === 'bandit') return 3 + Math.floor(n / 5)
+  if (role === 'necromancer') return 4 + Math.floor(n / 4)
+  if (role === 'skeleton_soldier' || role === 'skeleton_warrior' || role === 'skeleton_mage') return 2
   return 1
 }
+
+const RANDOM_SKELETON_ROLES: Array<Extract<Unit['roguelikeRole'], 'skeleton_soldier' | 'skeleton_warrior' | 'skeleton_mage'>> = [
+  'skeleton_soldier',
+  'skeleton_warrior',
+  'skeleton_mage',
+]
 
 function sameHex(a: Hex, b: Hex): boolean {
   return a.q === b.q && a.r === b.r
@@ -108,6 +121,9 @@ function canUnitActWithCard(defId: CardDefId, unit: Unit): boolean {
   if (!canActAsUnit(unit)) return false
   if (defId === 'attack_roguelike_pack_hunt') {
     return unit.roguelikeRole === 'alpha_wolf'
+  }
+  if (defId === 'spell_roguelike_raise') {
+    return unit.roguelikeRole === 'necromancer'
   }
   return true
 }
@@ -170,7 +186,7 @@ function hexDistance(a: Hex, b: Hex): number {
 }
 
 function getAllowedMoveDistance(unit: Unit, requestedDistance: number): number {
-  if (!hasUnitModifier(unit, 'slow')) return requestedDistance
+  if (!hasMovementSlowModifier(unit)) return requestedDistance
   const used = slowMoveUsage.get(unit) ?? 0
   const remaining = Math.max(0, 1 - used)
   return Math.min(requestedDistance, remaining)
@@ -178,7 +194,7 @@ function getAllowedMoveDistance(unit: Unit, requestedDistance: number): number {
 
 function recordSlowMovement(unit: Unit, movedDistance: number): void {
   if (movedDistance <= 0) return
-  if (!hasUnitModifier(unit, 'slow')) return
+  if (!hasMovementSlowModifier(unit)) return
   const used = slowMoveUsage.get(unit) ?? 0
   slowMoveUsage.set(unit, used + movedDistance)
 }
@@ -211,6 +227,72 @@ function hasUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['ty
   return unit.modifiers.some((modifier) => modifier.type === modifierType && isActiveDuration(modifier.turnsRemaining))
 }
 
+function hasMovementSlowModifier(unit: Unit): boolean {
+  return hasUnitModifier(unit, 'slow') || hasUnitModifier(unit, 'chilled')
+}
+
+function hasFrozenCondition(unit: Unit): boolean {
+  return hasUnitModifier(unit, 'frozen')
+}
+
+function isUnitActionBlocked(unit: Unit): boolean {
+  return hasUnitModifier(unit, 'stunned') || hasFrozenCondition(unit)
+}
+
+function isUnitMovementBlocked(unit: Unit): boolean {
+  return hasUnitModifier(unit, 'cannotMove') || isUnitActionBlocked(unit)
+}
+
+function ensureUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['type']): void {
+  if (hasUnitModifier(unit, modifierType)) return
+  unit.modifiers.push({ type: modifierType, turnsRemaining: 'indefinite' })
+}
+
+function syncFrozenModifier(unit: Unit): void {
+  const shouldBeFrozen = hasUnitModifier(unit, 'chilled') && hasUnitModifier(unit, 'slow')
+  const hasFrozen = hasUnitModifier(unit, 'frozen')
+  if (shouldBeFrozen && !hasFrozen) {
+    unit.modifiers.push({ type: 'frozen', turnsRemaining: 'indefinite' })
+    return
+  }
+  if (!shouldBeFrozen && hasFrozen) {
+    unit.modifiers = unit.modifiers.filter((modifier) => modifier.type !== 'frozen')
+  }
+}
+
+function isIceSpiritsEncounter(state: Pick<GameState, 'settings'>): boolean {
+  return state.settings.roguelikeEncounterId === 'ice_spirits'
+}
+
+function isNecromancerEncounter(state: Pick<GameState, 'settings'>): boolean {
+  return state.settings.roguelikeEncounterId === 'necromancer'
+}
+
+function syncEncounterPersistentModifiers(state: GameState): void {
+  Object.values(state.units).forEach((unit) => {
+    if (unit.kind === 'unit' && unit.owner === 0 && isIceSpiritsEncounter(state)) {
+      ensureUnitModifier(unit, 'chilled')
+    }
+    if (unit.kind === 'unit' && unit.owner === 1 && unit.roguelikeRole === 'fire_spirit') {
+      ensureUnitModifier(unit, 'scalding')
+    }
+    if (unit.kind === 'unit' && unit.owner === 1 && unit.roguelikeRole === 'lightning_spirit') {
+      ensureUnitModifier(unit, 'lightningBarrier')
+    }
+    if (unit.kind === 'unit' && unit.owner === 1 && unit.roguelikeRole === 'necromancer') {
+      ensureUnitModifier(unit, 'slow')
+      ensureUnitModifier(unit, 'spellResistance')
+      ensureUnitModifier(unit, 'reinforcementPenalty')
+    }
+    syncFrozenModifier(unit)
+  })
+}
+
+function syncUnitState(state: GameState): void {
+  syncCommanderAuraStrong(state)
+  syncEncounterPersistentModifiers(state)
+}
+
 function countUnitModifierStacks(unit: Unit, modifierType: Unit['modifiers'][number]['type']): number {
   return unit.modifiers.filter(
     (modifier) => modifier.type === modifierType && isActiveDuration(modifier.turnsRemaining)
@@ -232,6 +314,8 @@ function isDebuffModifierType(modifierType: Unit['modifiers'][number]['type']): 
     modifierType === 'cannotMove' ||
     modifierType === 'stunned' ||
     modifierType === 'slow' ||
+    modifierType === 'chilled' ||
+    modifierType === 'frozen' ||
     modifierType === 'reinforcementPenalty' ||
     modifierType === 'burn' ||
     modifierType === 'disarmed' ||
@@ -338,6 +422,7 @@ function isActingUnitRequirementForParam(defId: CardDefId, unitParam: 'unitId' |
         effect.type === 'attackModifier' ||
         effect.type === 'stunAdjacent' ||
         effect.type === 'chainLightning' ||
+        effect.type === 'spawnSkeletonAdjacent' ||
         effect.type === 'harpoon' ||
         effect.type === 'executeForward' ||
         effect.type === 'damageAdjacent' ||
@@ -578,7 +663,7 @@ export function createGameState(
     archmageBonusApplied: [0, 0],
   }
 
-  syncCommanderAuraStrong(state)
+  syncUnitState(state)
   drawPhase(state)
   return state
 }
@@ -679,11 +764,34 @@ function applyArchmageTurnStartActionBudgetBonus(state: GameState): void {
   state.archmageBonusApplied = applied
 }
 
+function getEncounterDrawDelta(state: GameState, player: PlayerId): number {
+  const encounterId = state.settings.roguelikeEncounterId
+  if (player !== 1 || !encounterId) return 0
+  const matchNumber = getRoguelikeMatchNumber(state)
+  if (encounterId === 'bandits') {
+    const desired = 5 + Math.floor(matchNumber / 4)
+    return desired - state.settings.drawPerTurn
+  }
+  if (encounterId === 'necromancer') {
+    const skeletonCount = Object.values(state.units).filter(
+      (unit) =>
+        unit.owner === 1 &&
+        unit.kind === 'unit' &&
+        (unit.roguelikeRole === 'skeleton_soldier' ||
+          unit.roguelikeRole === 'skeleton_warrior' ||
+          unit.roguelikeRole === 'skeleton_mage')
+    ).length
+    const desired = 3 + skeletonCount
+    return desired - state.settings.drawPerTurn
+  }
+  return 0
+}
+
 export function drawPhase(state: GameState): void {
-  syncCommanderAuraStrong(state)
+  syncUnitState(state)
   applyArchmageTurnStartActionBudgetBonus(state)
   for (const player of [0, 1] as PlayerId[]) {
-    const bonusDraw = consumePlayerDrawModifiers(state, player)
+    const bonusDraw = consumePlayerDrawModifiers(state, player) + getEncounterDrawDelta(state, player)
     const drawCount = Math.max(0, state.settings.drawPerTurn + bonusDraw)
     drawCards(state, player, drawCount)
     if (bonusDraw > 0) {
@@ -982,7 +1090,7 @@ export function simulatePlannedState(state: GameState, player: PlayerId): GameSt
     log: [],
   }
 
-  syncCommanderAuraStrong(sim)
+  syncUnitState(sim)
   for (const order of state.players[player].orders) {
     applyOrderForPlanning(sim, order)
   }
@@ -1034,7 +1142,7 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
     log: [],
   }
 
-  syncCommanderAuraStrong(sim)
+  syncUnitState(sim)
   const segments: { from: Hex; to: Hex }[] = []
 
   for (const order of state.players[player].orders) {
@@ -1119,7 +1227,11 @@ export function getPlannedMoveSegments(state: GameState, player: PlayerId): { fr
         })
         continue
       }
-      else if (effect.type !== 'budget' && effect.type !== 'chainLightning') {
+      else if (
+        effect.type !== 'budget' &&
+        effect.type !== 'chainLightning' &&
+        effect.type !== 'chainLightningAllFriendly'
+      ) {
         applyEffect(sim, order, effect, context)
       }
     }
@@ -1172,7 +1284,7 @@ export function getPlannedOrderValidity(state: GameState, player: PlayerId): boo
     log: [],
   }
 
-  syncCommanderAuraStrong(sim)
+  syncUnitState(sim)
   const validity: boolean[] = []
   for (const order of state.players[player].orders) {
     const canApply = canApplyOrder(sim, order, state)
@@ -1245,15 +1357,7 @@ function tickUnitModifiers(state: GameState): void {
       }
     }
     if (hasUnitModifier(afterDamage, 'berserk')) {
-      delete state.units[afterDamage.id]
-      state.log.push(`Unit ${afterDamage.id} is destroyed.`)
-      maybeSplitDestroyedSlime(state, afterDamage)
-      if (isLeaderUnit(afterDamage)) {
-        state.winner = afterDamage.owner === 0 ? 1 : 0
-        state.log.push(`Player ${state.winner + 1} wins by defeating the enemy leader.`)
-        return
-      }
-      checkVictoryConditions(state)
+      destroyUnit(state, afterDamage)
       return
     }
     afterDamage.modifiers.forEach((modifier) => {
@@ -1261,6 +1365,7 @@ function tickUnitModifiers(state: GameState): void {
       modifier.turnsRemaining -= 1
     })
     afterDamage.modifiers = afterDamage.modifiers.filter((modifier) => isActiveDuration(modifier.turnsRemaining))
+    syncFrozenModifier(afterDamage)
   })
   Object.values(state.units).forEach((unit) => {
     if (!isLeaderUnit(unit)) return
@@ -1270,6 +1375,7 @@ function tickUnitModifiers(state: GameState): void {
       unit.modifiers.unshift({ ...baseModifier })
     })
   })
+  syncEncounterPersistentModifiers(state)
 }
 
 function validateUnitRequirementParam(
@@ -1537,6 +1643,7 @@ function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers
   }
   if (modifier === 'vulnerable' || modifier === 'strong') {
     unit.modifiers.push({ type: modifier, turnsRemaining: normalizedTurns })
+    syncFrozenModifier(unit)
     const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
     const stacks = unit.modifiers.filter(
       (entry) => entry.type === modifier && isActiveDuration(entry.turnsRemaining)
@@ -1550,6 +1657,7 @@ function addUnitModifier(state: GameState, unit: Unit, modifier: Unit['modifiers
   } else {
     unit.modifiers.push({ type: modifier, turnsRemaining: normalizedTurns })
   }
+  syncFrozenModifier(unit)
   const durationLabel = normalizedTurns === 'indefinite' ? 'indefinitely' : `for ${normalizedTurns} turn(s)`
   state.log.push(`Unit ${unit.id} is affected: ${modifier} ${durationLabel}.`)
 }
@@ -1558,6 +1666,7 @@ function clearUnitDebuffs(state: GameState, unit: Unit): void {
   const remaining = unit.modifiers.filter((modifier) => !isUnitModifierDebuff(modifier))
   if (remaining.length === unit.modifiers.length) return
   unit.modifiers = remaining
+  syncFrozenModifier(unit)
   state.log.push(`Unit ${unit.id} has debuffs removed.`)
 }
 
@@ -1568,12 +1677,14 @@ function clearUnitModifiers(state: GameState, unit: Unit): void {
     const baseTypes = new Set(baseModifiers.map((modifier) => modifier.type))
     const hadRemovable = unit.modifiers.some((modifier) => !baseTypes.has(modifier.type))
     unit.modifiers = baseModifiers
+    syncFrozenModifier(unit)
     if (hadRemovable) {
       state.log.push(`Unit ${unit.id} has removable modifiers removed.`)
     }
     return
   }
   unit.modifiers = []
+  syncFrozenModifier(unit)
   state.log.push(`Unit ${unit.id} has all modifiers removed.`)
 }
 
@@ -1609,8 +1720,12 @@ function addPlayerModifier(
   state.log.push(`Player ${player + 1} suffers Brain Freeze ${durationLabel}.`)
 }
 
+function countsForEliminationObjective(unit: Unit): boolean {
+  return unit.kind === 'unit' && !unit.isMinion
+}
+
 function hasUnitsForEliminationObjective(state: GameState, player: PlayerId): boolean {
-  return Object.values(state.units).some((unit) => unit.owner === player && unit.kind === 'unit')
+  return Object.values(state.units).some((unit) => unit.owner === player && countsForEliminationObjective(unit))
 }
 
 function checkVictoryConditions(state: GameState): void {
@@ -1642,6 +1757,21 @@ function getSlimeSplitChildRole(role: Unit['roguelikeRole']): Unit['roguelikeRol
   if (role === 'slime_grand') return 'slime_mid'
   if (role === 'slime_mid') return 'slime_small'
   return null
+}
+
+function pickRandomSkeletonRole(): Extract<Unit['roguelikeRole'], 'skeleton_soldier' | 'skeleton_warrior' | 'skeleton_mage'> {
+  const index = Math.floor(Math.random() * RANDOM_SKELETON_ROLES.length)
+  return RANDOM_SKELETON_ROLES[Math.max(0, Math.min(index, RANDOM_SKELETON_ROLES.length - 1))]
+}
+
+function getSkeletonRoleForDestroyedPlayerUnit(
+  state: Pick<GameState, 'playerClasses'>,
+  unit: Unit
+): Extract<Unit['roguelikeRole'], 'skeleton_soldier' | 'skeleton_warrior' | 'skeleton_mage'> {
+  const classId = getPlayerLeaderClass(state, unit.owner)
+  if (classId === 'archmage') return 'skeleton_mage'
+  if (classId === 'warleader') return 'skeleton_warrior'
+  return 'skeleton_soldier'
 }
 
 function findNearestOpenTileForSplit(state: GameState, origin: Hex): Hex | null {
@@ -1683,6 +1813,69 @@ function maybeSplitDestroyedSlime(state: GameState, destroyed: Unit): void {
   }
 }
 
+function spawnSkeletonAtTile(
+  state: GameState,
+  tile: Hex,
+  facing: Direction,
+  role: Extract<Unit['roguelikeRole'], 'skeleton_soldier' | 'skeleton_warrior' | 'skeleton_mage'>
+): UnitId | null {
+  const spawnedId = spawnUnit(state, 1, tile, facing, 'unit', 2, role)
+  if (!spawnedId) return null
+  const spawned = state.units[spawnedId]
+  if (spawned) {
+    spawned.isMinion = true
+  }
+  return spawnedId
+}
+
+function maybeSpawnNecromancerSkeletonFromDestroyedPlayerUnit(state: GameState, destroyed: Unit): void {
+  if (!isNecromancerEncounter(state)) return
+  if (destroyed.owner !== 0 || destroyed.kind !== 'unit') return
+  const role = getSkeletonRoleForDestroyedPlayerUnit(state, destroyed)
+  const spawnedId = spawnSkeletonAtTile(state, destroyed.pos, destroyed.facing, role)
+  if (spawnedId) {
+    state.log.push(`Necromancy raises ${spawnedId} from ${destroyed.id}'s remains.`)
+  }
+}
+
+function destroyUnit(state: GameState, destroyed: Unit, logEntry = `Unit ${destroyed.id} is destroyed.`): void {
+  delete state.units[destroyed.id]
+  state.log.push(logEntry)
+  maybeSplitDestroyedSlime(state, destroyed)
+  maybeSpawnNecromancerSkeletonFromDestroyedPlayerUnit(state, destroyed)
+  if (isLeaderUnit(destroyed)) {
+    state.winner = destroyed.owner === 0 ? 1 : 0
+    state.log.push(`Player ${state.winner + 1} wins by defeating the enemy leader.`)
+    return
+  }
+  checkVictoryConditions(state)
+}
+
+function splitUnit(state: GameState, unit: Unit): boolean {
+  if (unit.kind !== 'unit') return false
+  const splitTile = findNearestOpenTileForSplit(state, unit.pos)
+  if (!splitTile) return false
+
+  const childStrength = Math.max(1, Math.ceil(unit.strength / 2))
+  const childModifiers = unit.modifiers.map((modifier) => ({ ...modifier }))
+  const extraRole = unit.roguelikeRole
+
+  unit.strength = childStrength
+  unit.modifiers = childModifiers.map((modifier) => ({ ...modifier }))
+  syncFrozenModifier(unit)
+
+  const spawnedId = spawnUnit(state, unit.owner, splitTile, unit.facing, 'unit', childStrength, extraRole)
+  if (!spawnedId) return false
+  const spawned = state.units[spawnedId]
+  if (spawned) {
+    spawned.modifiers = childModifiers.map((modifier) => ({ ...modifier }))
+    spawned.isMinion = true
+    syncFrozenModifier(spawned)
+  }
+  state.log.push(`Split: ${unit.id} lobs from ${unit.pos.q},${unit.pos.r} to ${splitTile.q},${splitTile.r}.`)
+  return true
+}
+
 type DamageOptions = {
   allowSpikes?: boolean
   ignoreUndying?: boolean
@@ -1696,7 +1889,7 @@ function applyDamage(
   sourceDefId?: CardDefId,
   options: DamageOptions = {}
 ): void {
-  syncCommanderAuraStrong(state)
+  syncUnitState(state)
   const liveUnit = state.units[unit.id] ?? unit
   const liveSourceUnit = sourceUnit ? (state.units[sourceUnit.id] ?? null) : null
   if (!options.ignoreUndying && hasUnitModifier(liveUnit, 'undying')) {
@@ -1717,16 +1910,19 @@ function applyDamage(
     state.log.push(`Spikes reflect 1 damage to unit ${liveSourceUnit.id}.`)
     applyDamage(state, liveSourceUnit, 1, null, undefined, { allowSpikes: false })
   }
+  const targetAfterDamage = state.units[liveUnit.id]
+  if (
+    targetAfterDamage &&
+    targetAfterDamage.strength > 0 &&
+    liveSourceUnit &&
+    sourceDefId &&
+    cardCountsAsType(sourceDefId, 'attack') &&
+    hasUnitModifier(liveSourceUnit, 'scalding')
+  ) {
+    addUnitModifier(state, targetAfterDamage, 'burn', 'indefinite')
+  }
   if (liveUnit.strength <= 0) {
-    delete state.units[liveUnit.id]
-    state.log.push(`Unit ${liveUnit.id} is destroyed.`)
-    maybeSplitDestroyedSlime(state, liveUnit)
-    if (isLeaderUnit(liveUnit)) {
-      state.winner = liveUnit.owner === 0 ? 1 : 0
-      state.log.push(`Player ${state.winner + 1} wins by defeating the enemy leader.`)
-      return
-    }
-    checkVictoryConditions(state)
+    destroyUnit(state, liveUnit)
   }
 }
 
@@ -1778,7 +1974,7 @@ function triggerTrapAtCurrentTile(state: GameState, unit: Unit): { stopMovement:
 
 function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: number): void {
   if (!canActAsUnit(unit)) return
-  if (hasUnitModifier(unit, 'cannotMove') || hasUnitModifier(unit, 'stunned')) {
+  if (isUnitMovementBlocked(unit)) {
     state.log.push(`Unit ${unit.id} cannot move this turn.`)
     return
   }
@@ -1824,7 +2020,7 @@ function moveUnit(state: GameState, unit: Unit, direction: Direction, distance: 
 
 function moveUnitWithPath(state: GameState, unit: Unit, direction: Direction, distance: number): Hex | null {
   if (!canActAsUnit(unit)) return null
-  if (hasUnitModifier(unit, 'cannotMove') || hasUnitModifier(unit, 'stunned')) {
+  if (isUnitMovementBlocked(unit)) {
     return { ...unit.pos }
   }
   const maxDistance = getAllowedMoveDistance(unit, distance)
@@ -1878,7 +2074,7 @@ function getCommanderSupportParticipants(
         unit.owner === player &&
         unit.id !== excludeUnitId &&
         canActAsUnit(unit) &&
-        !hasUnitModifier(unit, 'stunned') &&
+        !isUnitActionBlocked(unit) &&
         isAdjacentHex(unit.pos, tile)
     )
     .sort((a, b) => a.id.localeCompare(b.id))
@@ -1890,7 +2086,7 @@ function getPincerAttackParticipants(state: GameState, player: PlayerId, tile: H
     const adjacent = neighbor(tile, dir)
     if (!inBounds(state.boardRows, state.boardCols, adjacent)) return []
     const unit = getUnitAt(state, adjacent)
-    if (!unit || unit.owner !== player || !canActAsUnit(unit) || hasUnitModifier(unit, 'stunned')) {
+    if (!unit || unit.owner !== player || !canActAsUnit(unit) || isUnitActionBlocked(unit)) {
       return []
     }
     participants.push(unit)
@@ -1917,7 +2113,7 @@ function moveUnitFormation(state: GameState, unitIds: UnitId[], direction: Direc
     if (!unit || !canActAsUnit(unit)) return
     lastKnownPositions.set(unitId, { ...unit.pos })
     movedSteps.set(unitId, 0)
-    if (hasUnitModifier(unit, 'cannotMove') || hasUnitModifier(unit, 'stunned')) {
+    if (isUnitMovementBlocked(unit)) {
       state.log.push(`Unit ${unit.id} cannot move this turn.`)
       cannotMoveLogged.add(unitId)
       remainingSteps.set(unitId, 0)
@@ -2059,7 +2255,7 @@ function resolveSimultaneousMovePlans(state: GameState, plans: SimultaneousMoveP
 
   const cannotMove = new Set<UnitId>()
   resolvedPlans.forEach((plan, unitId) => {
-    if (hasUnitModifier(plan.unit, 'cannotMove') || hasUnitModifier(plan.unit, 'stunned')) {
+    if (isUnitMovementBlocked(plan.unit)) {
       cannotMove.add(unitId)
     }
   })
@@ -2190,7 +2386,7 @@ function hasResolvableDoubleStepsFollowUp(
 
 function teleportUnit(state: GameState, unit: Unit, target: Hex, maxDistance: number): boolean {
   if (!canActAsUnit(unit)) return false
-  if (hasUnitModifier(unit, 'cannotMove') || hasUnitModifier(unit, 'stunned')) {
+  if (isUnitMovementBlocked(unit)) {
     state.log.push(`Unit ${unit.id} cannot move this turn.`)
     return false
   }
@@ -2236,6 +2432,46 @@ function getAdjacentChainLightningTargets(
     targets.push(candidate)
   }
   return targets
+}
+
+function isFriendlyChainLightningImmune(unit: Unit, player: PlayerId): boolean {
+  return unit.owner === player && unit.kind === 'unit' && unit.roguelikeRole === 'lightning_spirit'
+}
+
+function resolveChainLightningFromOrigin(
+  state: GameState,
+  originUnit: Unit,
+  damage: number,
+  sourceCardId: CardDefId,
+  eligibleTargetIds: Set<string>
+): string[] {
+  const visited = new Set<string>([originUnit.id])
+  const path: string[] = []
+  let currentOrigin = { ...originUnit.pos }
+  while (state.winner === null) {
+    const candidates = getAdjacentChainLightningTargets(state, currentOrigin, visited, sourceCardId).filter((target) =>
+      eligibleTargetIds.has(target.id)
+    )
+    if (candidates.length === 0) break
+    const choiceIndex = Math.floor(Math.random() * candidates.length)
+    const target = candidates[Math.max(0, Math.min(choiceIndex, candidates.length - 1))]
+    visited.add(target.id)
+    path.push(target.id)
+    const nextOrigin = { ...target.pos }
+    if (!isFriendlyChainLightningImmune(target, originUnit.owner)) {
+      applyDamage(state, target, damage, originUnit, sourceCardId)
+    }
+    currentOrigin = nextOrigin
+  }
+  return path
+}
+
+function logChainLightningResult(state: GameState, originUnitId: UnitId, path: string[]): void {
+  if (path.length === 0) {
+    state.log.push(`Chain lightning from unit ${originUnitId} finds no adjacent targets.`)
+    return
+  }
+  state.log.push(`Chain lightning from unit ${originUnitId} path: ${path.join(' -> ')}.`)
 }
 
 function getAttackTargets(
@@ -2328,7 +2564,7 @@ function applyOrder(state: GameState, order: Order): void {
   const actingUnit = getPrimaryActingUnit(state, order)
   if (isActingUnitRequirement(order.defId)) {
     if (!actingUnit) return
-    if (hasUnitModifier(actingUnit, 'stunned')) {
+    if (isUnitActionBlocked(actingUnit)) {
       state.log.push(`Unit ${actingUnit.id} is stunned and cannot act this turn.`)
       return
     }
@@ -2338,10 +2574,10 @@ function applyOrder(state: GameState, order: Order): void {
     lastMoveSucceededByUnit: {},
     resolvedCompositeEffects: new Set(),
   }
-  syncCommanderAuraStrong(state)
+  syncUnitState(state)
   for (const effect of def.effects) {
     applyEffect(state, order, effect, context)
-    syncCommanderAuraStrong(state)
+    syncUnitState(state)
     checkVictoryConditions(state)
     if (state.winner !== null) return
   }
@@ -2352,18 +2588,18 @@ function applyOrderForPlanning(state: GameState, order: Order): void {
   const actingUnit = getPrimaryActingUnit(state, order)
   if (isActingUnitRequirement(order.defId)) {
     if (!actingUnit) return
-    if (hasUnitModifier(actingUnit, 'stunned')) return
+    if (isUnitActionBlocked(actingUnit)) return
   }
   const context: OrderResolutionContext = {
     movedUnitOrigins: {},
     lastMoveSucceededByUnit: {},
     resolvedCompositeEffects: new Set(),
   }
-  syncCommanderAuraStrong(state)
+  syncUnitState(state)
   for (const effect of def.effects) {
-    if (effect.type === 'budget' || effect.type === 'chainLightning') continue
+    if (effect.type === 'budget' || effect.type === 'chainLightning' || effect.type === 'chainLightningAllFriendly') continue
     applyEffect(state, order, effect, context)
-    syncCommanderAuraStrong(state)
+    syncUnitState(state)
     checkVictoryConditions(state)
     if (state.winner !== null) return
   }
@@ -2552,6 +2788,33 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       continue
     }
 
+    if (effect.type === 'splitUnit') {
+      const rawUnitId = getOrderUnitParam(params, effect.unitParam)
+      if (!rawUnitId) return false
+      const resolved = resolveUnitId(state, order.player, rawUnitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || unit.kind !== 'unit') return false
+      if (!canCardTargetUnit(order.defId, unit)) return false
+      if (!findNearestOpenTileForSplit(state, unit.pos)) return false
+      continue
+    }
+
+    if (effect.type === 'spawnSkeletonAdjacent') {
+      const rawUnitId = getOrderUnitParam(params, effect.unitParam)
+      const tile = getOrderTileParam(params, effect.tileParam)
+      if (!rawUnitId || !tile) return false
+      const resolved = resolveUnitId(state, order.player, rawUnitId)
+      if (!resolved) return false
+      const unit = state.units[resolved]
+      if (!unit || unit.kind !== 'unit') return false
+      if (!canUnitActWithCard(order.defId, unit)) return false
+      if (!inBounds(state.boardRows, state.boardCols, tile)) return false
+      if (!isAdjacentHex(unit.pos, tile)) return false
+      if (getUnitAt(state, tile)) return false
+      continue
+    }
+
     if (effect.type === 'budget') {
       continue
     }
@@ -2560,7 +2823,11 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
       continue
     }
 
-    if (effect.type === 'boostAllFriendly' || effect.type === 'teamAttackForward') {
+    if (
+      effect.type === 'boostAllFriendly' ||
+      effect.type === 'teamAttackForward' ||
+      effect.type === 'chainLightningAllFriendly'
+    ) {
       continue
     }
 
@@ -2875,7 +3142,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
       if (!unit || !canCardTargetUnit(order.defId, unit)) return
-      applyDamage(state, unit, effect.amount, null, order.defId)
+      applyDamage(state, unit, scaleRoguelikeMonsterCardDamage(state, order.player, effect.amount), null, order.defId)
       return
     }
     case 'damageTile': {
@@ -2883,7 +3150,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!tile) return
       const unit = getUnitAt(state, tile)
       if (!unit || !isDamageableUnit(unit)) return
-      applyDamage(state, unit, effect.amount, null, order.defId)
+      applyDamage(state, unit, scaleRoguelikeMonsterCardDamage(state, order.player, effect.amount), null, order.defId)
       return
     }
     case 'damageTileArea': {
@@ -2901,13 +3168,25 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (centerUnitId) {
         const centerUnit = state.units[centerUnitId]
         if (centerUnit && isDamageableUnit(centerUnit)) {
-          applyDamage(state, centerUnit, effect.centerAmount, null, order.defId)
+          applyDamage(
+            state,
+            centerUnit,
+            scaleRoguelikeMonsterCardDamage(state, order.player, effect.centerAmount),
+            null,
+            order.defId
+          )
         }
       }
       splashTargetIds.forEach((targetId) => {
         const target = state.units[targetId]
         if (!target || !isDamageableUnit(target)) return
-        applyDamage(state, target, effect.splashAmount, null, order.defId)
+        applyDamage(
+          state,
+          target,
+          scaleRoguelikeMonsterCardDamage(state, order.player, effect.splashAmount),
+          null,
+          order.defId
+        )
       })
       return
     }
@@ -2920,7 +3199,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         .forEach((unit) => {
           const liveTarget = state.units[unit.id]
           if (!liveTarget || !isDamageableUnit(liveTarget)) return
-          applyDamage(state, liveTarget, effect.amount, null, order.defId)
+          applyDamage(
+            state,
+            liveTarget,
+            scaleRoguelikeMonsterCardDamage(state, order.player, effect.amount),
+            null,
+            order.defId
+          )
           const afterDamage = state.units[unit.id]
           if (!afterDamage || !effect.modifier || !effect.turns || !canActAsUnit(afterDamage)) return
           addUnitModifier(state, afterDamage, effect.modifier, effect.turns)
@@ -2950,6 +3235,34 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (spawnedId && effect.mapToOrder) {
         registerSpawnedByOrder(state, order.id, effect.tileParam, spawnedId)
       }
+      if (!spawnedId) {
+        state.log.push(`${CARD_DEFS[order.defId].name} fails (tile occupied or blocked).`)
+      }
+      return
+    }
+    case 'splitUnit': {
+      const resolvedUnitId = getOrderUnitParam(params, effect.unitParam)
+        ? resolveUnitId(state, order.player, getOrderUnitParam(params, effect.unitParam)!)
+        : null
+      if (!resolvedUnitId) return
+      const unit = state.units[resolvedUnitId]
+      if (!unit || unit.kind !== 'unit' || !canCardTargetUnit(order.defId, unit)) return
+      if (!splitUnit(state, unit)) {
+        state.log.push(`${CARD_DEFS[order.defId].name} fails (no room to split).`)
+      }
+      return
+    }
+    case 'spawnSkeletonAdjacent': {
+      const rawUnitId = getOrderUnitParam(params, effect.unitParam)
+      const tile = getOrderTileParam(params, effect.tileParam)
+      if (!rawUnitId || !tile) return
+      const resolvedUnitId = resolveUnitId(state, order.player, rawUnitId)
+      if (!resolvedUnitId) return
+      const necromancer = state.units[resolvedUnitId]
+      if (!necromancer || necromancer.kind !== 'unit' || !canUnitActWithCard(order.defId, necromancer)) return
+      if (!isAdjacentHex(necromancer.pos, tile)) return
+      const role = pickRandomSkeletonRole()
+      const spawnedId = spawnSkeletonAtTile(state, tile, necromancer.facing, role)
       if (!spawnedId) {
         state.log.push(`${CARD_DEFS[order.defId].name} fails (tile occupied or blocked).`)
       }
@@ -3003,11 +3316,17 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!actingUnit || !canActAsUnit(actingUnit)) return
       if (getDirectionToAdjacentTile(actingUnit.pos, tile) === null) return
       const participants = [actingUnit, ...getCommanderSupportParticipants(state, order.player, tile, actingUnit.id)]
-      applyRepeatedUnitSourcedDamage(state, participants, effect.damagePerAdjacentAlly, order.defId, () => {
-        const target = getUnitAt(state, tile)
-        if (!target || !canCardTargetUnit(order.defId, target)) return null
-        return target
-      })
+      applyRepeatedUnitSourcedDamage(
+        state,
+        participants,
+        scaleRoguelikeMonsterCardDamage(state, order.player, effect.damagePerAdjacentAlly),
+        order.defId,
+        () => {
+          const target = getUnitAt(state, tile)
+          if (!target || !canCardTargetUnit(order.defId, target)) return null
+          return target
+        }
+      )
       return
     }
     case 'pincerAttack': {
@@ -3018,7 +3337,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         if (getPincerAttackParticipants(state, order.player, target.pos).length !== 6) return
         const liveTarget = state.units[target.id]
         if (!liveTarget || !canActAsUnit(liveTarget)) return
-        applyDamage(state, liveTarget, effect.damage, null, order.defId)
+        applyDamage(
+          state,
+          liveTarget,
+          scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+          null,
+          order.defId
+        )
       })
       return
     }
@@ -3038,7 +3363,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       applyRepeatedUnitSourcedDamage(
         state,
         damageSources,
-        effect.damage,
+        scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
         order.defId,
         () => {
           const target = getUnitAt(state, tile)
@@ -3050,15 +3375,21 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
     }
     case 'teamAttackForward': {
       const attackers = Object.values(state.units)
-        .filter((unit) => unit.owner === order.player && canActAsUnit(unit) && !hasUnitModifier(unit, 'stunned'))
+        .filter((unit) => unit.owner === order.player && canActAsUnit(unit) && !isUnitActionBlocked(unit))
         .sort((a, b) => a.id.localeCompare(b.id))
-      applyRepeatedUnitSourcedDamage(state, attackers, effect.damage, order.defId, (liveSourceUnit) => {
-        const targetHex = neighbor(liveSourceUnit.pos, liveSourceUnit.facing)
-        if (!inBounds(state.boardRows, state.boardCols, targetHex)) return null
-        const target = getUnitAt(state, targetHex)
-        if (!target || !canCardTargetUnit(order.defId, target)) return null
-        return target
-      })
+      applyRepeatedUnitSourcedDamage(
+        state,
+        attackers,
+        scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+        order.defId,
+        (liveSourceUnit) => {
+          const targetHex = neighbor(liveSourceUnit.pos, liveSourceUnit.facing)
+          if (!inBounds(state.boardRows, state.boardCols, targetHex)) return null
+          const target = getUnitAt(state, targetHex)
+          if (!target || !canCardTargetUnit(order.defId, target)) return null
+          return target
+        }
+      )
       return
     }
     case 'face': {
@@ -3076,12 +3407,8 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!resolvedUnitId) return
       const unit = state.units[resolvedUnitId]
       if (!unit || !canActAsUnit(unit)) return
-      let damage = typeof effect.damage === 'number' ? effect.damage : unit.strength
-      if (order.defId === 'attack_roguelike_basic') {
-        damage = getRoguelikeBasicAttackDamage(state)
-      } else if (order.defId === 'attack_roguelike_slow') {
-        damage = getRoguelikeSlowAttackDamage(state)
-      }
+      const baseDamage = typeof effect.damage === 'number' ? effect.damage : unit.strength
+      const damage = scaleRoguelikeMonsterCardDamage(state, order.player, baseDamage)
       const directions = resolveDirections(unit.facing, params, effect.directions)
       const targetIds = directions.flatMap((dir) =>
         getAttackTargets(state, unit, effect.mode, dir, effect.maxRange).map((target) => target.id)
@@ -3089,7 +3416,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       targetIds.forEach((targetId) => {
         const target = state.units[targetId]
         if (!target) return
-        applyDamage(state, target, damage, unit)
+        applyDamage(state, target, damage, unit, order.defId)
       })
       return
     }
@@ -3122,11 +3449,17 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         const splashTargetIds = Object.values(state.units)
           .filter((candidate) => candidate.id !== target.id && hexDistance(candidate.pos, targetPos) <= effect.splashRadius)
           .map((candidate) => candidate.id)
-        applyDamage(state, target, effect.damage, unit, order.defId)
+        applyDamage(state, target, scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage), unit, order.defId)
         splashTargetIds.forEach((targetId) => {
           const splashTarget = state.units[targetId]
           if (!splashTarget || !canCardTargetUnit(order.defId, splashTarget)) return
-          applyDamage(state, splashTarget, effect.damage, unit, order.defId)
+          applyDamage(
+            state,
+            splashTarget,
+            scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+            unit,
+            order.defId
+          )
         })
       })
       return
@@ -3142,7 +3475,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!target) return
       if (!canCardTargetUnit(order.defId, target)) return
 
-      applyDamage(state, target, effect.damage, actingUnit, order.defId)
+      applyDamage(
+        state,
+        target,
+        scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+        actingUnit,
+        order.defId
+      )
       let pulledUnit = state.units[target.id]
       if (!pulledUnit) return
 
@@ -3177,14 +3516,17 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!target || !canCardTargetUnit(order.defId, target)) return
 
       if (target.kind === 'leader') {
-        applyDamage(state, target, effect.leaderDamage, actingUnit, order.defId)
+        applyDamage(
+          state,
+          target,
+          scaleRoguelikeMonsterCardDamage(state, order.player, effect.leaderDamage),
+          actingUnit,
+          order.defId
+        )
         return
       }
 
-      delete state.units[target.id]
-      state.log.push(`Unit ${target.id} is executed.`)
-      maybeSplitDestroyedSlime(state, target)
-      checkVictoryConditions(state)
+      destroyUnit(state, target, `Unit ${target.id} is executed.`)
       return
     }
     case 'damageAdjacent': {
@@ -3205,7 +3547,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       targetIds.forEach((targetId) => {
         const target = state.units[targetId]
         if (!target) return
-        applyDamage(state, target, effect.amount, actingUnit, order.defId)
+        applyDamage(
+          state,
+          target,
+          scaleRoguelikeMonsterCardDamage(state, order.player, effect.amount),
+          actingUnit,
+          order.defId
+        )
       })
       return
     }
@@ -3235,29 +3583,37 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       const actingUnit = state.units[resolvedUnitId]
       if (!actingUnit || !canActAsUnit(actingUnit)) return
       const eligibleTargetIds = new Set(Object.keys(state.units))
-
-      const visited = new Set<string>([actingUnit.id])
-      const path: string[] = []
-      let currentOrigin = { ...actingUnit.pos }
-      while (state.winner === null) {
-        const candidates = getAdjacentChainLightningTargets(state, currentOrigin, visited, order.defId).filter((target) =>
-          eligibleTargetIds.has(target.id)
+      const path = resolveChainLightningFromOrigin(
+        state,
+        actingUnit,
+        scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+        order.defId,
+        eligibleTargetIds
+      )
+      logChainLightningResult(state, actingUnit.id, path)
+      return
+    }
+    case 'chainLightningAllFriendly': {
+      const eligibleTargetIds = new Set(Object.keys(state.units))
+      const origins = Object.values(state.units)
+        .filter((unit) => unit.owner === order.player && canActAsUnit(unit))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((unit) => ({
+          ...unit,
+          pos: { ...unit.pos },
+          modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
+        }))
+      origins.forEach((originUnit) => {
+        if (state.winner !== null) return
+        const path = resolveChainLightningFromOrigin(
+          state,
+          originUnit,
+          scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+          'attack_chain_lightning',
+          eligibleTargetIds
         )
-        if (candidates.length === 0) break
-        const choiceIndex = Math.floor(Math.random() * candidates.length)
-        const target = candidates[Math.max(0, Math.min(choiceIndex, candidates.length - 1))]
-        visited.add(target.id)
-        path.push(target.id)
-        const nextOrigin = { ...target.pos }
-        applyDamage(state, target, effect.damage, actingUnit, order.defId)
-        currentOrigin = nextOrigin
-      }
-
-      if (path.length === 0) {
-        state.log.push('Chain lightning finds no adjacent targets.')
-      } else {
-        state.log.push(`Chain lightning path: ${path.join(' -> ')}.`)
-      }
+        logChainLightningResult(state, originUnit.id, path)
+      })
       return
     }
     case 'shove': {
@@ -3299,15 +3655,16 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         pushUnit(state, target, direction, pushedDistance)
       }
 
-      const impactDamage = effect.impactDamage ?? 0
+      const impactDamage = scaleRoguelikeMonsterCardDamage(state, order.player, effect.impactDamage ?? 0)
+      const collisionDamage = scaleRoguelikeMonsterCardDamage(state, order.player, effect.collisionDamage)
       if (blocker) {
         const pushedTarget = state.units[target.id]
         if (!pushedTarget || !isAdjacentHex(pushedTarget.pos, blocker.pos)) return
         state.log.push(`Unit ${pushedTarget.id} collides with ${blocker.id}.`)
-        applyDamage(state, pushedTarget, effect.collisionDamage + impactDamage, actingUnit, order.defId)
+        applyDamage(state, pushedTarget, collisionDamage + impactDamage, actingUnit, order.defId)
         const remainingBlocker = state.units[blocker.id]
         if (remainingBlocker) {
-          applyDamage(state, remainingBlocker, effect.collisionDamage, actingUnit, order.defId)
+          applyDamage(state, remainingBlocker, collisionDamage, actingUnit, order.defId)
         }
         return
       }
@@ -3336,7 +3693,13 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       targetsByDirection.forEach(({ direction, targetId }) => {
         const target = state.units[targetId]
         if (!target) return
-        applyDamage(state, target, effect.damage, actingUnit)
+        applyDamage(
+          state,
+          target,
+          scaleRoguelikeMonsterCardDamage(state, order.player, effect.damage),
+          actingUnit,
+          order.defId
+        )
         const surviving = state.units[targetId]
         if (!surviving) return
         pushUnit(state, surviving, direction, effect.pushDistance)
@@ -3390,10 +3753,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         (unit) => unit.owner === order.player && canActAsUnit(unit) && isAdjacentHex(unit.pos, targetTile)
       ).length
       if (adjacentAllies <= 0) return
-      const damagePerAdjacent =
-        order.defId === 'attack_roguelike_pack_hunt'
-          ? getRoguelikePackHuntDamagePerAdjacent(state)
-          : effect.damagePerAdjacent
+      const damagePerAdjacent = scaleRoguelikeMonsterCardDamage(state, order.player, effect.damagePerAdjacent)
       const target = getUnitAt(state, targetTile)
       if (!target || !canCardTargetUnit(order.defId, target)) return
       applyDamage(state, target, damagePerAdjacent * adjacentAllies, actorAfterMove, order.defId)

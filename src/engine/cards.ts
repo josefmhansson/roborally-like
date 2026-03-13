@@ -1024,6 +1024,23 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
       },
     ],
   },
+  reinforce_roguelike_split: {
+    id: 'reinforce_roguelike_split',
+    name: 'Split',
+    description:
+      'Split a unit into two identical units. Each keeps half the original strength, rounded up.',
+    type: 'reinforcement',
+    roguelikeOnly: true,
+    actionCost: 1,
+    requires: { unit: 'friendly' },
+    canTargetBarricades: false,
+    effects: [
+      {
+        type: 'splitUnit',
+        unitParam: 'unitId',
+      },
+    ],
+  },
   spell_roguelike_mark: {
     id: 'spell_roguelike_mark',
     name: 'Mark',
@@ -1038,6 +1055,39 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         type: 'markAdvanceToward',
         targetUnitParam: 'unitId',
         distance: 1,
+      },
+    ],
+  },
+  spell_roguelike_raise: {
+    id: 'spell_roguelike_raise',
+    name: 'Raise',
+    description: 'Choose the necromancer and an adjacent tile. Spawn a 2-strength skeleton there.',
+    type: 'spell',
+    roguelikeOnly: true,
+    actionCost: 1,
+    requires: { unit: 'friendly', tile: 'any' },
+    canTargetBarricades: false,
+    effects: [
+      {
+        type: 'spawnSkeletonAdjacent',
+        unitParam: 'unitId',
+        tileParam: 'tile',
+        strength: 2,
+      },
+    ],
+  },
+  spell_roguelike_thunderstorm: {
+    id: 'spell_roguelike_thunderstorm',
+    name: 'Thunderstorm',
+    description: 'Cast Chain Lightning from every friendly unit.',
+    type: 'spell',
+    roguelikeOnly: true,
+    actionCost: 2,
+    requires: {},
+    effects: [
+      {
+        type: 'chainLightningAllFriendly',
+        damage: 2,
       },
     ],
   },

@@ -589,6 +589,7 @@ type UnitSnapshot = {
   owner: PlayerId
   kind: Unit['kind']
   roguelikeRole?: Unit['roguelikeRole']
+  isMinion?: boolean
   modifiers: Unit['modifiers']
 }
 type MoveAnimation = { type: 'move'; unitId: string; from: Hex; to: Hex; duration: number }
@@ -845,6 +846,18 @@ const monsterRoleImages: Record<RoguelikeEncounterUnitRole, ImageAsset[]> = {
   troll: [loadImage(resolveAssetUrl('assets/monsters/monster_troll.png'))],
   alpha_wolf: [loadImage(resolveAssetUrl('assets/monsters/monster_alpha_wolf.png'))],
   wolf: [loadImage(resolveAssetUrl('assets/monsters/monster_wolf_2.png'))],
+  ice_spirit: [loadImage(resolveAssetUrl('assets/monsters/monster_ice_elemental.png'))],
+  fire_spirit: [loadImage(resolveAssetUrl('assets/monsters/monster_fire_elemental.png'))],
+  lightning_spirit: [loadImage(resolveAssetUrl('assets/monsters/monster_lightning_elemental.png'))],
+  bandit: [
+    loadImage(resolveAssetUrl('assets/monsters/monster_bandit_1.png')),
+    loadImage(resolveAssetUrl('assets/monsters/monster_bandit_2.png')),
+    loadImage(resolveAssetUrl('assets/monsters/monster_bandit_3.png')),
+  ],
+  necromancer: [loadImage(resolveAssetUrl('assets/monsters/monster_necromancer.png'))],
+  skeleton_soldier: [loadImage(resolveAssetUrl('assets/monsters/monster_skeleton_soldier.png'))],
+  skeleton_warrior: [loadImage(resolveAssetUrl('assets/monsters/monster_skeleton_warrior.png'))],
+  skeleton_mage: [loadImage(resolveAssetUrl('assets/monsters/monster_skeleton_mage.png'))],
 }
 const roguelikeMonsterVariantByUnitId = new Map<string, number>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
@@ -1026,12 +1039,17 @@ type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
 type RoguelikeUiStage = 'reward_choice' | 'reward_notice' | 'remove_choice' | 'run_over'
 
 type RoguelikeEncounterUnitRole = NonNullable<Unit['roguelikeRole']>
+type RoguelikeEncounterUnitSpawn = {
+  role: RoguelikeEncounterUnitRole | RoguelikeEncounterUnitRole[]
+  count: number
+  isMinion?: boolean
+}
 
 type RoguelikeEncounterDef = {
   id: RoguelikeEncounterId
   name: string
   deck: (matchNumber: number) => CardDefId[]
-  unitCounts: (matchNumber: number) => Array<{ role: RoguelikeEncounterUnitRole; count: number }>
+  unitCounts: (matchNumber: number) => RoguelikeEncounterUnitSpawn[]
   actionBudget?: (matchNumber: number) => number
 }
 
@@ -1114,6 +1132,112 @@ const ROGUELIKE_ENCOUNTER_DEFS: RoguelikeEncounterDef[] = [
     unitCounts: () => [
       { role: 'alpha_wolf', count: 1 },
       { role: 'wolf', count: 4 },
+    ],
+  },
+  {
+    id: 'ice_spirits',
+    name: 'Ice Spirits',
+    deck: () => [
+      'attack_ice_bolt',
+      'attack_ice_bolt',
+      'attack_ice_bolt',
+      'attack_ice_bolt',
+      'spell_blizzard',
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'reinforce_roguelike_split',
+    ],
+    unitCounts: () => [{ role: 'ice_spirit', count: 3 }],
+  },
+  {
+    id: 'fire_spirits',
+    name: 'Fire Spirits',
+    deck: () => [
+      'attack_fireball',
+      'attack_fireball',
+      'attack_line',
+      'attack_line',
+      'spell_meteor',
+      'move_forward',
+      'move_forward',
+      'move_any',
+      'move_any',
+      'reinforce_roguelike_split',
+    ],
+    unitCounts: () => [{ role: 'fire_spirit', count: 3 }],
+  },
+  {
+    id: 'lightning_spirits',
+    name: 'Lightning Spirits',
+    deck: () => [
+      'attack_chain_lightning',
+      'attack_chain_lightning',
+      'attack_chain_lightning',
+      'attack_chain_lightning',
+      'spell_roguelike_thunderstorm',
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'reinforce_roguelike_split',
+    ],
+    unitCounts: () => [{ role: 'lightning_spirit', count: 3 }],
+  },
+  {
+    id: 'bandits',
+    name: 'Bandits',
+    deck: () => [
+      'move_forward',
+      'move_forward',
+      'move_forward',
+      'move_any',
+      'move_any',
+      'move_any',
+      'move_pivot',
+      'move_pivot',
+      'move_double_steps',
+      'move_double_steps',
+      'attack_fwd_lr',
+      'attack_fwd_lr',
+      'attack_arrow',
+      'attack_arrow',
+      'attack_charge',
+      'attack_whirlwind',
+      'attack_blade_dance',
+      'attack_execute',
+      'reinforce_boost',
+      'reinforce_boost',
+      'spell_snare',
+      'attack_jab',
+      'attack_jab',
+      'attack_shove',
+    ],
+    unitCounts: () => [{ role: 'bandit', count: 5 }],
+  },
+  {
+    id: 'necromancer',
+    name: 'Necromancer',
+    deck: () => [
+      'spell_roguelike_raise',
+      'spell_roguelike_raise',
+      'attack_ice_bolt',
+      'attack_ice_bolt',
+      'attack_coordinated',
+      'attack_roguelike_basic',
+      'attack_roguelike_basic',
+      'move_tandem',
+      'move_any',
+      'move_any',
+      'move_any',
+      'move_forward',
+      'move_forward',
+      'spell_brain_freeze',
+    ],
+    unitCounts: (n) => [
+      { role: 'necromancer', count: 1 },
+      { role: ['skeleton_soldier', 'skeleton_warrior', 'skeleton_mage'], count: 2 + Math.floor(n / 4), isMinion: true },
     ],
   },
 ]
@@ -3266,6 +3390,14 @@ function getEncounterRoleColor(role: Unit['roguelikeRole']): string | null {
   if (role === 'troll') return '#9aa26f'
   if (role === 'alpha_wolf') return '#b8c4d6'
   if (role === 'wolf') return '#9ca8bd'
+  if (role === 'ice_spirit') return '#87d8ff'
+  if (role === 'fire_spirit') return '#ff8a5f'
+  if (role === 'lightning_spirit') return '#f0dc66'
+  if (role === 'bandit') return '#b68961'
+  if (role === 'necromancer') return '#7ea08f'
+  if (role === 'skeleton_soldier') return '#d8d0c0'
+  if (role === 'skeleton_warrior') return '#c8c0b0'
+  if (role === 'skeleton_mage') return '#b9d0df'
   return null
 }
 
@@ -3295,6 +3427,18 @@ function getEncounterRoleRenderStyle(role: Unit['roguelikeRole']): {
   }
   if (role === 'slime_small') {
     return { tint: '#df6f2f', offsetX: 0, offsetY: 0.055 }
+  }
+  if (role === 'ice_spirit' || role === 'fire_spirit' || role === 'lightning_spirit') {
+    return { tint: null, offsetX: 0, offsetY: 0.03 }
+  }
+  if (role === 'bandit') {
+    return { tint: null, offsetX: 0, offsetY: 0.015 }
+  }
+  if (role === 'necromancer') {
+    return { tint: null, offsetX: 0, offsetY: 0.035 }
+  }
+  if (role === 'skeleton_soldier' || role === 'skeleton_warrior' || role === 'skeleton_mage') {
+    return { tint: null, offsetX: 0, offsetY: 0.02 }
   }
   return { tint: null, offsetX: 0, offsetY: 0 }
 }
@@ -3795,6 +3939,12 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   if (modifier.type === 'slow') {
     return { label: 'Slow', kind: 'debuff' }
   }
+  if (modifier.type === 'chilled') {
+    return { label: 'Chilled', kind: 'debuff' }
+  }
+  if (modifier.type === 'frozen') {
+    return { label: 'Frozen', kind: 'debuff' }
+  }
   if (modifier.type === 'spellResistance') {
     return { label: 'Spell resistance', kind: 'buff' }
   }
@@ -3803,6 +3953,9 @@ function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: str
   }
   if (modifier.type === 'burn') {
     return { label: 'Burn', kind: 'debuff' }
+  }
+  if (modifier.type === 'scalding') {
+    return { label: 'Scalding', kind: 'buff' }
   }
   if (modifier.type === 'regeneration') {
     return { label: 'Regeneration', kind: 'buff' }
@@ -3872,7 +4025,7 @@ function summarizeUnitModifiers(
 function getUnitPopoverLabel(unit: Unit): string {
   if (unit.kind === 'leader') return getLeaderDisplayName(unit.owner)
   if (unit.kind === 'barricade') return 'Barricade'
-  return getUnitLabel(unit)
+  return unit.isMinion ? `${getUnitLabel(unit)} (Minion)` : getUnitLabel(unit)
 }
 
 function hideUnitStatusPopover(): void {
@@ -4843,6 +4996,7 @@ function drawPincerAnimation(animation: PincerAnimation, progress: number): void
       facing: strike.snapshot.facing,
       modifiers: strike.snapshot.modifiers.map((modifier) => ({ ...modifier })),
       roguelikeRole: strike.snapshot.roguelikeRole,
+      isMinion: strike.snapshot.isMinion,
     } as Unit
     drawUnit(snapshotUnit, center, strike.alpha)
   })
@@ -5671,8 +5825,9 @@ function drawBoard(): void {
   )
   pruneRoguelikeMonsterVariants(state, previewState && state.phase === 'planning' ? previewState : null)
 
+  const showMonsterSpawnTiles = mode !== 'roguelike'
   const spawnTop = getSpawnTiles(state, 0)
-  const spawnBottom = getSpawnTiles(state, 1)
+  const spawnBottom = showMonsterSpawnTiles ? getSpawnTiles(state, 1) : []
   const spawnTopKeys = new Set(spawnTop.map((tile) => `${tile.q},${tile.r}`))
   const spawnBottomKeys = new Set(spawnBottom.map((tile) => `${tile.q},${tile.r}`))
 
@@ -6043,6 +6198,49 @@ function drawDirectionalTriangle(
   context.stroke()
 }
 
+function unitHasActiveModifier(unit: Pick<Unit, 'modifiers'>, type: Unit['modifiers'][number]['type']): boolean {
+  return unit.modifiers.some(
+    (modifier) => modifier.type === type && (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
+  )
+}
+
+function getUnitModifierGlowColors(unit: Unit): { inner: string; mid: string; outer: string } | null {
+  if (unitHasActiveModifier(unit, 'frozen')) {
+    return {
+      inner: 'rgba(165, 220, 255, 0.95)',
+      mid: 'rgba(90, 165, 255, 0.72)',
+      outer: 'rgba(40, 95, 200, 0)',
+    }
+  }
+  if (unitHasActiveModifier(unit, 'chilled')) {
+    return {
+      inner: 'rgba(165, 225, 255, 0.82)',
+      mid: 'rgba(85, 175, 255, 0.55)',
+      outer: 'rgba(40, 95, 200, 0)',
+    }
+  }
+  if (unitHasActiveModifier(unit, 'lightningBarrier')) {
+    return {
+      inner: 'rgba(250, 235, 140, 0.95)',
+      mid: 'rgba(170, 220, 90, 0.65)',
+      outer: 'rgba(110, 160, 40, 0)',
+    }
+  }
+  if (unit.modifiers.length === 0) return null
+  const visibleModifiers = unit.modifiers.some(
+    (modifier) =>
+      modifier.type !== 'slow' &&
+      modifier.type !== 'spellResistance' &&
+      modifier.type !== 'reinforcementPenalty'
+  )
+  if (!visibleModifiers) return null
+  return {
+    inner: 'rgba(255, 60, 60, 1)',
+    mid: 'rgba(255, 20, 20, 0.72)',
+    outer: 'rgba(120, 0, 0, 0)',
+  }
+}
+
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
   const color = getUnitRingColor(unit)
@@ -6061,13 +6259,8 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   const overrideAlpha = alphaOverride ?? 1
   ctx.globalAlpha = animationAlpha * overrideAlpha
 
-  const showModifierGlow = unit.modifiers.some(
-    (modifier) =>
-      modifier.type !== 'slow' &&
-      modifier.type !== 'spellResistance' &&
-      modifier.type !== 'reinforcementPenalty'
-  )
-  if (showModifierGlow) {
+  const modifierGlowColors = getUnitModifierGlowColors(unit)
+  if (modifierGlowColors) {
     const glowRadius = unit.kind === 'barricade' ? layout.size * 0.72 : layout.size * 0.9
     const glowGradient = ctx.createRadialGradient(
       center.x,
@@ -6077,9 +6270,9 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
       center.y,
       glowRadius
     )
-    glowGradient.addColorStop(0, 'rgba(255, 60, 60, 1)')
-    glowGradient.addColorStop(0.58, 'rgba(255, 20, 20, 0.72)')
-    glowGradient.addColorStop(1, 'rgba(120, 0, 0, 0)')
+    glowGradient.addColorStop(0, modifierGlowColors.inner)
+    glowGradient.addColorStop(0.58, modifierGlowColors.mid)
+    glowGradient.addColorStop(1, modifierGlowColors.outer)
     ctx.save()
     ctx.globalCompositeOperation = 'screen'
     ctx.beginPath()
@@ -6203,6 +6396,28 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     drawLeaderSprite(center, unit.owner, LEADER_IMAGE_SCALE)
   } else if (unit.kind === 'barricade' && barricadeBaseImage.loaded) {
     drawBarricadeSprite(center, unit.owner)
+  }
+
+  if (unit.kind !== 'barricade' && unitHasActiveModifier(unit, 'frozen')) {
+    const frozenRadius = unit.kind === 'leader' ? layout.size * 0.62 : layout.size * 0.52
+    const frozenGradient = ctx.createRadialGradient(
+      center.x,
+      center.y - frozenRadius * 0.18,
+      frozenRadius * 0.15,
+      center.x,
+      center.y,
+      frozenRadius
+    )
+    frozenGradient.addColorStop(0, 'rgba(220, 245, 255, 0.42)')
+    frozenGradient.addColorStop(0.55, 'rgba(120, 195, 255, 0.34)')
+    frozenGradient.addColorStop(1, 'rgba(70, 145, 235, 0)')
+    ctx.save()
+    ctx.globalCompositeOperation = 'screen'
+    ctx.beginPath()
+    ctx.ellipse(center.x, center.y - frozenRadius * 0.04, frozenRadius, frozenRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+    ctx.fillStyle = frozenGradient
+    ctx.fill()
+    ctx.restore()
   }
 
   drawStrengthDots(center, unit.strength, previewStrength, color)
@@ -6911,7 +7126,7 @@ function renderHand(): void {
       }
       return `
         <button class="card hand-card ${cardTypeClassNames} ${cardClassName} ${isSelected ? 'selected' : ''} ${isHidden ? 'hidden-card' : ''}" data-card-id="${card.id}" data-card-def-id="${def.id}" data-card-layer="hand" ${getCardStyleAttr(def, isHidden)}>
-          ${renderCardFace(def)}
+          ${renderCardFace(def, { owner: planningPlayer })}
         </button>
       `
     })
@@ -6961,7 +7176,7 @@ function renderOrders(): void {
       }
       return `
         <div class="card order-card ${cardTypeClassNames} ${cardClassName} ${teamClass} ${resolvedClass} ${isValid ? '' : 'invalid'} ${isHidden ? 'hidden-card' : ''}" data-order-id="${order.id}" data-card-id="${order.cardId}" data-card-def-id="${def.id}" data-card-layer="queue" ${getCardStyleAttr(def, isHidden)}>
-          ${renderCardFace(def, { orderIndex: index + 1 })}
+          ${renderCardFace(def, { orderIndex: index + 1, owner: order.player })}
         </div>
       `
     })
@@ -7114,18 +7329,30 @@ function getCurrentRoguelikeMatchNumber(): number {
   return 1
 }
 
-function getCardDescriptionForMatch(defId: CardDefId, fallback: string): string {
-  if (mode !== 'roguelike') return fallback
+function getRoguelikeMonsterDamageModifierForMatch(matchNumber: number): number {
+  return 1 + matchNumber / 10
+}
+
+function scaleRoguelikeMonsterCardDamageValue(baseDamage: number, matchNumber: number): number {
+  const normalized = Math.max(0, baseDamage)
+  if (normalized <= 0) return 0
+  return Math.max(1, Math.round(normalized * getRoguelikeMonsterDamageModifierForMatch(matchNumber)))
+}
+
+function getCardDescriptionForMatch(defId: CardDefId, fallback: string, owner?: PlayerId): string {
+  if (mode !== 'roguelike' || owner !== BOT_PLAYER) return fallback
   const matchNumber = getCurrentRoguelikeMatchNumber()
-  const scaled = getEncounterCardDamageValues(matchNumber)
   if (defId === 'attack_roguelike_basic') {
-    return `Face a direction, then deal ${scaled.basicAttack} damage to an adjacent unit.`
+    return `Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} damage to an adjacent unit.`
   }
   if (defId === 'attack_roguelike_slow') {
-    return `Slow. Face a direction, then deal ${scaled.slowAttack} damage to an adjacent unit.`
+    return `Slow. Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(5, matchNumber)} damage to an adjacent unit.`
+  }
+  if (defId === 'attack_roguelike_stomp') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} damage and Stun all adjacent units for the rest of the turn.`
   }
   if (defId === 'attack_roguelike_pack_hunt') {
-    return `Move 1 tile in any direction, then deal ${scaled.packHuntPerAdjacent} damage per adjacent ally to the tile in front.`
+    return `Move 1 tile in any direction, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage per adjacent ally to the tile in front.`
   }
   return fallback
 }
@@ -7205,7 +7432,7 @@ function renderCardFace(
     actionCost?: number
     keywords?: string[]
   },
-  options: { metaText?: string; orderIndex?: number } = {}
+  options: { metaText?: string; orderIndex?: number; owner?: PlayerId } = {}
 ): string {
   const apCost = def.actionCost ?? 1
   const meta = options.metaText ? `<div class="card-meta">${options.metaText}</div>` : ''
@@ -7213,7 +7440,7 @@ function renderCardFace(
     def.keywords && def.keywords.length > 0
       ? `<div class="card-keywords">${def.keywords.map((keyword) => `<span class="card-keyword">${keyword}</span>`).join('')}</div>`
       : ''
-  const description = getCardDescriptionForMatch(def.id, def.description)
+  const description = getCardDescriptionForMatch(def.id, def.description, options.owner)
   const classMark = renderCardClassMark(def.id)
   const orderIndex = options.orderIndex ? `<div class="order-index">#${options.orderIndex}</div>` : ''
   return [
@@ -7691,6 +7918,10 @@ function getEncounterRoleStrength(role: RoguelikeEncounterUnitRole, matchNumber:
   if (role === 'slime_small') return 1 + Math.floor(matchNumber / 8)
   if (role === 'troll') return 10 + Math.floor(matchNumber / 2)
   if (role === 'alpha_wolf') return 4 + Math.floor(matchNumber / 3)
+  if (role === 'ice_spirit' || role === 'fire_spirit' || role === 'lightning_spirit') return 2 + Math.floor(matchNumber / 3)
+  if (role === 'bandit') return 3 + Math.floor(matchNumber / 5)
+  if (role === 'necromancer') return 4 + Math.floor(matchNumber / 4)
+  if (role === 'skeleton_soldier' || role === 'skeleton_warrior' || role === 'skeleton_mage') return 2
   return 2 + Math.floor(matchNumber / 6)
 }
 
@@ -7701,6 +7932,14 @@ function getEncounterUnitLabel(role: Unit['roguelikeRole']): string {
   if (role === 'troll') return 'Troll'
   if (role === 'alpha_wolf') return 'Alpha Wolf'
   if (role === 'wolf') return 'Wolf'
+  if (role === 'ice_spirit') return 'Ice Spirit'
+  if (role === 'fire_spirit') return 'Fire Spirit'
+  if (role === 'lightning_spirit') return 'Lightning Spirit'
+  if (role === 'bandit') return 'Bandit'
+  if (role === 'necromancer') return 'Necromancer'
+  if (role === 'skeleton_soldier') return 'Skeleton Soldier'
+  if (role === 'skeleton_warrior') return 'Skeleton Warrior'
+  if (role === 'skeleton_mage') return 'Skeleton Mage'
   return 'Unit'
 }
 
@@ -7709,19 +7948,13 @@ function getEncounterRoleScale(role: Unit['roguelikeRole']): number {
   if (role === 'slime_mid') return 1.05
   if (role === 'slime_small') return 0.8
   if (role === 'alpha_wolf') return 1.12
+  if (role === 'ice_spirit' || role === 'fire_spirit' || role === 'lightning_spirit') return 1.08
+  if (role === 'bandit') return 0.98
+  if (role === 'necromancer') return 1.08
+  if (role === 'skeleton_soldier') return 0.98
+  if (role === 'skeleton_warrior') return 1.02
+  if (role === 'skeleton_mage') return 0.96
   return 1
-}
-
-function getEncounterCardDamageValues(matchNumber: number): {
-  basicAttack: number
-  slowAttack: number
-  packHuntPerAdjacent: number
-} {
-  return {
-    basicAttack: 1 + Math.floor(matchNumber / 5),
-    slowAttack: 5 + Math.floor(matchNumber / 2),
-    packHuntPerAdjacent: 2 + Math.floor(matchNumber / 3),
-  }
 }
 
 function getUnitAtHex(sourceState: GameState, hex: Hex): Unit | null {
@@ -7759,10 +7992,21 @@ function addMultipleStartingUnits(sourceState: GameState, owner: PlayerId, count
   }
 }
 
-function buildEncounterRoleList(encounter: RoguelikeEncounterDef, matchNumber: number): RoguelikeEncounterUnitRole[] {
+function buildEncounterRoleList(
+  encounter: RoguelikeEncounterDef,
+  matchNumber: number
+): Array<{ role: RoguelikeEncounterUnitRole; isMinion: boolean }> {
   return encounter.unitCounts(matchNumber)
     .flatMap((entry) =>
-      Array.from({ length: Math.max(0, Math.floor(entry.count)) }, () => entry.role)
+      Array.from({ length: Math.max(0, Math.floor(entry.count)) }, () => {
+        const rolePool = Array.isArray(entry.role) ? entry.role : [entry.role]
+        const index = Math.floor(Math.random() * rolePool.length)
+        const role = rolePool[Math.max(0, Math.min(index, rolePool.length - 1))] ?? rolePool[0]
+        return {
+          role,
+          isMinion: entry.isMinion === true,
+        }
+      })
     )
 }
 
@@ -7798,7 +8042,7 @@ function placeEncounterUnits(
   const roles = buildEncounterRoleList(encounter, matchNumber)
   const placementTiles = getEncounterPlacementTiles(sourceState)
   const facing: Direction = 5
-  roles.forEach((role) => {
+  roles.forEach(({ role, isMinion }) => {
     const tile = placementTiles.find((candidate) => !getUnitAtHex(sourceState, candidate))
     if (!tile) return
     const id = `u${BOT_PLAYER}-${sourceState.nextUnitId}`
@@ -7813,6 +8057,7 @@ function placeEncounterUnits(
       facing,
       modifiers,
       roguelikeRole: role,
+      isMinion,
     }
   })
 }
@@ -8424,6 +8669,7 @@ function snapshotUnits(source: GameState): Record<string, UnitSnapshot> {
       owner: unit.owner,
       kind: unit.kind,
       roguelikeRole: unit.roguelikeRole,
+      isMinion: unit.isMinion,
       modifiers: unit.modifiers.map((modifier) => ({ ...modifier })),
     }
   })
@@ -8440,6 +8686,7 @@ function cloneSnapshotUnit(snapshot: UnitSnapshot): Unit {
     facing: snapshot.facing,
     modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
     roguelikeRole: snapshot.roguelikeRole,
+    isMinion: snapshot.isMinion,
   }
 }
 
@@ -8590,6 +8837,8 @@ function applyAnimationBoardSyncUpTo(upToLogIndex: number): void {
             modifier.type !== 'cannotMove' &&
             modifier.type !== 'stunned' &&
             modifier.type !== 'slow' &&
+            modifier.type !== 'chilled' &&
+            modifier.type !== 'frozen' &&
             modifier.type !== 'reinforcementPenalty' &&
             modifier.type !== 'burn' &&
             modifier.type !== 'disarmed' &&
@@ -8692,20 +8941,44 @@ function getDirectionToNeighbor(from: Hex, to: Hex): Direction | null {
   return null
 }
 
-function parseChainLightningPath(logEntries: string[]): string[] {
-  const entry = logEntries.find((line) => line.startsWith('Chain lightning path: '))
-  if (!entry) return []
-  const [, pathText] = entry.split('Chain lightning path: ')
-  if (!pathText) return []
-  return pathText
-    .replace(/\.$/, '')
-    .split(' -> ')
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0)
-}
-
-function parseChainLightningFizzles(logEntries: string[]): boolean {
-  return logEntries.some((line) => line === 'Chain lightning finds no adjacent targets.')
+function parseChainLightningEvents(logEntries: string[]): {
+  paths: Array<{ originUnitId?: string; path: string[] }>
+  fizzles: Array<{ originUnitId?: string }>
+} {
+  const paths: Array<{ originUnitId?: string; path: string[] }> = []
+  const fizzles: Array<{ originUnitId?: string }> = []
+  logEntries.forEach((entry) => {
+    const pathWithOriginMatch = entry.match(/^Chain lightning from unit (.+) path: (.+)\.$/)
+    if (pathWithOriginMatch) {
+      paths.push({
+        originUnitId: pathWithOriginMatch[1],
+        path: pathWithOriginMatch[2]
+          .split(' -> ')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      })
+      return
+    }
+    const pathMatch = entry.match(/^Chain lightning path: (.+)\.$/)
+    if (pathMatch) {
+      paths.push({
+        path: pathMatch[1]
+          .split(' -> ')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      })
+      return
+    }
+    const fizzleWithOriginMatch = entry.match(/^Chain lightning from unit (.+) finds no adjacent targets\.$/)
+    if (fizzleWithOriginMatch) {
+      fizzles.push({ originUnitId: fizzleWithOriginMatch[1] })
+      return
+    }
+    if (entry === 'Chain lightning finds no adjacent targets.') {
+      fizzles.push({})
+    }
+  })
+  return { paths, fizzles }
 }
 
 function parseUnitPositionUpdates(logEntries: string[]): Map<string, Hex> {
@@ -8810,7 +9083,7 @@ function parseSlimeSplitEvents(
   const usedSpawnIndices = new Set<number>()
 
   logEntries.forEach((entry, index) => {
-    const match = entry.match(/^Slime split: (.+) lobs from (-?\d+),(-?\d+) to (-?\d+),(-?\d+)\.$/)
+    const match = entry.match(/^(?:Slime split|Split): (.+) lobs from (-?\d+),(-?\d+) to (-?\d+),(-?\d+)\.$/)
     if (!match) return
     const sourceUnitId = match[1]
     const from = { q: Number(match[2]), r: Number(match[3]) }
@@ -8966,6 +9239,14 @@ function snapshotHasModifier(
   )
 }
 
+function snapshotIsActionBlocked(snapshot: Pick<UnitSnapshot, 'modifiers'>): boolean {
+  return snapshotHasModifier(snapshot, 'stunned') || snapshotHasModifier(snapshot, 'frozen')
+}
+
+function snapshotIsMovementBlocked(snapshot: Pick<UnitSnapshot, 'modifiers'>): boolean {
+  return snapshotHasModifier(snapshot, 'cannotMove') || snapshotIsActionBlocked(snapshot)
+}
+
 function getCommanderAnimationParticipants(
   before: Record<string, UnitSnapshot>,
   player: PlayerId,
@@ -8978,7 +9259,7 @@ function getCommanderAnimationParticipants(
         unit.owner === player &&
         unit.id !== excludeUnitId &&
         snapshotCanActAsUnit(unit) &&
-        !snapshotHasModifier(unit, 'stunned') &&
+        !snapshotIsActionBlocked(unit) &&
         hexDistance(unit.pos, tile) === 1
     )
     .sort((a, b) => a.id.localeCompare(b.id))
@@ -9114,6 +9395,7 @@ function buildAnimations(
       facing: snapshot.facing,
       modifiers: snapshot.modifiers.map((modifier) => ({ ...modifier })),
       roguelikeRole: snapshot.roguelikeRole,
+      isMinion: snapshot.isMinion,
     })
     deathAlphaOverrides.set(event.unitId, 1)
     queueStateSync(event.index)
@@ -9156,33 +9438,38 @@ function buildAnimations(
   let handledDoubleStepsMoveAnimation = false
 
   for (const effect of def.effects) {
-    if (effect.type === 'spawn' || effect.type === 'spawnAdjacentFriendly') {
+    if (effect.type === 'spawn' || effect.type === 'spawnAdjacentFriendly' || effect.type === 'spawnSkeletonAdjacent') {
       const tile = getOrderTileParam(order.params, effect.tileParam)
       if (!tile) continue
       const scopedKey = `${order.id}:${effect.tileParam}`
       let spawnedId: string | undefined = state.spawnedByOrder[scopedKey] ?? state.spawnedByOrder[order.id]
       if (!spawnedId) {
-        spawnedId = Object.values(state.units).find(
-          (unit) =>
-            !before[unit.id] && unit.pos.q === tile.q && unit.pos.r === tile.r
-        )?.id
+        spawnedId =
+          Object.values(state.units).find((unit) => !before[unit.id] && unit.pos.q === tile.q && unit.pos.r === tile.r)?.id ??
+          parseSpawnEvents(logEntries).find((event) => event.pos.q === tile.q && event.pos.r === tile.r)?.unitId
       }
       if (typeof spawnedId === 'string') {
         if (!before[spawnedId] && !spawnedFallbackSnapshots.has(spawnedId)) {
           const spawnFacing =
-            effect.facingParam
-              ? order.params.direction
-              : effect.type === 'spawn'
-                ? effect.facing
-                : undefined
+            effect.type === 'spawn'
+              ? effect.facingParam
+                ? order.params.direction
+                : effect.facing
+              : effect.type === 'spawnAdjacentFriendly'
+                ? effect.facingParam
+                  ? order.params.direction
+                  : undefined
+                : before[order.params.unitId ?? '']?.facing ?? state.units[order.params.unitId ?? '']?.facing
           const spawnSnapshot: UnitSnapshot = {
             id: spawnedId,
-            owner: order.player,
+            owner: state.units[spawnedId]?.owner ?? order.player,
             kind: effect.type === 'spawn' ? (effect.kind ?? 'unit') : 'unit',
             strength: effect.strength,
             pos: { ...tile },
             facing: (spawnFacing ?? 0) as Direction,
             modifiers: [],
+            roguelikeRole: state.units[spawnedId]?.roguelikeRole,
+            isMinion: state.units[spawnedId]?.isMinion,
           }
           spawnedFallbackSnapshots.set(spawnedId, spawnSnapshot)
           if (!state.units[spawnedId] && destroyedUnitIds.has(spawnedId)) {
@@ -9195,6 +9482,7 @@ function buildAnimations(
               facing: spawnSnapshot.facing,
               modifiers: [],
               roguelikeRole: spawnSnapshot.roguelikeRole,
+              isMinion: spawnSnapshot.isMinion,
             })
             deathAlphaOverrides.set(spawnedId, 1)
           }
@@ -9644,32 +9932,41 @@ function buildAnimations(
       continue
     }
 
-    if (effect.type === 'chainLightning') {
-      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
-      if (!resolvedId) continue
-      const actingUnit = before[resolvedId] ?? state.units[resolvedId]
-      if (!actingUnit) continue
-      const path = parseChainLightningPath(logEntries)
-      let currentFrom = { ...actingUnit.pos }
-      path.forEach((targetId) => {
-        const targetSnapshot = before[targetId] ?? state.units[targetId]
-        if (!targetSnapshot) return
-        const targetPos = { ...targetSnapshot.pos }
-        animations.push({
-          type: 'chainLightning',
-          from: currentFrom,
-          to: targetPos,
-          duration: CHAIN_LIGHTNING_HOP_DURATION_MS,
+    if (effect.type === 'chainLightning' || effect.type === 'chainLightningAllFriendly') {
+      const events = parseChainLightningEvents(logEntries)
+      const defaultOriginId =
+        effect.type === 'chainLightning' ? resolveUnitIdFromParams(order.params, state.spawnedByOrder) ?? undefined : undefined
+
+      events.paths.forEach((event) => {
+        const originUnitId = event.originUnitId ?? defaultOriginId
+        if (!originUnitId) return
+        const actingUnit = before[originUnitId] ?? state.units[originUnitId]
+        if (!actingUnit) return
+        let currentFrom = { ...actingUnit.pos }
+        event.path.forEach((targetId) => {
+          const targetSnapshot = before[targetId] ?? state.units[targetId]
+          if (!targetSnapshot) return
+          const targetPos = { ...targetSnapshot.pos }
+          animations.push({
+            type: 'chainLightning',
+            from: currentFrom,
+            to: targetPos,
+            duration: CHAIN_LIGHTNING_HOP_DURATION_MS,
+          })
+          currentFrom = targetPos
         })
-        currentFrom = targetPos
       })
-      if (path.length === 0 && parseChainLightningFizzles(logEntries)) {
+      events.fizzles.forEach((event) => {
+        const originUnitId = event.originUnitId ?? defaultOriginId
+        if (!originUnitId) return
+        const actingUnit = before[originUnitId] ?? state.units[originUnitId]
+        if (!actingUnit) return
         animations.push({
           type: 'lightningFizzle',
           centers: [{ ...actingUnit.pos }],
           duration: LIGHTNING_FIZZLE_DURATION_MS,
         })
-      }
+      })
     }
 
     if (effect.type === 'volley') {
@@ -10450,13 +10747,7 @@ function canResolveSnapshotSimultaneousMoves(snapshot: GameState, plans: Snapsho
 
   const movable = new Set(
     [...resolvedPlans.entries()]
-      .filter(([, plan]) =>
-        !plan.unit.modifiers.some(
-          (modifier) =>
-            (modifier.type === 'cannotMove' || modifier.type === 'stunned') &&
-            (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
-        )
-      )
+      .filter(([, plan]) => !snapshotIsMovementBlocked(plan.unit))
       .map(([unitId]) => unitId)
   )
 
@@ -10566,9 +10857,7 @@ function getTeleportSelectionTargets(
   if (!unitSnapshot) return []
   const rawUnit = params.unitId ? snapshot.units[params.unitId] : null
   const hasSlow = rawUnit
-    ? rawUnit.modifiers.some(
-        (modifier) => modifier.type === 'slow' && (modifier.turnsRemaining === 'indefinite' || modifier.turnsRemaining > 0)
-      )
+    ? snapshotHasModifier(rawUnit, 'slow') || snapshotHasModifier(rawUnit, 'chilled')
     : false
   const effectiveMaxDistance = hasSlow ? Math.min(1, maxDistance) : maxDistance
   return snapshot.tiles

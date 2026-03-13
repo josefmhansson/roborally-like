@@ -20,8 +20,24 @@ export type RoguelikeUnitRole =
   | 'troll'
   | 'alpha_wolf'
   | 'wolf'
+  | 'ice_spirit'
+  | 'fire_spirit'
+  | 'lightning_spirit'
+  | 'bandit'
+  | 'necromancer'
+  | 'skeleton_soldier'
+  | 'skeleton_warrior'
+  | 'skeleton_mage'
 
-export type RoguelikeEncounterId = 'slimes' | 'trolls' | 'wolf_pack'
+export type RoguelikeEncounterId =
+  | 'slimes'
+  | 'trolls'
+  | 'wolf_pack'
+  | 'ice_spirits'
+  | 'fire_spirits'
+  | 'lightning_spirits'
+  | 'bandits'
+  | 'necromancer'
 
 export type VictoryCondition = 'leader' | 'eliminate_units'
 
@@ -40,6 +56,8 @@ export type UnitModifierType =
   | 'cannotMove'
   | 'stunned'
   | 'slow'
+  | 'chilled'
+  | 'frozen'
   | 'spellResistance'
   | 'reinforcementPenalty'
   | 'burn'
@@ -50,6 +68,7 @@ export type UnitModifierType =
   | 'undying'
   | 'spikes'
   | 'berserk'
+  | 'scalding'
   | 'lightningBarrier'
 
 export type UnitModifierSource = 'commanderAura'
@@ -71,6 +90,7 @@ export type Unit = {
   facing: Direction
   modifiers: UnitModifier[]
   roguelikeRole?: RoguelikeUnitRole
+  isMinion?: boolean
 }
 
 export type TileKind =
@@ -141,6 +161,7 @@ export type CardDefId =
   | 'attack_roguelike_slow'
   | 'attack_roguelike_stomp'
   | 'attack_roguelike_pack_hunt'
+  | 'reinforce_roguelike_split'
   | 'reinforce_rage'
   | 'reinforce_bolster'
   | 'spell_lightning'
@@ -157,6 +178,8 @@ export type CardDefId =
   | 'spell_divination'
   | 'spell_burn'
   | 'spell_roguelike_mark'
+  | 'spell_roguelike_raise'
+  | 'spell_roguelike_thunderstorm'
   | 'move_pivot'
 
 export type EffectRef = 'unitId' | 'direction' | 'distance' | 'tile' | 'tile2' | 'tile3'
@@ -248,6 +271,10 @@ export type CardEffect =
       damage: number
     }
   | {
+      type: 'chainLightningAllFriendly'
+      damage: number
+    }
+  | {
       type: 'applyUnitModifier'
       unitParam: 'unitId'
       modifier: UnitModifierType
@@ -275,10 +302,20 @@ export type CardEffect =
       distance: number | { type: 'param'; key: 'distance' }
     }
   | {
+      type: 'splitUnit'
+      unitParam: 'unitId'
+    }
+  | {
       type: 'moveToTile'
       unitParam: 'unitId' | 'unitId2'
       tileParam: 'tile' | 'tile2'
       faceMovedDirection?: boolean
+    }
+  | {
+      type: 'spawnSkeletonAdjacent'
+      unitParam: 'unitId'
+      tileParam: 'tile'
+      strength: number
     }
   | {
       type: 'teleport'
