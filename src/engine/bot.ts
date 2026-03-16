@@ -503,7 +503,9 @@ function generateCardParams(state: GameState, projected: GameState, player: Play
 function generateReinforcementParams(state: GameState, projected: GameState, player: PlayerId, defId: CardDefId): OrderParams[] {
   if (defId === 'reinforce_spawn') {
     const params: OrderParams[] = []
-    const spawnTiles = getSpawnTiles(projected, player).filter((tile) => getUnitAt(projected, tile) === null)
+    const spawnTiles = getSpawnTiles(projected, player).filter(
+      (tile) => getUnitAt(projected, tile) === null && !hasFriendlyTrapAt(projected, player, tile)
+    )
     for (const tile of spawnTiles) {
       for (const direction of DIRECTIONS) {
         params.push({ tile: { ...tile }, direction })
@@ -539,7 +541,7 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
   if (defId === 'reinforce_roguelike_split') {
     return getFriendlyUnitRefs(state, projected, player)
       .filter((ref) => ref.snapshot.kind === 'unit')
-      .filter((ref) => getAdjacentOpenTiles(projected, ref.snapshot.pos).length > 0)
+      .filter((ref) => getAdjacentSafeOpenTiles(projected, player, ref.snapshot.pos).length > 0)
       .map((ref) => ({ unitId: ref.refId }))
   }
 
@@ -555,7 +557,7 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
   }
 
   if (defId === 'reinforce_barricade') {
-    const candidates = getBarricadeSpawnTiles(projected, player)
+    const candidates = getBarricadeSpawnTiles(projected, player).filter((tile) => !hasFriendlyTrapAt(projected, player, tile))
     const params: OrderParams[] = []
     for (let first = 0; first < candidates.length; first += 1) {
       for (let second = first + 1; second < candidates.length; second += 1) {
@@ -569,7 +571,9 @@ function generateReinforcementParams(state: GameState, projected: GameState, pla
   }
 
   if (defId === 'reinforce_battlefield_recruitment') {
-    return getBarricadeSpawnTiles(projected, player).map((tile) => ({ tile: { ...tile } }))
+    return getBarricadeSpawnTiles(projected, player)
+      .filter((tile) => !hasFriendlyTrapAt(projected, player, tile))
+      .map((tile) => ({ tile: { ...tile } }))
   }
 
   return [{}]
@@ -600,6 +604,7 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
           const moved = end.q !== ref.snapshot.pos.q || end.r !== ref.snapshot.pos.r
           if (!moved && direction === ref.snapshot.facing) return
           if (!moved && defId === 'move_any') return
+          if (wouldTraverseFriendlyTrap(projected, player, ref.snapshot, direction, distance)) return
           params.push({
             unitId: ref.refId,
             direction,
@@ -617,6 +622,7 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
       DIRECTIONS.forEach((direction) => {
         const destination = neighbor(ref.snapshot.pos, direction)
         if (!inBounds(projected, destination)) return
+        if (hasFriendlyTrapAt(projected, player, destination)) return
         DIRECTIONS.forEach((faceDirection) => {
           params.push({
             unitId: ref.refId,
@@ -638,6 +644,7 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
     const params: OrderParams[] = []
     refs.forEach((ref) => {
       ;[1, 2].forEach((distance) => {
+        if (wouldTraverseFriendlyTrap(projected, player, ref.snapshot, ref.snapshot.facing, distance)) return
         params.push({ unitId: ref.refId, distance })
       })
     })
@@ -667,8 +674,8 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
       for (let secondIndex = firstIndex + 1; secondIndex < refs.length; secondIndex += 1) {
         const first = refs[firstIndex]
         const second = refs[secondIndex]
-        const firstTargets = getAdjacentOpenTiles(projected, first.snapshot.pos)
-        const secondTargets = getAdjacentOpenTiles(projected, second.snapshot.pos)
+        const firstTargets = getAdjacentSafeOpenTiles(projected, player, first.snapshot.pos)
+        const secondTargets = getAdjacentSafeOpenTiles(projected, player, second.snapshot.pos)
         firstTargets.forEach((tile) => {
           secondTargets.forEach((tile2) => {
             if (tile.q === tile2.q && tile.r === tile2.r) return
@@ -710,6 +717,7 @@ function generateMovementParams(state: GameState, projected: GameState, player: 
         if (tile.q === ref.snapshot.pos.q && tile.r === ref.snapshot.pos.r) return
         if (hexDistance(ref.snapshot.pos, tile) > 3) return
         if (getUnitAt(projected, tile)) return
+        if (hasFriendlyTrapAt(projected, player, tile)) return
         params.push({
           unitId: ref.refId,
           tile: { q: tile.q, r: tile.r },
@@ -734,12 +742,15 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
       DIRECTIONS.forEach((firstDirection) => {
         const first = neighbor(ref.snapshot.pos, firstDirection)
         if (!inBounds(projected, first)) return
+        if (hasFriendlyTrapAt(projected, player, first)) return
         DIRECTIONS.forEach((secondDirection) => {
           const second = neighbor(first, secondDirection)
           if (!inBounds(projected, second)) return
+          if (hasFriendlyTrapAt(projected, player, second)) return
           DIRECTIONS.forEach((thirdDirection) => {
             const third = neighbor(second, thirdDirection)
             if (!inBounds(projected, third)) return
+            if (hasFriendlyTrapAt(projected, player, third)) return
             params.push({
               unitId: ref.refId,
               tile: { ...first },
@@ -764,6 +775,9 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
     refs.forEach((ref) => {
       const candidates: { params: OrderParams; hitsEnemy: boolean }[] = []
       DIRECTIONS.forEach((direction) => {
+        if (defId === 'attack_roguelike_pack_hunt' && wouldTraverseFriendlyTrap(projected, player, ref.snapshot, direction, 1)) {
+          return
+        }
         const target = getDirectionalAttackTarget(projected, ref.snapshot, defId, direction)
         if (target && target.owner === player) return
         candidates.push({
@@ -805,6 +819,7 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
   if (defId === 'attack_charge') {
     refs.forEach((ref) => {
       DIRECTIONS.forEach((direction) => {
+        if (wouldTraverseFriendlyTrap(projected, player, ref.snapshot, direction, 5)) return
         params.push({ unitId: ref.refId, direction })
       })
     })
@@ -875,7 +890,7 @@ function generateSpellParams(_state: GameState, projected: GameState, player: Pl
     getFriendlyUnitRefs(_state, projected, player)
       .filter((ref) => ref.snapshot.roguelikeRole === 'necromancer')
       .forEach((ref) => {
-        getAdjacentOpenTiles(projected, ref.snapshot.pos).forEach((tile) => {
+        getAdjacentSafeOpenTiles(projected, player, ref.snapshot.pos).forEach((tile) => {
           params.push({ unitId: ref.refId, tile: { ...tile } })
         })
       })
@@ -1014,6 +1029,10 @@ function getAdjacentOpenTiles(state: GameState, origin: Hex): Hex[] {
   return DIRECTIONS.map((direction) => neighbor(origin, direction))
     .filter((hex) => inBounds(state, hex))
     .filter((hex) => getUnitAt(state, hex) === null)
+}
+
+function getAdjacentSafeOpenTiles(state: GameState, player: PlayerId, origin: Hex): Hex[] {
+  return getAdjacentOpenTiles(state, origin).filter((hex) => !hasFriendlyTrapAt(state, player, hex))
 }
 
 function getFriendlyUnitRefs(
@@ -1732,6 +1751,10 @@ function getUnitAt(state: GameState, hex: Hex): Unit | null {
   return null
 }
 
+function hasFriendlyTrapAt(state: GameState, player: PlayerId, hex: Hex): boolean {
+  return state.traps.some((trap) => trap.owner === player && trap.pos.q === hex.q && trap.pos.r === hex.r)
+}
+
 function inBounds(state: GameState, hex: Hex): boolean {
   return hex.q >= 0 && hex.q < state.boardCols && hex.r >= 0 && hex.r < state.boardRows
 }
@@ -1754,6 +1777,27 @@ function projectMoveEnd(state: GameState, unit: Unit, direction: Direction, dist
     current = next
   }
   return current
+}
+
+function wouldTraverseFriendlyTrap(
+  state: GameState,
+  player: PlayerId,
+  unit: Unit,
+  direction: Direction,
+  distance: number
+): boolean {
+  if (hasActiveUnitModifier(unit, 'cannotMove')) return false
+  const maxDistance = hasActiveUnitModifier(unit, 'slow') ? Math.min(distance, 1) : distance
+  let current = { ...unit.pos }
+  for (let step = 0; step < maxDistance; step += 1) {
+    const next = neighbor(current, direction)
+    if (!inBounds(state, next)) break
+    const occupied = getUnitAt(state, next)
+    if (occupied) break
+    current = next
+    if (hasFriendlyTrapAt(state, player, current)) return true
+  }
+  return false
 }
 
 function hexDistance(a: Hex, b: Hex): number {

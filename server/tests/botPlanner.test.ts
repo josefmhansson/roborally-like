@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { CARD_DEFS } from '../../src/engine/cards'
 import { BOT_HEURISTICS, buildBotPlan, resolveBotPlannerConfig } from '../../src/engine/bot'
-import { DEFAULT_SETTINGS, createGameState, planOrder } from '../../src/engine/game'
+import { DEFAULT_SETTINGS, createGameState, getSpawnTiles, planOrder } from '../../src/engine/game'
 import { neighbor } from '../../src/engine/hex'
 import type { GameState } from '../../src/engine/types'
 
@@ -158,6 +158,67 @@ test('bot planning ignores hidden opponent traps', () => {
   const resultA = buildBotPlan(withoutHiddenTrap, 1, { thinkTimeMs: 400 })
   const resultB = buildBotPlan(withHiddenTrap, 1, { thinkTimeMs: 400 })
   assert.equal(serializePlan(resultA.orders), serializePlan(resultB.orders))
+})
+
+test('bot avoids spawning onto its own visible trap', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-spawn', defId: 'reinforce_spawn' }]
+
+  const trappedSpawnTile = getSpawnTiles(state, 1)[0]
+  assert.ok(trappedSpawnTile)
+  state.traps = [
+    {
+      id: 'bot-own-trap',
+      owner: 1,
+      kind: 'pitfall',
+      pos: { ...trappedSpawnTile },
+    },
+  ]
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 200 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-spawn')
+  assert.notDeepEqual(result.orders[0]?.params.tile, trappedSpawnTile)
+})
+
+test('bot avoids movement paths that step onto its own trap', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-move', defId: 'move_any' }]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-runner'] = {
+    id: 'bot-runner',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['enemy-front'] = {
+    id: 'enemy-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.traps = [
+    {
+      id: 'bot-own-trap',
+      owner: 1,
+      kind: 'pitfall',
+      pos: { q: 2, r: 2 },
+    },
+  ]
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 250 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-move')
+  assert.notEqual(result.orders[0]?.params.direction, 0)
 })
 
 test('bot avoids spending AP on no-impact orders', () => {
