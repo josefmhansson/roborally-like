@@ -23,6 +23,8 @@ export type BotScoringHeuristics = {
 
 export type BotPressureHeuristics = {
   distancePressureWindow: number
+  engagementPressureWindow: number
+  engagementPressureScale: number
 }
 
 export type BotTacticalHeuristics = {
@@ -137,6 +139,8 @@ export const BOT_HEURISTICS: BotHeuristics = {
   },
   pressure: {
     distancePressureWindow: 10,
+    engagementPressureWindow: 8,
+    engagementPressureScale: 1.15,
   },
   tactical: {
     adjacentEnemyWeight: 2,
@@ -178,6 +182,7 @@ export const BOT_HEURISTICS: BotHeuristics = {
 }
 
 const DIRECTIONS: Direction[] = [0, 1, 2, 3, 4, 5]
+const NON_IMPACTFUL_FALLBACK_CARD_IDS = new Set<CardDefId>(['spell_invest', 'spell_divination', 'attack_chain_lightning'])
 
 export function buildBotPlan(
   inputState: GameState,
@@ -198,6 +203,7 @@ export function buildBotPlan(
   }
 
   let bestNode = rootNode
+  let bestNonEmptyNode: BeamNode | null = null
   let beam: BeamNode[] = [rootNode]
 
   for (let depth = 0; depth < depthLimit; depth += 1) {
@@ -226,6 +232,9 @@ export function buildBotPlan(
         if (isBetterTerminal(nextNode, bestNode)) {
           bestNode = nextNode
         }
+        if (isFallbackEligibleNode(nextNode, player) && isBetterNonEmptyFallback(nextNode, bestNonEmptyNode)) {
+          bestNonEmptyNode = nextNode
+        }
       }
     }
 
@@ -234,7 +243,9 @@ export function buildBotPlan(
   }
 
   const elapsedMs = nowMs() - start
-  const orders = bestNode.state.players[player].orders.map((order) => ({
+  const selectedNode =
+    bestNode.state.players[player].orders.length > 0 ? bestNode : bestNonEmptyNode ?? bestNode
+  const orders = selectedNode.state.players[player].orders.map((order) => ({
     cardId: order.cardId,
     params: cloneParams(order.params),
   }))
@@ -295,6 +306,18 @@ function normalizeHeuristics(overrides: BotHeuristicOverrides | undefined): BotH
         BOT_HEURISTICS.pressure.distancePressureWindow,
         1,
         50
+      ),
+      engagementPressureWindow: readInt(
+        overrides?.pressure?.engagementPressureWindow,
+        BOT_HEURISTICS.pressure.engagementPressureWindow,
+        1,
+        50
+      ),
+      engagementPressureScale: readNumber(
+        overrides?.pressure?.engagementPressureScale,
+        BOT_HEURISTICS.pressure.engagementPressureScale,
+        0,
+        5
       ),
     },
     tactical: {
@@ -762,17 +785,19 @@ function generateAttackParams(state: GameState, projected: GameState, player: Pl
     defId === 'attack_fwd' ||
     defId === 'attack_jab' ||
     defId === 'attack_bash' ||
-    defId === 'attack_ice_bolt' ||
     defId === 'attack_shove' ||
-    defId === 'attack_roundhouse_kick' ||
-    defId === 'attack_fireball' ||
     defId === 'attack_disarm' ||
     defId === 'attack_bleed'
   ) {
     refs.forEach((ref) => {
-      DIRECTIONS.forEach((direction) => {
-        params.push({ unitId: ref.refId, direction })
-      })
+      appendPreferredDirectionalAttackParams(params, projected, player, ref, defId)
+    })
+    return params
+  }
+
+  if (defId === 'attack_ice_bolt' || defId === 'attack_fireball' || defId === 'attack_roundhouse_kick') {
+    refs.forEach((ref) => {
+      appendPreferredDirectionalAttackParams(params, projected, player, ref, defId)
     })
     return params
   }
@@ -928,6 +953,34 @@ function getTargetableUnitsForCard(state: GameState, defId: CardDefId): Unit[] {
   return Object.values(state.units).filter((unit) => canCardTargetUnit(defId, unit))
 }
 
+function appendPreferredDirectionalAttackParams(
+  params: OrderParams[],
+  state: GameState,
+  player: PlayerId,
+  ref: UnitRef,
+  defId: CardDefId
+): void {
+  const candidates = DIRECTIONS.map((direction) => ({
+    params: { unitId: ref.refId, direction },
+    hitsEnemy: doesDirectionalAttackHitEnemy(state, player, ref.snapshot, defId, direction),
+  }))
+  const preferred = candidates.some((candidate) => candidate.hitsEnemy)
+    ? candidates.filter((candidate) => candidate.hitsEnemy)
+    : candidates
+  preferred.forEach((candidate) => params.push(candidate.params))
+}
+
+function doesDirectionalAttackHitEnemy(
+  state: GameState,
+  player: PlayerId,
+  unit: Unit,
+  defId: CardDefId,
+  direction: Direction
+): boolean {
+  const target = getDirectionalAttackTarget(state, unit, defId, direction)
+  return Boolean(target && target.owner !== player && canCardTargetUnit(defId, target))
+}
+
 function getDirectionalAttackTarget(state: GameState, unit: Unit, defId: CardDefId, direction: Direction): Unit | null {
   if (defId === 'attack_roguelike_pack_hunt') {
     const moveEnd = projectMoveEnd(state, unit, direction, 1)
@@ -935,9 +988,22 @@ function getDirectionalAttackTarget(state: GameState, unit: Unit, defId: CardDef
     if (!inBounds(state, targetHex)) return null
     return getUnitAt(state, targetHex)
   }
+  if (defId === 'attack_ice_bolt' || defId === 'attack_fireball') {
+    return getFirstUnitInDirection(state, unit.pos, direction)
+  }
   const targetHex = neighbor(unit.pos, direction)
   if (!inBounds(state, targetHex)) return null
   return getUnitAt(state, targetHex)
+}
+
+function getFirstUnitInDirection(state: GameState, origin: Hex, direction: Direction): Unit | null {
+  let cursor = { ...origin }
+  for (;;) {
+    cursor = neighbor(cursor, direction)
+    if (!inBounds(state, cursor)) return null
+    const target = getUnitAt(state, cursor)
+    if (target) return target
+  }
 }
 
 function addHexCandidate(map: Map<string, Hex>, hex: Hex): void {
@@ -1076,7 +1142,13 @@ function computePressureDelta(
     const dist = hexDistance(unit.pos, ownLeader.pos)
     return sum + Math.max(0, heuristics.pressure.distancePressureWindow - dist)
   }, 0)
-  return ownPressure - enemyPressure
+  const ownEngagementPressure = computeNearestEnemyPressure(ownUnits, enemyUnits, heuristics.pressure.engagementPressureWindow)
+  const enemyEngagementPressure = computeNearestEnemyPressure(
+    enemyUnits,
+    ownUnits,
+    heuristics.pressure.engagementPressureWindow
+  )
+  return ownPressure - enemyPressure + (ownEngagementPressure - enemyEngagementPressure) * heuristics.pressure.engagementPressureScale
 }
 
 function computeEliminationPressureDelta(ownUnits: Unit[], enemyUnits: Unit[], heuristics: BotHeuristics): number {
@@ -1543,6 +1615,16 @@ function isBetterTerminal(candidate: BeamNode, currentBest: BeamNode): boolean {
   return candidate.signature < currentBest.signature
 }
 
+function isFallbackEligibleNode(node: BeamNode, player: PlayerId): boolean {
+  const orders = node.state.players[player].orders
+  return orders.length > 0 && orders.some((order) => !NON_IMPACTFUL_FALLBACK_CARD_IDS.has(order.defId))
+}
+
+function isBetterNonEmptyFallback(candidate: BeamNode, currentBest: BeamNode | null): boolean {
+  if (!currentBest) return true
+  return isBetterTerminal(candidate, currentBest)
+}
+
 function buildFairPlanningSnapshot(source: GameState, player: PlayerId): GameState {
   const opponent: PlayerId = player === 0 ? 1 : 0
   const snapshot = cloneGameState(source)
@@ -1681,6 +1763,16 @@ function hexDistance(a: Hex, b: Hex): number {
   const dr = aAxial.r - bAxial.r
   const ds = -aAxial.q - aAxial.r - (-bAxial.q - bAxial.r)
   return (Math.abs(dq) + Math.abs(dr) + Math.abs(ds)) / 2
+}
+
+function computeNearestEnemyPressure(units: Unit[], enemies: Unit[], window: number): number {
+  if (units.length === 0 || enemies.length === 0) return 0
+  return units.reduce((sum, unit) => {
+    const nearestEnemyDistance = enemies.reduce((nearest, enemy) => {
+      return Math.min(nearest, hexDistance(unit.pos, enemy.pos))
+    }, Number.MAX_SAFE_INTEGER)
+    return sum + Math.max(0, window - nearestEnemyDistance)
+  }, 0)
 }
 
 function hasActiveUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['type']): boolean {

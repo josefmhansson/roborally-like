@@ -405,6 +405,126 @@ test('bot prefers immediate attack over movement in eliminate-units mode', () =>
   assert.equal(result.orders[0]?.params.direction, 0)
 })
 
+test('bot points directional attacks at an enemy when one is available', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-jab', defId: 'attack_jab' }]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-attacker'] = {
+    id: 'bot-attacker',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 2, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+  state.units['enemy-target'] = {
+    id: 'enemy-target',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 200 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-jab')
+  assert.equal(result.orders[0]?.params.unitId, 'bot-attacker')
+  assert.equal(result.orders[0]?.params.direction, 3)
+})
+
+test('bot advances toward enemy units in standard mode when the board is sparse', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_any'),
+  })
+
+  state.phase = 'planning'
+  state.winner = null
+  state.ready = [false, false]
+  state.players[0].orders = []
+  state.players[1].orders = []
+  state.players[1].deck = []
+  state.players[1].discard = []
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-move', defId: 'move_any' }]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-runner'] = {
+    id: 'bot-runner',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-front'] = {
+    id: 'enemy-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, { thinkTimeMs: 300 })
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-move')
+  assert.equal(result.orders[0]?.params.direction, 0)
+})
+
+test('bot falls back to a meaningful order instead of returning an empty impactful hand', () => {
+  const state = setupBotPlanningState()
+  state.actionBudgets = [3, 1]
+  state.players[1].hand = [{ id: 'bot-move', defId: 'move_any' }]
+
+  clearNonLeaderUnits(state)
+  state.units['bot-runner'] = {
+    id: 'bot-runner',
+    owner: 1,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 1, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['enemy-front'] = {
+    id: 'enemy-front',
+    owner: 0,
+    kind: 'unit',
+    strength: 3,
+    pos: { q: 4, r: 2 },
+    facing: 0,
+    modifiers: [],
+  }
+
+  const result = buildBotPlan(state, 1, {
+    thinkTimeMs: 200,
+    heuristics: {
+      scoring: {
+        leaderStrengthDeltaWeight: 0,
+        unitStrengthDeltaWeight: 0,
+        unitCountDeltaWeight: 0,
+        pressureDeltaWeight: 0,
+        tacticalDeltaWeight: 0,
+        opponentHistoryRiskWeight: 0,
+        chainLightningOpportunityWeight: 0,
+        queueTimingRiskWeight: -1000,
+      },
+    },
+  })
+
+  assert.equal(result.orders.length, 1)
+  assert.equal(result.orders[0]?.cardId, 'bot-move')
+})
+
 test('slime bot prefers enemy target over adjacent ally for roguelike slow attack', () => {
   const state = setupBotPlanningState()
   state.actionBudgets = [3, 1]
