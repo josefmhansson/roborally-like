@@ -3316,6 +3316,12 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (!actingUnit || !canActAsUnit(actingUnit)) return
       if (getDirectionToAdjacentTile(actingUnit.pos, tile) === null) return
       const participants = [actingUnit, ...getCommanderSupportParticipants(state, order.player, tile, actingUnit.id)]
+      participants.forEach((participant) => {
+        const direction = getDirectionToAdjacentTile(participant.pos, tile)
+        if (direction !== null) {
+          participant.facing = direction
+        }
+      })
       applyRepeatedUnitSourcedDamage(
         state,
         participants,

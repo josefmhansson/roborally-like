@@ -520,7 +520,8 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   attack_joint_attack: {
     id: 'attack_joint_attack',
     name: 'Joint Attack',
-    description: 'Choose a tile adjacent to a friendly unit. That unit and each other adjacent friendly unit deal 2 damage there.',
+    description:
+      'Choose a tile adjacent to a friendly unit. That unit and each other adjacent friendly unit face that tile and deal 2 damage to it.',
     type: 'attack',
     classId: 'commander',
     requires: { unit: 'friendly', tile: 'any' },
@@ -1177,16 +1178,17 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   spell_meteor: {
     id: 'spell_meteor',
     name: 'Meteor',
-    description: 'Deal 5 damage to a chosen tile and 1 damage to adjacent tiles (units only).',
+    description: 'Deal 5 damage to a chosen tile and 2 damage to adjacent tiles (units only). Slow',
     type: 'spell',
     classId: 'archmage',
     actionCost: 3,
+    keywords: ['Slow'],
     requires: { tile: 'any' },
     effects: [
       {
         type: 'damageTileArea',
         centerAmount: 5,
-        splashAmount: 1,
+        splashAmount: 2,
         tileParam: 'tile',
       },
     ],

@@ -9,14 +9,27 @@ This file is for future agents working in this repository.
 - Runtime board art lives in `public/assets/`.
 - New source art for the ongoing board/art overhaul lives in `public/assets/new style/`.
 - Generated team-tint assets are produced by `scripts/generateTeamAssets.ps1`.
+- The living gameplay specification workbook is `specifications.xlsx` in the repo root.
 
 ## Useful Commands
 
 - `npm run build`
 - `npm run test:server`
 - `npm run assets:generate-team`
+- `python scripts/syncSpecifications.py check`
+- `python scripts/syncSpecifications.py write`
 
-Use `build` after client/rendering changes. Use `test:server` after engine/server/game-rule changes. Use `assets:generate-team` after changing source art in `public/assets/new style/` for units, barricades, or spawn village.
+Use `build` after client/rendering changes. Use `test:server` after engine/server/game-rule changes. Use `assets:generate-team` after changing source art in `public/assets/new style/` for units, barricades, or spawn village. Use `syncSpecifications.py check` for spreadsheet/code consistency audits. Use `syncSpecifications.py write` only after reconciling spreadsheet-driven changes or refreshing the workbook from already-implemented code.
+
+## Specification Workbook
+
+- `specifications.xlsx` is the living gameplay/content document for cards, units, encounters, classes, status effects, and similar player-facing data.
+- Treat user edits in `specifications.xlsx` as intentional design changes unless the user says the sheet is outdated, partial, or exploratory.
+- When the workbook and code disagree, do not blindly overwrite the workbook. Review the workbook diff first, implement the relevant code changes, then refresh the workbook as needed.
+- When you change player-facing gameplay content in code, update the corresponding workbook rows in the same task before you finish.
+- When workbook changes imply implementation work but the row is ambiguous, ask the user instead of guessing.
+- Periodically run a consistency pass with `python scripts/syncSpecifications.py check`. If it fails because the workbook was intentionally edited first, update the code rather than forcing the workbook back to the old implementation.
+- Keep implementation-only compatibility details in code/`AGENTS.md` when they do not fit the workbook well. Example: legacy internal ids such as `pitfall`.
 
 ## User Preferences
 

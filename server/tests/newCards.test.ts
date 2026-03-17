@@ -291,6 +291,68 @@ test('joint attack uses adjacent allies as individual damage sources', () => {
   assert.equal(state.units['joint-target']?.strength, 3)
 })
 
+test('joint attack turns participants toward the target tile', () => {
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'attack_joint_attack'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  const targetTile = { q: 3, r: 2 }
+  state.units['joint-user'] = {
+    id: 'joint-user',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 2, r: 2 },
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['joint-ally-a'] = {
+    id: 'joint-ally-a',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 1),
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['joint-ally-b'] = {
+    id: 'joint-ally-b',
+    owner: 0,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(targetTile, 5),
+    facing: 2,
+    modifiers: [],
+  }
+  state.units['joint-target'] = {
+    id: 'joint-target',
+    owner: 1,
+    kind: 'unit',
+    strength: 12,
+    pos: targetTile,
+    facing: 3,
+    modifiers: [],
+  }
+
+  const cardId = findCardId(state, 0, 'attack_joint_attack')
+  assert.ok(planOrder(state, 0, cardId, { unitId: 'joint-user', tile: targetTile }))
+  readyAndResolve(state)
+
+  ;(['joint-user', 'joint-ally-a', 'joint-ally-b'] as const).forEach((unitId) => {
+    const unit = state.units[unitId]
+    assert.ok(unit)
+    const expected = ([0, 1, 2, 3, 4, 5] as Direction[]).find((direction) => {
+      const candidate = neighbor(unit.pos, direction)
+      return candidate.q === targetTile.q && candidate.r === targetTile.r
+    })
+    assert.notEqual(expected, undefined)
+    assert.equal(unit.facing, expected)
+  })
+})
+
 test('double steps moves two different units to chosen adjacent tiles', () => {
   const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
   const state = createGameState(settings, {
@@ -724,6 +786,64 @@ test('leader spell resistance halves spell damage rounded down', () => {
   const leaderAfter = state.units['leader-1']
   assert.ok(leaderAfter)
   assert.equal(leaderAfter.strength, startStrength - 2)
+})
+
+test('meteor deals 2 splash damage to adjacent units and is a slow card', () => {
+  assert.ok(CARD_DEFS.spell_meteor.keywords?.includes('Slow'))
+
+  const settings = { ...DEFAULT_SETTINGS, deckSize: 6, drawPerTurn: 6 }
+  const state = createGameState(settings, {
+    p1: Array.from({ length: settings.deckSize }, () => 'spell_meteor'),
+    p2: Array.from({ length: settings.deckSize }, () => 'move_pivot'),
+  })
+
+  clearNonLeaderUnits(state)
+  const center = { q: 3, r: 2 }
+  state.units['meteor-center'] = {
+    id: 'meteor-center',
+    owner: 1,
+    kind: 'unit',
+    strength: 8,
+    pos: center,
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['meteor-adj-a'] = {
+    id: 'meteor-adj-a',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(center, 1),
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['meteor-adj-b'] = {
+    id: 'meteor-adj-b',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: neighbor(center, 5),
+    facing: 3,
+    modifiers: [],
+  }
+  state.units['meteor-far'] = {
+    id: 'meteor-far',
+    owner: 1,
+    kind: 'unit',
+    strength: 4,
+    pos: { q: 0, r: 0 },
+    facing: 3,
+    modifiers: [],
+  }
+
+  const meteorCardId = findCardId(state, 0, 'spell_meteor')
+  assert.ok(planOrder(state, 0, meteorCardId, { tile: center }))
+  readyAndResolve(state)
+
+  assert.equal(state.units['meteor-center']?.strength, 3)
+  assert.equal(state.units['meteor-adj-a']?.strength, 2)
+  assert.equal(state.units['meteor-adj-b']?.strength, 2)
+  assert.equal(state.units['meteor-far']?.strength, 4)
 })
 
 test('barricade card spawns two barricade units on valid tiles', () => {
