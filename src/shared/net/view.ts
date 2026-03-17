@@ -3,6 +3,7 @@ import type {
   GameSettings,
   Order,
   Phase,
+  PlayerModifier,
   PlayerClassId,
   PlayerId,
   Trap,
@@ -21,6 +22,7 @@ export type PlayerResourceCounts = {
 export type PlayerView = {
   hand: CardInstance[] | null
   orders: Order[] | null
+  modifiers: PlayerModifier[]
 }
 
 export type GameStateView = {

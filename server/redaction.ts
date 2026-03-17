@@ -24,10 +24,12 @@ export function buildStateViewForState(
     {
       hand: seat === 0 ? cloneCards(sourceState.players[0].hand) : null,
       orders: seat === 0 || revealOpponentOrders ? cloneOrders(sourceState.players[0].orders) : null,
+      modifiers: clonePlayerModifiers(sourceState.players[0].modifiers),
     },
     {
       hand: seat === 1 ? cloneCards(sourceState.players[1].hand) : null,
       orders: seat === 1 || revealOpponentOrders ? cloneOrders(sourceState.players[1].orders) : null,
+      modifiers: clonePlayerModifiers(sourceState.players[1].modifiers),
     },
   ]
 
@@ -107,6 +109,10 @@ function cloneOrders(orders: Order[]): Order[] {
       tile3: order.params.tile3 ? { ...order.params.tile3 } : undefined,
     },
   }))
+}
+
+function clonePlayerModifiers(modifiers: GameState['players'][number]['modifiers']): GameState['players'][number]['modifiers'] {
+  return modifiers.map((modifier) => ({ ...modifier }))
 }
 
 function cloneTraps(traps: Trap[]): Trap[] {

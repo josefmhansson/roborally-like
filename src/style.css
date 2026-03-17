@@ -676,15 +676,100 @@ input[type='number'] {
 }
 
 .hud {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 14px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+  padding: 0 20px calc(18px + env(safe-area-inset-bottom));
+  pointer-events: none;
 }
 
 #status {
   min-width: 0;
+}
+
+.hud-center,
+.meta-ready-slot,
+.player-portrait {
+  pointer-events: auto;
+}
+
+.hud-center {
+  display: flex;
+  justify-content: center;
+  align-items: end;
+}
+
+.hud-meta-stash {
+  display: none;
+}
+
+.player-portrait {
+  --leader-color: var(--match-class-primary);
+  --team-color: var(--accent);
+  appearance: none;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  border: 3px solid var(--leader-color);
+  background: #000000;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 10px 24px rgba(0, 0, 0, 0.42);
+  transition:
+    transform 120ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease;
+}
+
+.player-portrait:hover,
+.player-portrait:focus-visible,
+.player-portrait.is-open {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.player-portrait.active-player {
+  box-shadow:
+    0 0 0 3px rgba(255, 206, 84, 0.52),
+    0 0 26px rgba(255, 206, 84, 0.82),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 10px 24px rgba(0, 0, 0, 0.42);
+}
+
+.player-portrait:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 3px;
+}
+
+.player-portrait-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 50%;
+}
+
+.player-status-popover {
+  position: absolute;
+  z-index: 7;
+  min-width: 250px;
+  max-width: min(320px, calc(100% - 20px));
+  transform: translate(-50%, calc(-100% - 10px));
+  border-radius: 14px;
+  border: 1px solid rgba(110, 196, 255, 0.42);
+  background: rgba(9, 14, 25, 0.96);
+  color: #eef4ff;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(6px);
+  padding: 12px 14px;
 }
 
 .unit-status-popover {
@@ -759,6 +844,88 @@ input[type='number'] {
 .unit-status-turns {
   color: #b8dec8;
   font-size: 10px;
+}
+
+.player-status-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #d6e8ff;
+  margin-bottom: 10px;
+}
+
+.player-status-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.player-status-stat {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.player-status-stat-label,
+.player-status-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #9bb1d8;
+}
+
+.player-status-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.player-status-effects {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.player-status-effect {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.player-status-effect-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.player-status-effect-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f3f7ff;
+}
+
+.player-status-effect-turns {
+  font-size: 10px;
+  color: #aebfdf;
+}
+
+.player-status-effect-desc {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #c4d2eb;
+}
+
+.player-status-effect.none {
+  padding: 10px;
 }
 
 .meta {
@@ -1789,18 +1956,8 @@ body.debug-cards .hidden-card {
   }
 
   .hud {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 4;
-    font-size: 11px;
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 2px;
-    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
-    background: linear-gradient(0deg, rgba(6, 10, 20, 0.8) 0%, rgba(6, 10, 20, 0.45) 65%, rgba(6, 10, 20, 0) 100%);
-    backdrop-filter: blur(1px);
+    gap: 10px;
+    padding: 0 8px calc(8px + env(safe-area-inset-bottom));
   }
 
   .unit-status-popover {
@@ -1827,6 +1984,55 @@ body.debug-cards .hidden-card {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .player-portrait {
+    width: 70px;
+    height: 70px;
+    border-width: 2px;
+  }
+
+  .player-status-popover {
+    min-width: 210px;
+    max-width: min(250px, calc(100% - 14px));
+    padding: 9px 10px;
+    border-radius: 10px;
+    transform: translate(-50%, calc(-100% - 8px));
+  }
+
+  .player-status-title {
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
+
+  .player-status-stats {
+    gap: 6px;
+  }
+
+  .player-status-stat {
+    padding: 6px 7px;
+  }
+
+  .player-status-stat-value {
+    font-size: 14px;
+  }
+
+  .player-status-effect {
+    gap: 5px;
+    padding: 7px 8px;
+  }
+
+  .player-status-effect-head {
+    gap: 6px;
+  }
+
+  .player-status-effect-name {
+    font-size: 11px;
+  }
+
+  .player-status-effect-desc,
+  .player-status-effect-turns {
+    font-size: 10px;
   }
 
   .meta {

@@ -46,6 +46,7 @@ import type {
   GameState,
   Hex,
   OrderParams,
+  PlayerModifier,
   PlayerId,
   PlayerClassId,
   RoguelikeEncounterId,
@@ -295,22 +296,33 @@ app.innerHTML = `
             <div id="planner-ap" class="planner-ap board-ap-rail"></div>
             <canvas id="board" aria-label="Game board"></canvas>
             <div id="unit-status-popover" class="unit-status-popover hidden" aria-live="polite"></div>
+            <div id="player-status-popover" class="player-status-popover hidden" aria-live="polite"></div>
             <div class="hud">
-              <div id="status">Select a card to start planning.</div>
-              <div class="meta">
-                <div class="meta-phase">
-                  <span id="turn"></span>
-                  <span id="active"></span>
-                  <span id="network-state"></span>
-                </div>
+              <button id="player-portrait-p1" class="player-portrait player-portrait-p1" type="button" aria-label="Open Player 1 status">
+                <canvas id="player-portrait-canvas-p1" class="player-portrait-canvas" width="96" height="96"></canvas>
+              </button>
+              <div class="hud-center">
                 <div id="planning-ready-slot" class="meta-ready-slot">
                   <button id="ready-btn" class="btn board-control-btn">Ready</button>
                 </div>
-                <div id="counts" class="meta-counts">
-                  <span id="counts-deck-p1"></span>
-                  <span id="counts-deck-p2"></span>
-                  <span id="counts-discard-p1"></span>
-                  <span id="counts-discard-p2"></span>
+              </div>
+              <button id="player-portrait-p2" class="player-portrait player-portrait-p2" type="button" aria-label="Open Player 2 status">
+                <canvas id="player-portrait-canvas-p2" class="player-portrait-canvas" width="96" height="96"></canvas>
+              </button>
+              <div class="hud-meta-stash hidden" aria-hidden="true">
+                <div id="status">Select a card to start planning.</div>
+                <div class="meta">
+                  <div class="meta-phase">
+                    <span id="turn"></span>
+                    <span id="active"></span>
+                    <span id="network-state"></span>
+                  </div>
+                  <div id="counts" class="meta-counts">
+                    <span id="counts-deck-p1"></span>
+                    <span id="counts-deck-p2"></span>
+                    <span id="counts-discard-p1"></span>
+                    <span id="counts-discard-p2"></span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -427,6 +439,7 @@ const settingActionBudgetP2 = document.querySelector<HTMLInputElement>('#setting
 
 const canvas = document.querySelector<HTMLCanvasElement>('#board')!
 const unitStatusPopoverEl = document.querySelector<HTMLDivElement>('#unit-status-popover')!
+const playerStatusPopoverEl = document.querySelector<HTMLDivElement>('#player-status-popover')!
 const statusEl = document.querySelector<HTMLDivElement>('#status')!
 const handEl = document.querySelector<HTMLDivElement>('#hand')!
 const ordersEl = document.querySelector<HTMLDivElement>('#orders')!
@@ -442,6 +455,10 @@ const countsDeckP2El = document.querySelector<HTMLSpanElement>('#counts-deck-p2'
 const countsDiscardP1El = document.querySelector<HTMLSpanElement>('#counts-discard-p1')!
 const countsDiscardP2El = document.querySelector<HTMLSpanElement>('#counts-discard-p2')!
 const networkStateEl = document.querySelector<HTMLSpanElement>('#network-state')!
+const playerPortraitP1Button = document.querySelector<HTMLButtonElement>('#player-portrait-p1')!
+const playerPortraitP2Button = document.querySelector<HTMLButtonElement>('#player-portrait-p2')!
+const playerPortraitP1Canvas = document.querySelector<HTMLCanvasElement>('#player-portrait-canvas-p1')!
+const playerPortraitP2Canvas = document.querySelector<HTMLCanvasElement>('#player-portrait-canvas-p2')!
 const winnerModal = document.querySelector<HTMLDivElement>('#winner-modal')!
 const winnerTextEl = document.querySelector<HTMLDivElement>('#winner-text')!
 const winnerNoteEl = document.querySelector<HTMLDivElement>('#winner-note')!
@@ -519,6 +536,7 @@ if (
   !settingActionBudgetP2 ||
   !canvas ||
   !unitStatusPopoverEl ||
+  !playerStatusPopoverEl ||
   !statusEl ||
   !handEl ||
   !ordersEl ||
@@ -534,6 +552,10 @@ if (
   !countsDiscardP1El ||
   !countsDiscardP2El ||
   !networkStateEl ||
+  !playerPortraitP1Button ||
+  !playerPortraitP2Button ||
+  !playerPortraitP1Canvas ||
+  !playerPortraitP2Canvas ||
   !winnerModal ||
   !winnerTextEl ||
   !winnerNoteEl ||
@@ -726,8 +748,14 @@ const BRAIN_FREEZE_DURATION_MS = 650
 const CARD_TRANSFER_DURATION_MS = 800
 const RESOLUTION_CARD_APPROACH_DURATION_MS = 360
 const RESOLUTION_CARD_HOLD_DURATION_MS = 250
-const RESOLUTION_CARD_SHRINK_DURATION_MS = 240
+const RESOLUTION_CARD_SHRINK_DURATION_MS = 380
+const RESOLUTION_CARD_GLOBAL_FADE_DURATION_MS = 430
+const RESOLUTION_CARD_FIZZLE_DURATION_MS = 520
 const RESOLUTION_CARD_SCALE = 2.2
+const RESOLUTION_CARD_TARGET_SCALE_UNIT = 0.18
+const RESOLUTION_CARD_TARGET_SCALE_TILE = 0.14
+const RESOLUTION_CARD_TARGET_SCALE_PLAYER = 0.24
+const RESOLUTION_CARD_GLOBAL_END_SCALE = 2.85
 
 let isAnimating = false
 let animationQueue: BoardAnimation[] = []
@@ -978,6 +1006,7 @@ let hoverCardKey: string | null = null
 let hasPointer = false
 let hoveredStatusUnitId: string | null = null
 let pinnedStatusUnitId: string | null = null
+let pinnedStatusPlayerId: PlayerId | null = null
 let lastInputWasTouch = false
 let touchTapCandidate = false
 let suppressWinnerModalForRestoredOutcome = false
@@ -1298,6 +1327,9 @@ const SPAWN_IMAGE_SCALE = BUILDING_IMAGE_SCALE * 1.5
 const SPAWN_ANCHOR_Y = BUILDING_ANCHOR_Y - 0.08
 const UNIT_IMAGE_SCALE = 1.1 * 1.7
 const LEADER_IMAGE_SCALE = 1.1 * 2
+const PLAYER_PORTRAIT_ART_SCALE = 2.5
+const PLAYER_PORTRAIT_ART_ANCHOR_Y = 0.5
+const PLAYER_PORTRAIT_ART_OFFSET_Y = -0.02
 const UNIT_ANCHOR_Y = 0.78
 const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
 const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
@@ -2346,14 +2378,14 @@ function mapViewToState(view: GameStateView): GameState {
       hand: cloneCards(view.players[0].hand),
       discard: [],
       orders: cloneOrders(view.players[0].orders),
-      modifiers: [],
+      modifiers: clonePlayerModifiers(view.players[0].modifiers),
     },
     {
       deck: [],
       hand: cloneCards(view.players[1].hand),
       discard: [],
       orders: cloneOrders(view.players[1].orders),
-      modifiers: [],
+      modifiers: clonePlayerModifiers(view.players[1].modifiers),
     },
   ]
 
@@ -2499,6 +2531,11 @@ function cloneOrders(orders: GameState['actionQueue'] | null): GameState['action
       tile3: order.params.tile3 ? { ...order.params.tile3 } : undefined,
     },
   }))
+}
+
+function clonePlayerModifiers(modifiers: PlayerModifier[] | null | undefined): PlayerModifier[] {
+  if (!modifiers) return []
+  return modifiers.map((modifier) => ({ ...modifier }))
 }
 
 function applyOnlineSnapshot(stateView: GameStateView, viewMeta: ViewMeta, presence: PresenceState): void {
@@ -3564,6 +3601,10 @@ function getLeaderDisplayName(owner: PlayerId): string {
   return PLAYER_CLASS_DEFS[classId].name
 }
 
+function getLeaderPortraitColor(owner: PlayerId): string {
+  return getTeamTint(owner)
+}
+
 function getMatchThemeClassId(): PlayerClassId {
   if (mode === 'roguelike' && roguelikeRun) return roguelikeRun.playerClass
   return getLoadoutClass(planningPlayer)
@@ -3653,6 +3694,63 @@ function drawLeaderSprite(center: { x: number; y: number }, owner: PlayerId, sca
     spriteSet.leaderOffsetX,
     spriteSet.leaderOffsetY
   )
+}
+
+function drawLeaderPortrait(canvasEl: HTMLCanvasElement, owner: PlayerId): void {
+  const size = Math.max(64, Math.round(canvasEl.clientWidth || canvasEl.width || 96))
+  const scale = Math.max(1, window.devicePixelRatio || 1)
+  const pixelSize = Math.round(size * scale)
+  if (canvasEl.width !== pixelSize || canvasEl.height !== pixelSize) {
+    canvasEl.width = pixelSize
+    canvasEl.height = pixelSize
+  }
+
+  const context = canvasEl.getContext('2d')
+  if (!context) return
+
+  context.setTransform(1, 0, 0, 1, 0, 0)
+  context.clearRect(0, 0, canvasEl.width, canvasEl.height)
+  context.setTransform(scale, 0, 0, scale, 0, 0)
+  context.imageSmoothingEnabled = true
+
+  const radius = size * 0.5
+  const center = { x: radius, y: radius }
+  const spriteSet = getSpriteSetForOwner(owner)
+  const drawSize = size * PLAYER_PORTRAIT_ART_SCALE
+
+  const drawPortraitLayer = (source: CanvasImageSource, sourceWidth: number, sourceHeight: number): void => {
+    const ratio = sourceHeight / sourceWidth || 1
+    const drawWidth = drawSize
+    const drawHeight = drawSize * ratio
+    const drawX = center.x - drawWidth / 2 + drawWidth * spriteSet.leaderOffsetX
+    const drawY =
+      center.y -
+      drawHeight * PLAYER_PORTRAIT_ART_ANCHOR_Y +
+      drawHeight * (spriteSet.leaderOffsetY + PLAYER_PORTRAIT_ART_OFFSET_Y)
+    context.drawImage(source, drawX, drawY, drawWidth, drawHeight)
+  }
+
+  context.save()
+  context.beginPath()
+  context.arc(center.x, center.y, radius - 1, 0, Math.PI * 2)
+  context.clip()
+
+  context.fillStyle = '#000000'
+  context.fillRect(0, 0, size, size)
+
+  if (spriteSet.leaderBaseImage.loaded) {
+    drawPortraitLayer(
+      spriteSet.leaderBaseImage.img,
+      spriteSet.leaderBaseImage.img.width,
+      spriteSet.leaderBaseImage.img.height
+    )
+  }
+  const tinted = getTintedTeamLayer(owner, spriteSet.leaderTeamImage, spriteSet.leaderTeamCache)
+  if (tinted) {
+    drawPortraitLayer(tinted, tinted.width, tinted.height)
+  }
+
+  context.restore()
 }
 
 function drawBarricadeSprite(
@@ -4039,6 +4137,16 @@ function clearUnitStatusPopoverState(): void {
   hideUnitStatusPopover()
 }
 
+function hidePlayerStatusPopover(): void {
+  playerStatusPopoverEl.classList.add('hidden')
+  playerStatusPopoverEl.innerHTML = ''
+}
+
+function clearPlayerStatusPopoverState(): void {
+  pinnedStatusPlayerId = null
+  hidePlayerStatusPopover()
+}
+
 function isUnitStatusInspectionEnabled(): boolean {
   return selectedCardId === null && pendingOrder === null
 }
@@ -4146,6 +4254,209 @@ function togglePinnedUnitStatusFromHex(hex: Hex): void {
   renderUnitStatusPopover()
 }
 
+function getPlayerResourceCounts(player: PlayerId): { deck: number; discard: number; hand: number } {
+  const counts = onlineSession?.viewMeta?.counts?.[player]
+  if (mode === 'online' && counts) {
+    return {
+      deck: counts.deck,
+      discard: counts.discard,
+      hand: counts.hand,
+    }
+  }
+  return {
+    deck: state.players[player].deck.length,
+    discard: state.players[player].discard.length,
+    hand: state.players[player].hand.length,
+  }
+}
+
+function getPlayerApBudget(player: PlayerId): number {
+  return (
+    state.actionBudgets?.[player] ??
+    (player === 0 ? state.settings.actionBudgetP1 : state.settings.actionBudgetP2) ??
+    (player === 0 ? gameSettings.actionBudgetP1 : gameSettings.actionBudgetP2) ??
+    3
+  )
+}
+
+function describePlayerModifierSummary(summary: {
+  type: PlayerModifier['type']
+  amount: number
+  turnsRemaining: number | 'indefinite'
+}): { label: string; description: string; kind: 'buff' | 'debuff' } {
+  if (summary.type === 'extraDraw') {
+    const amountLabel = `${summary.amount} extra card${summary.amount === 1 ? '' : 's'}`
+    return {
+      label: 'Extra Draw',
+      description:
+        summary.turnsRemaining === 'indefinite'
+          ? `Draw ${amountLabel} at the start of each turn.`
+          : `Draw ${amountLabel} at the start of your next turn.`,
+      kind: 'buff',
+    }
+  }
+  return {
+    label: 'Brain Freeze',
+    description: 'All cards become Slow next turn. Priority and Slow cancel each other out.',
+    kind: 'debuff',
+  }
+}
+
+function summarizePlayerModifiers(
+  modifiers: PlayerModifier[]
+): Array<{
+  label: string
+  description: string
+  kind: 'buff' | 'debuff'
+  turnsRemaining: number | 'indefinite'
+}> {
+  let extraDrawAmount = 0
+  let extraDrawTurns: number | 'indefinite' | null = null
+  let hasBrainFreeze = false
+  let brainFreezeTurns: number | 'indefinite' | null = null
+
+  modifiers.forEach((modifier) => {
+    if (modifier.type === 'extraDraw') {
+      extraDrawAmount += modifier.amount
+      if (extraDrawTurns === 'indefinite' || modifier.turnsRemaining === 'indefinite') {
+        extraDrawTurns = 'indefinite'
+      } else {
+        extraDrawTurns = Math.max(extraDrawTurns ?? 0, modifier.turnsRemaining)
+      }
+      return
+    }
+    if (modifier.type === 'brainFreeze') {
+      hasBrainFreeze = true
+      if (brainFreezeTurns === 'indefinite' || modifier.turnsRemaining === 'indefinite') {
+        brainFreezeTurns = 'indefinite'
+      } else {
+        brainFreezeTurns = Math.max(brainFreezeTurns ?? 0, modifier.turnsRemaining)
+      }
+    }
+  })
+
+  const summaries: Array<{
+    label: string
+    description: string
+    kind: 'buff' | 'debuff'
+    turnsRemaining: number | 'indefinite'
+  }> = []
+
+  if (extraDrawTurns && extraDrawAmount > 0) {
+    const details = describePlayerModifierSummary({
+      type: 'extraDraw',
+      amount: extraDrawAmount,
+      turnsRemaining: extraDrawTurns,
+    })
+    summaries.push({
+      label: details.label,
+      description: details.description,
+      kind: details.kind,
+      turnsRemaining: extraDrawTurns,
+    })
+  }
+
+  if (hasBrainFreeze && brainFreezeTurns) {
+    const details = describePlayerModifierSummary({
+      type: 'brainFreeze',
+      amount: 0,
+      turnsRemaining: brainFreezeTurns,
+    })
+    summaries.push({
+      label: details.label,
+      description: details.description,
+      kind: details.kind,
+      turnsRemaining: brainFreezeTurns,
+    })
+  }
+
+  return summaries
+}
+
+function getPlayerPortraitButton(player: PlayerId): HTMLButtonElement {
+  return player === 0 ? playerPortraitP1Button : playerPortraitP2Button
+}
+
+function renderPlayerPortraits(): void {
+  ;([0, 1] as PlayerId[]).forEach((player) => {
+    const button = getPlayerPortraitButton(player)
+    const portraitCanvas = player === 0 ? playerPortraitP1Canvas : playerPortraitP2Canvas
+    button.style.setProperty('--leader-color', getLeaderPortraitColor(player))
+    button.style.setProperty('--team-color', getTeamTint(player))
+    button.classList.toggle('active-player', state.activePlayer === player)
+    button.classList.toggle('is-open', pinnedStatusPlayerId === player)
+    drawLeaderPortrait(portraitCanvas, player)
+  })
+}
+
+function renderPlayerStatusPopover(): void {
+  if (screen !== 'game' || gameScreen.classList.contains('hidden')) {
+    hidePlayerStatusPopover()
+    return
+  }
+  if (pinnedStatusPlayerId === null) {
+    hidePlayerStatusPopover()
+    return
+  }
+
+  const player = pinnedStatusPlayerId
+  const counts = getPlayerResourceCounts(player)
+  const apBudget = getPlayerApBudget(player)
+  const effects = summarizePlayerModifiers(state.players[player].modifiers)
+  const effectRows =
+    effects.length > 0
+      ? effects
+          .map((effect) => {
+            const turns =
+              effect.turnsRemaining === 'indefinite'
+                ? 'indefinite'
+                : `${effect.turnsRemaining} turn${effect.turnsRemaining === 1 ? '' : 's'}`
+            return [
+              `<li class="player-status-effect ${effect.kind}">`,
+              `<div class="player-status-effect-head">`,
+              `<span class="unit-status-kind">${effect.kind}</span>`,
+              `<span class="player-status-effect-name">${effect.label}</span>`,
+              `<span class="player-status-effect-turns">${turns}</span>`,
+              `</div>`,
+              `<div class="player-status-effect-desc">${effect.description}</div>`,
+              `</li>`,
+            ].join('')
+          })
+          .join('')
+      : '<li class="player-status-effect none"><div class="player-status-effect-desc">No active player effects.</div></li>'
+
+  playerStatusPopoverEl.innerHTML = [
+    `<div class="player-status-title">Player ${player + 1} ${getLeaderDisplayName(player)}</div>`,
+    `<div class="player-status-stats">`,
+    `<div class="player-status-stat"><span class="player-status-stat-label">AP budget</span><span class="player-status-stat-value">${apBudget}</span></div>`,
+    `<div class="player-status-stat"><span class="player-status-stat-label">Hand</span><span class="player-status-stat-value">${counts.hand}</span></div>`,
+    `<div class="player-status-stat"><span class="player-status-stat-label">Deck</span><span class="player-status-stat-value">${counts.deck}</span></div>`,
+    `<div class="player-status-stat"><span class="player-status-stat-label">Discard</span><span class="player-status-stat-value">${counts.discard}</span></div>`,
+    `</div>`,
+    `<div class="player-status-section-title">Status Effects</div>`,
+    `<ul class="player-status-effects">${effectRows}</ul>`,
+  ].join('')
+  playerStatusPopoverEl.classList.remove('hidden')
+
+  const button = getPlayerPortraitButton(player)
+  const panelRect = boardPanel.getBoundingClientRect()
+  const buttonRect = button.getBoundingClientRect()
+  const halfWidth = playerStatusPopoverEl.offsetWidth / 2
+  const popoverHeight = playerStatusPopoverEl.offsetHeight
+  const idealX = buttonRect.left - panelRect.left + buttonRect.width / 2
+  const idealTop = buttonRect.top - panelRect.top - 8
+  const clampedX = clamp(idealX, 12 + halfWidth, panelRect.width - 12 - halfWidth)
+  const clampedTop = clamp(idealTop, 16 + popoverHeight, panelRect.height - 12)
+  playerStatusPopoverEl.style.left = `${clampedX}px`
+  playerStatusPopoverEl.style.top = `${clampedTop}px`
+}
+
+function togglePinnedPlayerStatus(player: PlayerId): void {
+  pinnedStatusPlayerId = pinnedStatusPlayerId === player ? null : player
+  renderPlayerPortraits()
+  renderPlayerStatusPopover()
+}
+
 function setScreen(next: Screen): void {
   if (isBotControlledMode() && next !== 'game') {
     invalidateBotPlanning()
@@ -4160,6 +4471,7 @@ function setScreen(next: Screen): void {
   winnerModal.classList.toggle('hidden', screen !== 'game' || state.winner === null || suppressWinnerModalForRestoredOutcome)
   if (screen !== 'game') {
     clearUnitStatusPopoverState()
+    clearPlayerStatusPopoverState()
   }
   applyMatchClassTheme()
   if (screen === 'menu') updateSeedDisplay()
@@ -7610,33 +7922,335 @@ function waitForWebAnimation(animation: Animation | null): Promise<void> {
   })
 }
 
-async function playResolutionCardPreview(order: GameState['actionQueue'][number]): Promise<void> {
-  const source = ordersEl.querySelector<HTMLElement>(`[data-order-id="${order.id}"]`)
-  if (!source) return
-  const fromRect = source.getBoundingClientRect()
-  if (fromRect.width <= 0 || fromRect.height <= 0) return
+type ResolutionPreviewSource = {
+  rect: DOMRect
+  template: HTMLElement
+}
 
-  const clone = source.cloneNode(true) as HTMLElement
+type ResolutionCardPreviewTarget = {
+  kind: 'unit' | 'tile' | 'player'
+  rect: DOMRect
+  scale: number
+}
+
+type ResolutionCardPreviewPlan =
+  | {
+      mode: 'targeted'
+      targets: ResolutionCardPreviewTarget[]
+    }
+  | {
+      mode: 'global'
+    }
+  | {
+      mode: 'fizzle'
+    }
+
+const MULTI_TARGET_PREVIEW_EFFECT_TYPES = new Set<CardEffect['type']>([
+  'boostAllFriendly',
+  'teamAttackForward',
+  'damageAdjacent',
+  'stunAdjacent',
+  'chainLightningAllFriendly',
+  'pincerAttack',
+  'volley',
+  'jointAttack',
+  'markAdvanceToward',
+  'moveAdjacentFriendlyGroup',
+])
+
+function getRectCenter(rect: DOMRect): { x: number; y: number } {
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  }
+}
+
+function getTransformToPoint(sourceRect: DOMRect, targetX: number, targetY: number, scale: number): string {
+  const sourceCenter = getRectCenter(sourceRect)
+  return `translate(${targetX - sourceCenter.x}px, ${targetY - sourceCenter.y}px) scale(${scale})`
+}
+
+function createResolutionCardClone(source: ResolutionPreviewSource): HTMLElement {
+  const clone = source.template.cloneNode(true) as HTMLElement
   clone.classList.add('resolution-card-spotlight')
   clone.classList.remove('order-resolved')
   clone.classList.remove('card-placeholder')
   clone.classList.remove('hidden-card')
-  clone.style.left = `${fromRect.left}px`
-  clone.style.top = `${fromRect.top}px`
-  clone.style.width = `${fromRect.width}px`
-  clone.style.height = `${fromRect.height}px`
+  clone.style.left = `${source.rect.left}px`
+  clone.style.top = `${source.rect.top}px`
+  clone.style.width = `${source.rect.width}px`
+  clone.style.height = `${source.rect.height}px`
   clone.style.transform = 'translate(0px, 0px) scale(1)'
   clone.style.opacity = '1'
+  clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+  clone.style.overflow = 'hidden'
   cardOverlay.appendChild(clone)
+  return clone
+}
 
-  const targetLeft = (window.innerWidth - fromRect.width) / 2
-  const targetTop = (window.innerHeight - fromRect.height) / 2
-  const dx = targetLeft - fromRect.left
-  const dy = targetTop - fromRect.top
-  const centerTransform = `translate(${dx}px, ${dy}px) scale(${RESOLUTION_CARD_SCALE})`
+function getBoardPreviewTargetRect(hex: Hex, kind: 'unit' | 'tile'): DOMRect {
+  const canvasRect = canvas.getBoundingClientRect()
+  const center = projectHex(hex)
+  const viewportCenterX = canvasRect.left + boardOffset.x + center.x * boardScale
+  const viewportCenterY = canvasRect.top + boardOffset.y + center.y * boardScale
+  const radiusX = layout.size * boardScale * (kind === 'unit' ? 1.12 : 0.84)
+  const radiusY = layout.size * BOARD_TILT * boardScale * (kind === 'unit' ? 1.18 : 0.72)
+  return new DOMRect(viewportCenterX - radiusX, viewportCenterY - radiusY, radiusX * 2, radiusY * 2)
+}
+
+function getPlayerPreviewTargetRect(player: PlayerId): DOMRect {
+  return getPlayerPortraitButton(player).getBoundingClientRect()
+}
+
+function parseResolutionPreviewAffectedUnitIds(logEntries: string[]): string[] {
+  const unitIds = new Set<string>()
+  logEntries.forEach((entry) => {
+    const damageMatch = entry.match(/^Unit (.+) takes \d+ damage\.$/)
+    if (damageMatch) {
+      unitIds.add(damageMatch[1])
+      return
+    }
+    const gainMatch = entry.match(/^Unit (.+) gains \d+ strength\.$/)
+    if (gainMatch) {
+      unitIds.add(gainMatch[1])
+      return
+    }
+    const regenMatch = entry.match(/^Regeneration heals unit (.+) for \d+\.$/)
+    if (regenMatch) {
+      unitIds.add(regenMatch[1])
+      return
+    }
+    const modifierMatch = entry.match(
+      /^Unit (.+) is affected: [a-zA-Z]+ (?:for \d+ turn\(s\)|indefinitely)(?: \(stacks: \d+\))?\.$/
+    )
+    if (modifierMatch) {
+      unitIds.add(modifierMatch[1])
+      return
+    }
+    const clearAllModifiersMatch = entry.match(/^Unit (.+) has all modifiers removed\.$/)
+    if (clearAllModifiersMatch) {
+      unitIds.add(clearAllModifiersMatch[1])
+      return
+    }
+    const clearDebuffsMatch = entry.match(/^Unit (.+) has debuffs removed\.$/)
+    if (clearDebuffsMatch) {
+      unitIds.add(clearDebuffsMatch[1])
+      return
+    }
+    const moveMatch = entry.match(/^Unit (.+) moves to -?\d+,-?\d+\.$/)
+    if (moveMatch) {
+      unitIds.add(moveMatch[1])
+    }
+  })
+  return [...unitIds]
+}
+
+function buildResolutionCardPreviewPlan(
+  order: GameState['actionQueue'][number],
+  before: Record<string, UnitSnapshot>,
+  logEntries: string[],
+  animations: BoardAnimation[]
+): ResolutionCardPreviewPlan {
+  void animations
+  const fizzleFromLogs = logEntries.some((entry) => /finds no adjacent targets\.$/.test(entry))
+  if (fizzleFromLogs) {
+    return { mode: 'fizzle' }
+  }
+
+  const playerTargets = new Set<PlayerId>()
+  const tileTargets = new Map<string, Hex>()
+  const unitTargets = new Set<string>()
+  const affectedUnitIds = parseResolutionPreviewAffectedUnitIds(logEntries)
+
+  CARD_DEFS[order.defId].effects.forEach((effect) => {
+    if (effect.type === 'applyPlayerModifier') {
+      playerTargets.add(effect.target === 'opponent' ? (order.player === 0 ? 1 : 0) : order.player)
+      return
+    }
+    if (effect.type === 'budget') {
+      playerTargets.add(order.player)
+      return
+    }
+    if (
+      effect.type === 'damageTile' ||
+      effect.type === 'damageTileArea' ||
+      effect.type === 'damageRadius' ||
+      effect.type === 'placeTrap' ||
+      effect.type === 'convergeTowardTile' ||
+      effect.type === 'spawn' ||
+      effect.type === 'spawnAdjacentFriendly' ||
+      effect.type === 'spawnSkeletonAdjacent'
+    ) {
+      const tile = getOrderTileParam(order.params, effect.tileParam)
+      if (tile) {
+        tileTargets.set(`${tile.q},${tile.r}`, { ...tile })
+      }
+      return
+    }
+    if (MULTI_TARGET_PREVIEW_EFFECT_TYPES.has(effect.type)) {
+      affectedUnitIds.forEach((unitId) => unitTargets.add(unitId))
+      return
+    }
+    if ('unitParam' in effect) {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder, effect.unitParam)
+      if (resolvedId) unitTargets.add(resolvedId)
+    }
+    if ('targetUnitParam' in effect) {
+      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder, effect.targetUnitParam)
+      if (resolvedId) unitTargets.add(resolvedId)
+    }
+  })
+
+  if (playerTargets.size > 0) {
+    return {
+      mode: 'targeted',
+      targets: [...playerTargets]
+        .sort((a, b) => a - b)
+        .map((player) => ({
+          kind: 'player' as const,
+          rect: getPlayerPreviewTargetRect(player),
+          scale: RESOLUTION_CARD_TARGET_SCALE_PLAYER,
+        })),
+    }
+  }
+
+  if (tileTargets.size > 0) {
+    return {
+      mode: 'targeted',
+      targets: [...tileTargets.values()].map((tile) => ({
+        kind: 'tile' as const,
+        rect: getBoardPreviewTargetRect(tile, 'tile'),
+        scale: RESOLUTION_CARD_TARGET_SCALE_TILE,
+      })),
+    }
+  }
+
+  if (unitTargets.size > 0) {
+    const targets: ResolutionCardPreviewTarget[] = []
+    ;[...unitTargets]
+      .sort((left, right) => left.localeCompare(right))
+      .forEach((unitId) => {
+        const pos = before[unitId]?.pos ?? state.units[unitId]?.pos ?? null
+        if (!pos) return
+        targets.push({
+          kind: 'unit' as const,
+          rect: getBoardPreviewTargetRect(pos, 'unit'),
+          scale: RESOLUTION_CARD_TARGET_SCALE_UNIT,
+        })
+      })
+    if (targets.length > 0) {
+      return {
+        mode: 'targeted',
+        targets,
+      }
+    }
+  }
+
+  return { mode: 'global' }
+}
+
+async function animateResolutionCardTargetTravel(
+  clone: HTMLElement,
+  sourceRect: DOMRect,
+  startTransform: string,
+  target: ResolutionCardPreviewTarget,
+  delayMs = 0
+): Promise<void> {
+  if (delayMs > 0) {
+    await waitMs(delayMs)
+  }
+  const targetCenter = getRectCenter(target.rect)
+  const endTransform = getTransformToPoint(sourceRect, targetCenter.x, targetCenter.y, target.scale)
+  const animation = clone.animate(
+    [
+      { transform: startTransform, opacity: 1, clipPath: 'inset(0 0 0 0 round 16px)' },
+      { transform: endTransform, opacity: 1, clipPath: 'inset(0 0 0 0 round 16px)' },
+    ],
+    {
+      duration: RESOLUTION_CARD_SHRINK_DURATION_MS,
+      easing: 'cubic-bezier(0.18, 0.72, 0.24, 1)',
+      fill: 'forwards',
+    }
+  )
+  await waitForWebAnimation(animation)
+}
+
+async function animateResolutionCardGlobalFade(
+  clone: HTMLElement,
+  sourceRect: DOMRect,
+  targetX: number,
+  targetY: number
+): Promise<void> {
+  const startTransform = getTransformToPoint(sourceRect, targetX, targetY, RESOLUTION_CARD_SCALE)
+  const endTransform = getTransformToPoint(sourceRect, targetX, targetY, RESOLUTION_CARD_GLOBAL_END_SCALE)
+  const animation = clone.animate(
+    [
+      { transform: startTransform, opacity: 1 },
+      { transform: endTransform, opacity: 0 },
+    ],
+    {
+      duration: RESOLUTION_CARD_GLOBAL_FADE_DURATION_MS,
+      easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+      fill: 'forwards',
+    }
+  )
+  await waitForWebAnimation(animation)
+}
+
+async function animateResolutionCardBurnUp(
+  clone: HTMLElement,
+  sourceRect: DOMRect,
+  targetX: number,
+  targetY: number
+): Promise<void> {
+  const burnLine = document.createElement('div')
+  burnLine.style.position = 'absolute'
+  burnLine.style.left = '7%'
+  burnLine.style.width = '86%'
+  burnLine.style.height = '5px'
+  burnLine.style.borderRadius = '999px'
+  burnLine.style.background =
+    'linear-gradient(90deg, rgba(255,196,112,0) 0%, rgba(255,208,122,0.95) 18%, rgba(255,96,48,1) 50%, rgba(255,208,122,0.95) 82%, rgba(255,196,112,0) 100%)'
+  burnLine.style.boxShadow = '0 0 10px rgba(255, 120, 48, 0.85), 0 0 22px rgba(255, 185, 96, 0.55)'
+  burnLine.style.bottom = '0%'
+  clone.appendChild(burnLine)
+
+  await new Promise<void>((resolve) => {
+    const start = performance.now()
+    const tick = (now: number) => {
+      const raw = clamp((now - start) / RESOLUTION_CARD_FIZZLE_DURATION_MS, 0, 1)
+      const eased = easeInOutCubic(raw)
+      const removedPercent = eased * 100
+      const scale = RESOLUTION_CARD_SCALE + eased * 0.18
+      clone.style.transform = getTransformToPoint(sourceRect, targetX, targetY, scale)
+      clone.style.opacity = `${1 - clamp((raw - 0.68) / 0.32, 0, 1)}`
+      clone.style.clipPath = `inset(0 0 ${removedPercent}% 0 round 16px)`
+      burnLine.style.bottom = `calc(${removedPercent}% - 2px)`
+      if (raw >= 1) {
+        resolve()
+        return
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  })
+}
+
+async function playResolutionCardPreview(
+  source: ResolutionPreviewSource | null,
+  plan: ResolutionCardPreviewPlan
+): Promise<void> {
+  if (!source) return
+  if (source.rect.width <= 0 || source.rect.height <= 0) return
+
+  const viewportCenterX = window.innerWidth / 2
+  const viewportCenterY = window.innerHeight / 2
+  const centerTransform = getTransformToPoint(source.rect, viewportCenterX, viewportCenterY, RESOLUTION_CARD_SCALE)
+  const primaryClone = createResolutionCardClone(source)
+  const clones = [primaryClone]
 
   try {
-    const approach = clone.animate(
+    const approach = primaryClone.animate(
       [
         { transform: 'translate(0px, 0px) scale(1)', opacity: 1 },
         { transform: centerTransform, opacity: 1 },
@@ -7648,24 +8262,45 @@ async function playResolutionCardPreview(order: GameState['actionQueue'][number]
       }
     )
     await waitForWebAnimation(approach)
-    clone.style.transform = centerTransform
-    clone.style.opacity = '1'
+    primaryClone.style.transform = centerTransform
+    primaryClone.style.opacity = '1'
     await waitMs(RESOLUTION_CARD_HOLD_DURATION_MS)
 
-    const shrink = clone.animate(
-      [
-        { transform: centerTransform, opacity: 1 },
-        { transform: `translate(${dx}px, ${dy}px) scale(0.01)`, opacity: 0 },
-      ],
-      {
-        duration: RESOLUTION_CARD_SHRINK_DURATION_MS,
-        easing: 'cubic-bezier(0.32, 0, 0.67, 1)',
-        fill: 'forwards',
+    if (plan.mode === 'global') {
+      await animateResolutionCardGlobalFade(primaryClone, source.rect, viewportCenterX, viewportCenterY)
+      return
+    }
+
+    if (plan.mode === 'fizzle') {
+      await animateResolutionCardBurnUp(primaryClone, source.rect, viewportCenterX, viewportCenterY)
+      return
+    }
+
+    const targets = plan.targets
+    if (targets.length <= 1) {
+      const [target] = targets
+      if (!target) {
+        await animateResolutionCardGlobalFade(primaryClone, source.rect, viewportCenterX, viewportCenterY)
+        return
       }
+      await animateResolutionCardTargetTravel(primaryClone, source.rect, centerTransform, target)
+      return
+    }
+
+    for (let index = 1; index < targets.length; index += 1) {
+      const clone = createResolutionCardClone(source)
+      clone.style.transform = centerTransform
+      clone.style.opacity = '1'
+      clones.push(clone)
+    }
+
+    await Promise.all(
+      clones.map((clone, index) =>
+        animateResolutionCardTargetTravel(clone, source.rect, centerTransform, targets[index], index * 36)
+      )
     )
-    await waitForWebAnimation(shrink)
   } finally {
-    clone.remove()
+    clones.forEach((clone) => clone.remove())
   }
 }
 
@@ -8563,6 +9198,8 @@ function render(): void {
   drawBoard()
   renderUnitStatusPopover()
   renderMeta()
+  renderPlayerPortraits()
+  renderPlayerStatusPopover()
   renderHand()
   renderOrderForm()
   renderOrders()
@@ -8654,6 +9291,8 @@ function renderBoardOnly(): void {
   computeLayout()
   drawBoard()
   renderUnitStatusPopover()
+  renderPlayerPortraits()
+  renderPlayerStatusPopover()
   renderTutorialSpotlights()
   positionTutorialOverlay()
 }
@@ -10397,8 +11036,19 @@ function runNextAnimation(): void {
 function resolveNextActionAnimated(): void {
   if (state.phase !== 'action' || isAnimating) return
   const currentOrder = state.actionQueue[state.actionIndex]
+  const sourceOrderEl = currentOrder ? ordersEl.querySelector<HTMLElement>(`[data-order-id="${currentOrder.id}"]`) : null
+  const previewSource =
+    currentOrder && sourceOrderEl
+      ? {
+          rect: sourceOrderEl.getBoundingClientRect(),
+          template: sourceOrderEl.cloneNode(true) as HTMLElement,
+        }
+      : null
 
-  const runResolutionStep = (order: GameState['actionQueue'][number] | undefined): void => {
+  const runResolutionStep = async (
+    order: GameState['actionQueue'][number] | undefined,
+    preview: ResolutionPreviewSource | null
+  ): Promise<void> => {
     const before = snapshotUnits(state)
     const logStart = state.log.length
     resolveNextAction(state)
@@ -10429,6 +11079,8 @@ function resolveNextActionAnimated(): void {
       }
     }
     const animations = buildAnimations(order, before, orderLogs)
+    const previewPlan = buildResolutionCardPreviewPlan(order, before, orderLogs, animations)
+    await playResolutionCardPreview(preview, previewPlan)
     const combinedAnimations = [...animations]
     if (turnEndAnimations.length > 0 && turnEndStartIndex > 0) {
       combinedAnimations.push({
@@ -10456,27 +11108,22 @@ function resolveNextActionAnimated(): void {
   }
 
   if (!currentOrder) {
-    runResolutionStep(undefined)
+    void runResolutionStep(undefined, null)
     return
   }
 
   clearOverlayClone()
   isAnimating = true
   const fromOrderRects = captureCardRects(ordersEl)
-  const previewPromise = playResolutionCardPreview(currentOrder)
   resolvingOrderIdsHidden.add(currentOrder.id)
   render()
   applyDelayedReflow(ordersEl, fromOrderRects, 0, currentOrder.cardId)
-  void previewPromise
+  void runResolutionStep(currentOrder, previewSource)
     .catch(() => {
       // Ignore preview animation failures and continue resolving.
     })
     .finally(() => {
-      try {
-        runResolutionStep(currentOrder)
-      } finally {
-        resolvingOrderIdsHidden.delete(currentOrder.id)
-      }
+      resolvingOrderIdsHidden.delete(currentOrder.id)
     })
 }
 
@@ -12100,6 +12747,43 @@ switchPlannerButton.addEventListener('click', () => {
   selectedCardId = null
   pendingOrder = null
   render()
+})
+
+playerPortraitP1Button.addEventListener('click', (event) => {
+  event.stopPropagation()
+  togglePinnedPlayerStatus(0)
+})
+
+playerPortraitP2Button.addEventListener('click', (event) => {
+  event.stopPropagation()
+  togglePinnedPlayerStatus(1)
+})
+
+playerPortraitP1Button.addEventListener('pointerdown', (event) => {
+  event.stopPropagation()
+})
+
+playerPortraitP2Button.addEventListener('pointerdown', (event) => {
+  event.stopPropagation()
+})
+
+playerStatusPopoverEl.addEventListener('pointerdown', (event) => {
+  event.stopPropagation()
+})
+
+document.addEventListener('pointerdown', (event) => {
+  const target = event.target
+  if (!(target instanceof Node)) return
+  if (
+    playerPortraitP1Button.contains(target) ||
+    playerPortraitP2Button.contains(target) ||
+    playerStatusPopoverEl.contains(target)
+  ) {
+    return
+  }
+  if (pinnedStatusPlayerId === null) return
+  clearPlayerStatusPopoverState()
+  renderPlayerPortraits()
 })
 
 readyButton.addEventListener('click', () => {
