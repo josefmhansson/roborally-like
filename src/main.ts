@@ -643,6 +643,11 @@ type SpawnAnimation = { type: 'spawn'; unitId: string; duration: number }
 type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type DamageFlashAnimation = { type: 'damageFlash'; unitIds: string[]; duration: number }
+type StrengthChangeAnimation = {
+  type: 'strengthChange'
+  entries: Array<{ unitId: string; anchor: Hex; amount: number; stackIndex: number }>
+  duration: number
+}
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
 type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
@@ -705,6 +710,7 @@ type BoardAnimation =
   | BoostAnimation
   | DeathAnimation
   | DamageFlashAnimation
+  | StrengthChangeAnimation
   | LightningAnimation
   | BurnAnimation
   | ExecuteAnimation
@@ -733,6 +739,7 @@ const SPAWN_DURATION_MS = 260
 const BOOST_DURATION_MS = 320
 const DEATH_DURATION_MS = 260
 const DAMAGE_FLASH_DURATION_MS = 240
+const STRENGTH_CHANGE_DURATION_MS = 760
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
 const EXECUTE_DURATION_MS = 360
@@ -3380,6 +3387,10 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 }
 
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3)
+}
+
 function drawBoostGlow(center: { x: number; y: number }, progress: number): void {
   const pulse = Math.sin(progress * Math.PI)
   const radius = layout.size * (0.65 + 0.55 * pulse)
@@ -3890,26 +3901,58 @@ function drawStrengthDots(
   if (strength <= 0) return
   const dotRadius = Math.max(2, layout.size * 0.07)
   const orbHeight = dotRadius * 2
-  const capsuleHeight = dotRadius * 3
   const gap = dotRadius * 0.9
   const baseX = center.x + layout.size * 0.48
   const baseY = center.y
 
-  type StrengthIcon = { kind: 'orb' | 'capsule'; start: number; end: number }
-  const icons: StrengthIcon[] = []
-  const capsuleCount = Math.floor(strength / 5)
-  const orbCount = strength % 5
-  let hpCursor = 0
-  for (let i = 0; i < capsuleCount; i += 1) {
-    const start = hpCursor + 1
-    const end = hpCursor + 5
-    icons.push({ kind: 'capsule', start, end })
-    hpCursor = end
+  if (strength >= 5) {
+    const orbColor =
+      previewStrength === null || previewStrength === baseStrength
+        ? baseColor
+        : previewStrength < baseStrength
+          ? '#ff4a4a'
+          : '#7CFF8A'
+    const orbRadius = Math.max(dotRadius * 1.95, layout.size * 0.17)
+    const gradient = ctx.createRadialGradient(
+      baseX - orbRadius * 0.38,
+      baseY - orbRadius * 0.38,
+      orbRadius * 0.24,
+      baseX,
+      baseY,
+      orbRadius
+    )
+    gradient.addColorStop(0, '#ffffff')
+    gradient.addColorStop(0.32, orbColor)
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.62)')
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(baseX, baseY, orbRadius, 0, Math.PI * 2)
+    ctx.fillStyle = gradient
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)'
+    ctx.lineWidth = 1
+    ctx.stroke()
+
+    const label = String(strength)
+    const fontSize = Math.max(10, orbRadius * (label.length >= 3 ? 0.9 : 1.18))
+    ctx.font = `700 ${fontSize}px "Trebuchet MS", "Verdana", sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.lineWidth = Math.max(2, fontSize * 0.13)
+    ctx.strokeStyle = 'rgba(12, 12, 18, 0.78)'
+    ctx.fillStyle = '#fffaf2'
+    ctx.strokeText(label, baseX, baseY + orbRadius * 0.03)
+    ctx.fillText(label, baseX, baseY + orbRadius * 0.03)
+    ctx.restore()
+    return
   }
-  for (let i = 0; i < orbCount; i += 1) {
-    const start = hpCursor + 1
-    icons.push({ kind: 'orb', start, end: start })
-    hpCursor = start
+
+  type StrengthIcon = { start: number; end: number }
+  const icons: StrengthIcon[] = []
+  for (let i = 0; i < strength; i += 1) {
+    const start = i + 1
+    icons.push({ start, end: start })
   }
 
   const centerYs: number[] = []
@@ -3918,9 +3961,7 @@ function drawStrengthDots(
       centerYs.push(baseY)
       continue
     }
-    const prevHeight = icons[i - 1].kind === 'capsule' ? capsuleHeight : orbHeight
-    const nextHeight = icons[i].kind === 'capsule' ? capsuleHeight : orbHeight
-    const nextY = centerYs[i - 1] - ((prevHeight + nextHeight) * 0.5 + gap) * BOARD_TILT
+    const nextY = centerYs[i - 1] - (orbHeight + gap) * BOARD_TILT
     centerYs.push(nextY)
   }
 
@@ -3942,19 +3983,6 @@ function drawStrengthDots(
     return Math.max(0, Math.min(1, added / iconHp))
   }
 
-  const drawCapsulePath = (x: number, y: number, radiusX: number, capRadiusY: number, height: number): void => {
-    const halfHeight = height * 0.5
-    const topCenterY = y - halfHeight + capRadiusY
-    const bottomCenterY = y + halfHeight - capRadiusY
-    ctx.beginPath()
-    ctx.moveTo(x - radiusX, topCenterY)
-    ctx.lineTo(x - radiusX, bottomCenterY)
-    ctx.ellipse(x, bottomCenterY, radiusX, capRadiusY, 0, Math.PI, 0, true)
-    ctx.lineTo(x + radiusX, topCenterY)
-    ctx.ellipse(x, topCenterY, radiusX, capRadiusY, 0, 0, Math.PI, true)
-    ctx.closePath()
-  }
-
   ctx.save()
   for (let i = 0; i < icons.length; i += 1) {
     const icon = icons[i]
@@ -3963,76 +3991,65 @@ function drawStrengthDots(
     const healFraction = getAddedFraction(icon)
     const overlayFraction = damageFraction > 0 ? damageFraction : healFraction
     const overlayColor = damageFraction > 0 ? '#ff2b2b' : '#7CFF8A'
-
-    if (icon.kind === 'orb') {
-      const orbColor = overlayFraction >= 1 ? overlayColor : baseColor
-      const gradient = ctx.createRadialGradient(
-        baseX - dotRadius * 0.35,
-        y - dotRadius * 0.35,
-        dotRadius * 0.2,
-        baseX,
-        y,
-        dotRadius
-      )
-      gradient.addColorStop(0, '#ffffff')
-      gradient.addColorStop(0.3, orbColor)
-      gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
-      ctx.beginPath()
-      ctx.arc(baseX, y, dotRadius, 0, Math.PI * 2)
-      ctx.fillStyle = gradient
-      ctx.fill()
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
-      ctx.lineWidth = 0.8
-      ctx.stroke()
-      continue
-    }
-
-    const radiusX = dotRadius * 1.02
-    const capRadiusY = dotRadius * 0.8
-    const topY = y - capsuleHeight * 0.5
-    const baseGradient = ctx.createRadialGradient(
-      baseX - radiusX * 0.35,
-      y - capsuleHeight * 0.2,
+    const orbColor = overlayFraction >= 1 ? overlayColor : baseColor
+    const gradient = ctx.createRadialGradient(
+      baseX - dotRadius * 0.35,
+      y - dotRadius * 0.35,
       dotRadius * 0.2,
       baseX,
       y,
-      capsuleHeight * 0.72
+      dotRadius
     )
-    baseGradient.addColorStop(0, '#ffffff')
-    baseGradient.addColorStop(0.32, baseColor)
-    baseGradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
-
-    drawCapsulePath(baseX, y, radiusX, capRadiusY, capsuleHeight)
-    ctx.fillStyle = baseGradient
+    gradient.addColorStop(0, '#ffffff')
+    gradient.addColorStop(0.3, orbColor)
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+    ctx.beginPath()
+    ctx.arc(baseX, y, dotRadius, 0, Math.PI * 2)
+    ctx.fillStyle = gradient
     ctx.fill()
-
-    if (overlayFraction > 0) {
-      const overlayHeight = capsuleHeight * Math.min(1, overlayFraction)
-      const overlayGradient = ctx.createRadialGradient(
-        baseX - radiusX * 0.35,
-        topY + overlayHeight * 0.25,
-        dotRadius * 0.2,
-        baseX,
-        topY + overlayHeight * 0.6,
-        Math.max(dotRadius, overlayHeight)
-      )
-      overlayGradient.addColorStop(0, '#ffffff')
-      overlayGradient.addColorStop(0.32, overlayColor)
-      overlayGradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
-
-      ctx.save()
-      drawCapsulePath(baseX, y, radiusX, capRadiusY, capsuleHeight)
-      ctx.clip()
-      ctx.fillStyle = overlayGradient
-      ctx.fillRect(baseX - radiusX - 2, topY, radiusX * 2 + 4, overlayHeight + 1)
-      ctx.restore()
-    }
-
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
     ctx.lineWidth = 0.8
-    drawCapsulePath(baseX, y, radiusX, capRadiusY, capsuleHeight)
     ctx.stroke()
   }
+  ctx.restore()
+}
+
+function drawStrengthChangeAnimation(animation: StrengthChangeAnimation, progress: number): void {
+  ctx.save()
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+
+  animation.entries.forEach((entry) => {
+    const delay = Math.min(0.3, entry.stackIndex * 0.12)
+    const localProgress = clamp((progress - delay) / Math.max(0.0001, 1 - delay), 0, 1)
+    if (localProgress <= 0 || localProgress >= 1) return
+
+    const center = projectHex(entry.anchor)
+    const rise = layout.size * (0.16 + easeOutCubic(localProgress) * 0.54)
+    const sideOffset =
+      entry.stackIndex === 0
+        ? 0
+        : (entry.stackIndex % 2 === 0 ? -1 : 1) * layout.size * 0.08 * Math.ceil(entry.stackIndex / 2)
+    const x = center.x + sideOffset
+    const y = center.y - layout.size * 0.72 - rise - entry.stackIndex * layout.size * 0.06
+    const alpha = 1 - Math.pow(localProgress, 1.35)
+    const label = `${entry.amount > 0 ? '+' : '-'}${Math.abs(entry.amount)}`
+    const fontSize = Math.max(14, layout.size * (Math.abs(entry.amount) >= 10 ? 0.26 : 0.29))
+    const fillStyle = entry.amount > 0 ? '#7CFF8A' : '#ff6666'
+
+    ctx.save()
+    ctx.globalAlpha = alpha
+    ctx.font = `700 ${fontSize}px "Trebuchet MS", "Verdana", sans-serif`
+    ctx.lineWidth = Math.max(2.6, fontSize * 0.15)
+    ctx.strokeStyle = 'rgba(10, 10, 16, 0.82)'
+    ctx.fillStyle = fillStyle
+    ctx.shadowColor = fillStyle
+    ctx.shadowBlur = fontSize * 0.35
+    ctx.strokeText(label, x, y)
+    ctx.fillText(label, x, y)
+    ctx.restore()
+  })
+
   ctx.restore()
 }
 
@@ -6378,6 +6395,10 @@ function drawBoard(): void {
     drawExecuteAnimation(currentAnimation.target, animationProgress)
   }
 
+  if (currentAnimation?.type === 'strengthChange') {
+    drawStrengthChangeAnimation(currentAnimation, animationProgress)
+  }
+
   if (previewState && state.phase === 'planning') {
     drawGhostUnits(previewState)
   }
@@ -8069,7 +8090,12 @@ function createResolutionCardClone(source: ResolutionPreviewSource): HTMLElement
   const def = CARD_DEFS[source.defId]
   const clone = document.createElement('div')
   const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
-  const cardScale = baseCardWidth > 0 ? source.rect.width / baseCardWidth : 1
+  const baseCardHeight = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-height'))
+  const width = baseCardWidth > 0 ? baseCardWidth : source.rect.width
+  const height = baseCardHeight > 0 ? baseCardHeight : source.rect.height
+  const left = source.rect.left + source.rect.width / 2 - width / 2
+  const top = source.rect.top + source.rect.height / 2 - height / 2
+  const sourceScale = width > 0 ? source.rect.width / width : 1
   // Build a fresh overlay card instead of cloning queue DOM, so queue-only layout rules
   // like `.order-card { position: relative; }` cannot offset later split copies.
   clone.className = `card resolution-card-spotlight ${getCardTypeClassNames(def)} ${getCardClassName(def.id)}`
@@ -8077,22 +8103,28 @@ function createResolutionCardClone(source: ResolutionPreviewSource): HTMLElement
   clone.dataset.cardLayer = 'resolution-preview'
   clone.innerHTML = renderCardFace(def, { owner: source.owner })
   clone.style.setProperty('--card-tint', getCardTintValue(def))
-  clone.style.setProperty('--card-scale', `${cardScale}`)
+  clone.style.setProperty('--card-scale', '1')
   clone.style.position = 'fixed'
-  clone.style.left = `${source.rect.left}px`
-  clone.style.top = `${source.rect.top}px`
-  clone.style.width = `${source.rect.width}px`
-  clone.style.height = `${source.rect.height}px`
+  clone.style.left = `${left}px`
+  clone.style.top = `${top}px`
+  clone.style.width = `${width}px`
+  clone.style.height = `${height}px`
   clone.style.margin = '0'
   clone.style.pointerEvents = 'none'
   clone.style.zIndex = '10001'
   clone.style.transformOrigin = 'center center'
-  clone.style.transform = 'translate(0px, 0px) scale(1)'
+  clone.style.transform = `translate(0px, 0px) scale(${sourceScale})`
   clone.style.opacity = '1'
   clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
   clone.style.overflow = 'hidden'
   cardOverlay.appendChild(clone)
   return clone
+}
+
+function getResolutionPreviewSourceTransform(sourceRect: DOMRect): string {
+  const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
+  const sourceScale = baseCardWidth > 0 && sourceRect.width > 0 ? sourceRect.width / baseCardWidth : 1
+  return `translate(0px, 0px) scale(${sourceScale})`
 }
 
 function getResolutionPreviewTransform(
@@ -8101,10 +8133,7 @@ function getResolutionPreviewTransform(
   targetY: number,
   scale: number
 ): string {
-  const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
-  const normalizedScale =
-    baseCardWidth > 0 && sourceRect.width > 0 ? scale * (baseCardWidth / sourceRect.width) : scale
-  return getTransformToPoint(sourceRect, targetX, targetY, normalizedScale)
+  return getTransformToPoint(sourceRect, targetX, targetY, scale)
 }
 
 function getBoardPreviewTargetRect(hex: Hex, kind: 'unit' | 'tile'): DOMRect {
@@ -8137,6 +8166,11 @@ function parseResolutionPreviewAffectedUnitIds(logEntries: string[]): string[] {
     const regenMatch = entry.match(/^Regeneration heals unit (.+) for \d+\.$/)
     if (regenMatch) {
       unitIds.add(regenMatch[1])
+      return
+    }
+    const splitMatch = entry.match(/^(?:Slime split|Split): (.+) lobs from -?\d+,-?\d+ to -?\d+,-?\d+\.$/)
+    if (splitMatch) {
+      unitIds.add(splitMatch[1])
       return
     }
     const modifierMatch = entry.match(
@@ -8447,21 +8481,33 @@ async function animateResolutionCardBurnUp(
 
 async function playResolutionCardPreview(
   source: ResolutionPreviewSource | null,
-  plan: ResolutionCardPreviewPlan
+  plan: ResolutionCardPreviewPlan,
+  existingPrimaryClone?: HTMLElement | null
 ): Promise<void> {
-  if (!source) return
-  if (source.rect.width <= 0 || source.rect.height <= 0) return
+  if (!source) {
+    existingPrimaryClone?.remove()
+    return
+  }
+  if (source.rect.width <= 0 || source.rect.height <= 0) {
+    existingPrimaryClone?.remove()
+    return
+  }
 
   const viewportCenterX = window.innerWidth / 2
   const viewportCenterY = window.innerHeight / 2
+  const sourceTransform = getResolutionPreviewSourceTransform(source.rect)
   const centerTransform = getResolutionPreviewTransform(source.rect, viewportCenterX, viewportCenterY, RESOLUTION_CARD_SCALE)
-  const primaryClone = createResolutionCardClone(source)
+  const primaryClone = existingPrimaryClone ?? createResolutionCardClone(source)
   const clones = [primaryClone]
 
   try {
+    primaryClone.style.transform = sourceTransform
+    primaryClone.style.opacity = '1'
+    primaryClone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+    primaryClone.getBoundingClientRect()
     const approach = primaryClone.animate(
       [
-        { transform: 'translate(0px, 0px) scale(1)', opacity: 1 },
+        { transform: sourceTransform, opacity: 1 },
         { transform: centerTransform, opacity: 1 },
       ],
       {
@@ -9659,6 +9705,16 @@ function applyAnimationBoardSyncUpTo(upToLogIndex: number): void {
       continue
     }
 
+    const splitMatch = entry.match(/^(?:Slime split|Split): (.+) lobs from -?\d+,-?\d+ to -?\d+,-?\d+\.$/)
+    if (splitMatch) {
+      const unit = animationRenderUnits[splitMatch[1]]
+      const finalUnit = state.units[splitMatch[1]]
+      if (unit && finalUnit) {
+        unit.strength = finalUnit.strength
+      }
+      continue
+    }
+
     const modifierMatch = entry.match(
       /^Unit (.+) is affected: ([a-zA-Z]+) (?:for (\d+) turn\(s\)|indefinitely)(?: \(stacks: (\d+)\))?\.$/
     )
@@ -10092,6 +10148,15 @@ function buildTurnEndReplayAnimations(
     })
   }
 
+  const strengthChangeEntries = collectStrengthChangeAnimationEntries(before, state.units, turnEndLogs, turnEndPositions)
+  if (strengthChangeEntries.length > 0) {
+    animations.push({
+      type: 'strengthChange',
+      entries: strengthChangeEntries,
+      duration: STRENGTH_CHANGE_DURATION_MS,
+    })
+  }
+
   animations.push({
     type: 'stateSync',
     upToLogIndex: logOffset + turnEndLogs.length - 1,
@@ -10151,6 +10216,100 @@ function parseDamageEvents(logEntries: string[]): { index: number; unitId: strin
     })
   })
   return events
+}
+
+function parseStrengthChangeEvents(logEntries: string[]): Array<{ index: number; unitId: string; amount: number }> {
+  const events: Array<{ index: number; unitId: string; amount: number }> = []
+  logEntries.forEach((entry, index) => {
+    const damageMatch = entry.match(/^Unit (.+) takes (\d+) damage\.$/)
+    if (damageMatch) {
+      const amount = Number(damageMatch[2])
+      if (amount > 0) {
+        events.push({
+          index,
+          unitId: damageMatch[1],
+          amount: -amount,
+        })
+      }
+      return
+    }
+
+    const gainMatch = entry.match(/^Unit (.+) gains (\d+) strength\.$/)
+    if (gainMatch) {
+      const amount = Number(gainMatch[2])
+      if (amount > 0) {
+        events.push({
+          index,
+          unitId: gainMatch[1],
+          amount,
+        })
+      }
+      return
+    }
+
+    const regenMatch = entry.match(/^Regeneration heals unit (.+) for (\d+)\.$/)
+    if (regenMatch) {
+      const amount = Number(regenMatch[2])
+      if (amount > 0) {
+        events.push({
+          index,
+          unitId: regenMatch[1],
+          amount,
+        })
+      }
+    }
+  })
+  return events
+}
+
+function collectStrengthChangeAnimationEntries(
+  before: Record<string, UnitSnapshot>,
+  afterUnits: Record<string, Unit>,
+  logEntries: string[],
+  loggedPositions: Map<string, Hex>,
+  animatedPositions?: Map<string, Hex>
+): StrengthChangeAnimation['entries'] {
+  const explicitEvents = parseStrengthChangeEvents(logEntries)
+  const unitsWithExplicitEvents = new Set(explicitEvents.map((event) => event.unitId))
+  const silentDeltaEvents: Array<{ index: number; unitId: string; amount: number }> = []
+  const splitIndexByUnit = new Map<string, number>()
+
+  parseSlimeSplitEvents(logEntries).forEach((event) => {
+    splitIndexByUnit.set(event.sourceUnitId, Math.max(splitIndexByUnit.get(event.sourceUnitId) ?? -1, event.index))
+  })
+
+  Object.values(before).forEach((snapshot) => {
+    if (unitsWithExplicitEvents.has(snapshot.id)) return
+    const afterStrength = afterUnits[snapshot.id]?.strength
+    if (afterStrength === undefined || afterStrength === snapshot.strength) return
+    silentDeltaEvents.push({
+      index: splitIndexByUnit.get(snapshot.id) ?? logEntries.length,
+      unitId: snapshot.id,
+      amount: afterStrength - snapshot.strength,
+    })
+  })
+
+  const stackCounts = new Map<string, number>()
+  return [...explicitEvents, ...silentDeltaEvents]
+    .filter((event) => event.amount !== 0)
+    .sort((a, b) => a.index - b.index || a.unitId.localeCompare(b.unitId))
+    .map((event) => {
+      const anchor =
+        animatedPositions?.get(event.unitId) ??
+        loggedPositions.get(event.unitId) ??
+        afterUnits[event.unitId]?.pos ??
+        before[event.unitId]?.pos
+      if (!anchor) return null
+      const stackIndex = stackCounts.get(event.unitId) ?? 0
+      stackCounts.set(event.unitId, stackIndex + 1)
+      return {
+        unitId: event.unitId,
+        anchor: { ...anchor },
+        amount: event.amount,
+        stackIndex,
+      }
+    })
+    .filter((entry): entry is StrengthChangeAnimation['entries'][number] => entry !== null)
 }
 
 function parseShoveCollisions(logEntries: string[]): { index: number; targetUnitId: string }[] {
@@ -11267,6 +11426,21 @@ function buildAnimations(
     }
   }
 
+  const strengthChangeEntries = collectStrengthChangeAnimationEntries(before, state.units, logEntries, loggedPositions, animatedPositions)
+  if (strengthChangeEntries.length > 0) {
+    const strengthChangeAnimation: BoardAnimation = {
+      type: 'strengthChange',
+      entries: strengthChangeEntries,
+      duration: STRENGTH_CHANGE_DURATION_MS,
+    }
+    const firstDeathIndex = animations.findIndex((animation) => animation.type === 'death')
+    if (firstDeathIndex === -1) {
+      animations.push(strengthChangeAnimation)
+    } else {
+      animations.splice(firstDeathIndex, 0, strengthChangeAnimation)
+    }
+  }
+
   return animations
 }
 
@@ -11357,7 +11531,8 @@ function resolveNextActionAnimated(): void {
 
   const runResolutionStep = async (
     order: GameState['actionQueue'][number] | undefined,
-    preview: ResolutionPreviewSource | null
+    preview: ResolutionPreviewSource | null,
+    previewClone: HTMLElement | null
   ): Promise<void> => {
     const beforeState = cloneGameState(state)
     const before = snapshotUnits(beforeState)
@@ -11392,7 +11567,7 @@ function resolveNextActionAnimated(): void {
     }
     const animations = buildAnimations(order, before, orderLogs)
     const previewPlan = buildResolutionCardPreviewPlan(order, beforeState, orderLogs, animations, shouldPreviewFizzle)
-    await playResolutionCardPreview(preview, previewPlan)
+    await playResolutionCardPreview(preview, previewPlan, previewClone)
     const combinedAnimations = [...animations]
     if (turnEndAnimations.length > 0 && turnEndStartIndex > 0) {
       combinedAnimations.push({
@@ -11420,21 +11595,23 @@ function resolveNextActionAnimated(): void {
   }
 
   if (!currentOrder) {
-    void runResolutionStep(undefined, null)
+    void runResolutionStep(undefined, null, null)
     return
   }
 
+  const previewClone = previewSource ? createResolutionCardClone(previewSource) : null
   clearOverlayClone()
   isAnimating = true
   const fromOrderRects = captureCardRects(ordersEl)
   resolvingOrderIdsHidden.add(currentOrder.id)
   render()
   applyDelayedReflow(ordersEl, fromOrderRects, 0, currentOrder.cardId)
-  void runResolutionStep(currentOrder, previewSource)
+  void runResolutionStep(currentOrder, previewSource, previewClone)
     .catch(() => {
       // Ignore preview animation failures and continue resolving.
     })
     .finally(() => {
+      previewClone?.remove()
       resolvingOrderIdsHidden.delete(currentOrder.id)
     })
 }
