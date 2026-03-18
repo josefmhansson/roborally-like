@@ -1160,6 +1160,8 @@ body.debug-cards .card.card-placeholder::after {
   transform-origin: center center;
   will-change: transform, opacity;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  animation: none !important;
+  transition: none !important;
 }
 
 

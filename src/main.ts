@@ -31,6 +31,10 @@ import { buildBotPlan } from './engine/bot'
 import { generateClusteredBotDeck } from './engine/botDeck'
 import { getCardArtSvg } from './ui/cardArt'
 import { createQrSvgDataUrl } from './ui/qr'
+import {
+  getRectCenter,
+  getTransformToPoint,
+} from './ui/resolutionPreviewGeometry'
 import { OnlineClient } from './net/client'
 import type { OnlineSessionState, PlayMode } from './net/types'
 import type { ClientGameCommand, RoomSetup, ServerMessage } from './shared/net/protocol'
@@ -7322,7 +7326,6 @@ function handleHandCardActivation(button: HTMLButtonElement): void {
   if (!cardId) return
   const buttonKey = getCardVisualKey(button)
   if (
-    lastInputWasTouch &&
     overlayLocked &&
     selectedCardId === cardId &&
     buttonKey &&
@@ -7924,7 +7927,8 @@ function waitForWebAnimation(animation: Animation | null): Promise<void> {
 
 type ResolutionPreviewSource = {
   rect: DOMRect
-  template: HTMLElement
+  defId: CardDefId
+  owner: PlayerId
 }
 
 type ResolutionCardPreviewTarget = {
@@ -7952,34 +7956,33 @@ const MULTI_TARGET_PREVIEW_EFFECT_TYPES = new Set<CardEffect['type']>([
   'stunAdjacent',
   'chainLightningAllFriendly',
   'pincerAttack',
-  'volley',
   'jointAttack',
   'markAdvanceToward',
   'moveAdjacentFriendlyGroup',
 ])
 
-function getRectCenter(rect: DOMRect): { x: number; y: number } {
-  return {
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
-  }
-}
-
-function getTransformToPoint(sourceRect: DOMRect, targetX: number, targetY: number, scale: number): string {
-  const sourceCenter = getRectCenter(sourceRect)
-  return `translate(${targetX - sourceCenter.x}px, ${targetY - sourceCenter.y}px) scale(${scale})`
-}
-
 function createResolutionCardClone(source: ResolutionPreviewSource): HTMLElement {
-  const clone = source.template.cloneNode(true) as HTMLElement
-  clone.classList.add('resolution-card-spotlight')
-  clone.classList.remove('order-resolved')
-  clone.classList.remove('card-placeholder')
-  clone.classList.remove('hidden-card')
+  const def = CARD_DEFS[source.defId]
+  const clone = document.createElement('div')
+  const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
+  const cardScale = baseCardWidth > 0 ? source.rect.width / baseCardWidth : 1
+  // Build a fresh overlay card instead of cloning queue DOM, so queue-only layout rules
+  // like `.order-card { position: relative; }` cannot offset later split copies.
+  clone.className = `card resolution-card-spotlight ${getCardTypeClassNames(def)} ${getCardClassName(def.id)}`
+  clone.dataset.cardDefId = def.id
+  clone.dataset.cardLayer = 'resolution-preview'
+  clone.innerHTML = renderCardFace(def, { owner: source.owner })
+  clone.style.setProperty('--card-tint', getCardTintValue(def))
+  clone.style.setProperty('--card-scale', `${cardScale}`)
+  clone.style.position = 'fixed'
   clone.style.left = `${source.rect.left}px`
   clone.style.top = `${source.rect.top}px`
   clone.style.width = `${source.rect.width}px`
   clone.style.height = `${source.rect.height}px`
+  clone.style.margin = '0'
+  clone.style.pointerEvents = 'none'
+  clone.style.zIndex = '10001'
+  clone.style.transformOrigin = 'center center'
   clone.style.transform = 'translate(0px, 0px) scale(1)'
   clone.style.opacity = '1'
   clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
@@ -8045,30 +8048,72 @@ function parseResolutionPreviewAffectedUnitIds(logEntries: string[]): string[] {
   return [...unitIds]
 }
 
+function getPreviewUnitTargetSnapshot(
+  snapshot: GameState,
+  order: GameState['actionQueue'][number],
+  unitParam: 'unitId' | 'unitId2'
+): { pos: Hex; facing: Direction } | null {
+  const unitId = unitParam === 'unitId2' ? order.params.unitId2 : order.params.unitId
+  if (!unitId) return null
+  return getUnitSnapshot(snapshot, unitId, order.player)
+}
+
 function buildResolutionCardPreviewPlan(
   order: GameState['actionQueue'][number],
-  before: Record<string, UnitSnapshot>,
+  beforeState: GameState,
   logEntries: string[],
-  animations: BoardAnimation[]
+  animations: BoardAnimation[],
+  shouldFizzleForUnavailableTarget = false
 ): ResolutionCardPreviewPlan {
   void animations
-  const fizzleFromLogs = logEntries.some((entry) => /finds no adjacent targets\.$/.test(entry))
-  if (fizzleFromLogs) {
+  if (shouldFizzleForUnavailableTarget) {
     return { mode: 'fizzle' }
   }
 
-  const playerTargets = new Set<PlayerId>()
-  const tileTargets = new Map<string, Hex>()
-  const unitTargets = new Set<string>()
+  const playerTargets: PlayerId[] = []
+  const seenPlayerTargets = new Set<PlayerId>()
+  const tileTargets: Hex[] = []
+  const seenTileTargets = new Set<string>()
+  const unitTargets: Hex[] = []
+  const seenAffectedUnitTargets = new Set<string>()
   const affectedUnitIds = parseResolutionPreviewAffectedUnitIds(logEntries)
+
+  const pushPlayerTarget = (player: PlayerId): void => {
+    if (seenPlayerTargets.has(player)) return
+    seenPlayerTargets.add(player)
+    playerTargets.push(player)
+  }
+
+  const pushTileTarget = (tile: Hex): void => {
+    const key = `${tile.q},${tile.r}`
+    if (seenTileTargets.has(key)) return
+    seenTileTargets.add(key)
+    tileTargets.push({ ...tile })
+  }
+
+  const pushAffectedUnitTarget = (unitId: string): void => {
+    if (seenAffectedUnitTargets.has(unitId)) return
+    seenAffectedUnitTargets.add(unitId)
+    const normalizedUnitId = normalizeLeaderUnitReference(unitId)
+    const pos = beforeState.units[normalizedUnitId]?.pos ?? state.units[normalizedUnitId]?.pos ?? null
+    if (!pos) return
+    unitTargets.push({ ...pos })
+  }
 
   CARD_DEFS[order.defId].effects.forEach((effect) => {
     if (effect.type === 'applyPlayerModifier') {
-      playerTargets.add(effect.target === 'opponent' ? (order.player === 0 ? 1 : 0) : order.player)
+      pushPlayerTarget(effect.target === 'opponent' ? (order.player === 0 ? 1 : 0) : order.player)
       return
     }
     if (effect.type === 'budget') {
-      playerTargets.add(order.player)
+      pushPlayerTarget(order.player)
+      return
+    }
+    if (effect.type === 'volley') {
+      const target = getPreviewUnitTargetSnapshot(beforeState, order, effect.unitParam)
+      if (target) {
+        unitTargets.push({ ...target.pos })
+      }
       return
     }
     if (
@@ -8083,41 +8128,39 @@ function buildResolutionCardPreviewPlan(
     ) {
       const tile = getOrderTileParam(order.params, effect.tileParam)
       if (tile) {
-        tileTargets.set(`${tile.q},${tile.r}`, { ...tile })
+        pushTileTarget(tile)
       }
       return
     }
     if (MULTI_TARGET_PREVIEW_EFFECT_TYPES.has(effect.type)) {
-      affectedUnitIds.forEach((unitId) => unitTargets.add(unitId))
+      affectedUnitIds.forEach((unitId) => pushAffectedUnitTarget(unitId))
       return
     }
     if ('unitParam' in effect) {
-      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder, effect.unitParam)
-      if (resolvedId) unitTargets.add(resolvedId)
+      const target = getPreviewUnitTargetSnapshot(beforeState, order, effect.unitParam)
+      if (target) unitTargets.push({ ...target.pos })
     }
     if ('targetUnitParam' in effect) {
-      const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder, effect.targetUnitParam)
-      if (resolvedId) unitTargets.add(resolvedId)
+      const target = getPreviewUnitTargetSnapshot(beforeState, order, effect.targetUnitParam)
+      if (target) unitTargets.push({ ...target.pos })
     }
   })
 
-  if (playerTargets.size > 0) {
+  if (playerTargets.length > 0) {
     return {
       mode: 'targeted',
-      targets: [...playerTargets]
-        .sort((a, b) => a - b)
-        .map((player) => ({
-          kind: 'player' as const,
-          rect: getPlayerPreviewTargetRect(player),
-          scale: RESOLUTION_CARD_TARGET_SCALE_PLAYER,
-        })),
+      targets: playerTargets.map((player) => ({
+        kind: 'player' as const,
+        rect: getPlayerPreviewTargetRect(player),
+        scale: RESOLUTION_CARD_TARGET_SCALE_PLAYER,
+      })),
     }
   }
 
-  if (tileTargets.size > 0) {
+  if (tileTargets.length > 0) {
     return {
       mode: 'targeted',
-      targets: [...tileTargets.values()].map((tile) => ({
+      targets: tileTargets.map((tile) => ({
         kind: 'tile' as const,
         rect: getBoardPreviewTargetRect(tile, 'tile'),
         scale: RESOLUTION_CARD_TARGET_SCALE_TILE,
@@ -8125,19 +8168,15 @@ function buildResolutionCardPreviewPlan(
     }
   }
 
-  if (unitTargets.size > 0) {
+  if (unitTargets.length > 0) {
     const targets: ResolutionCardPreviewTarget[] = []
-    ;[...unitTargets]
-      .sort((left, right) => left.localeCompare(right))
-      .forEach((unitId) => {
-        const pos = before[unitId]?.pos ?? state.units[unitId]?.pos ?? null
-        if (!pos) return
-        targets.push({
-          kind: 'unit' as const,
-          rect: getBoardPreviewTargetRect(pos, 'unit'),
-          scale: RESOLUTION_CARD_TARGET_SCALE_UNIT,
-        })
+    unitTargets.forEach((pos) => {
+      targets.push({
+        kind: 'unit' as const,
+        rect: getBoardPreviewTargetRect(pos, 'unit'),
+        scale: RESOLUTION_CARD_TARGET_SCALE_UNIT,
       })
+    })
     if (targets.length > 0) {
       return {
         mode: 'targeted',
@@ -8149,6 +8188,49 @@ function buildResolutionCardPreviewPlan(
   return { mode: 'global' }
 }
 
+function doesPreviewRequirementTargetPlayer(
+  requirement: NonNullable<(typeof CARD_DEFS)[CardDefId]['requires']['unit']>,
+  player: PlayerId,
+  target: Unit
+): boolean {
+  if (requirement === 'friendly') return target.owner === player
+  if (requirement === 'enemy') return target.owner !== player
+  return true
+}
+
+function shouldPreviewFizzleForUnavailableTarget(
+  order: GameState['actionQueue'][number],
+  liveState: GameState
+): boolean {
+  const def = CARD_DEFS[order.defId]
+  const requiredUnitParams: Array<{
+    requirement: 'friendly' | 'enemy' | 'any'
+    unitParam: 'unitId' | 'unitId2'
+  }> = []
+
+  if (def.requires.unit) {
+    requiredUnitParams.push({
+      requirement: def.requires.unit,
+      unitParam: 'unitId',
+    })
+  }
+  if (def.requires.unit2) {
+    requiredUnitParams.push({
+      requirement: def.requires.unit2,
+      unitParam: 'unitId2',
+    })
+  }
+
+  return requiredUnitParams.some(({ requirement, unitParam }) => {
+    const resolvedId = resolveUnitIdFromParams(order.params, liveState.spawnedByOrder, unitParam)
+    if (!resolvedId) return true
+    const target = liveState.units[resolvedId]
+    if (!target) return true
+    if (!canCardTargetUnit(order.defId, target)) return true
+    return !doesPreviewRequirementTargetPlayer(requirement, order.player, target)
+  })
+}
+
 async function animateResolutionCardTargetTravel(
   clone: HTMLElement,
   sourceRect: DOMRect,
@@ -8156,6 +8238,10 @@ async function animateResolutionCardTargetTravel(
   target: ResolutionCardPreviewTarget,
   delayMs = 0
 ): Promise<void> {
+  clone.style.transform = startTransform
+  clone.style.opacity = '1'
+  clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+  clone.getBoundingClientRect()
   if (delayMs > 0) {
     await waitMs(delayMs)
   }
@@ -8173,6 +8259,10 @@ async function animateResolutionCardTargetTravel(
     }
   )
   await waitForWebAnimation(animation)
+  clone.style.transform = endTransform
+  clone.style.opacity = '1'
+  clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+  animation.cancel()
 }
 
 async function animateResolutionCardGlobalFade(
@@ -8195,6 +8285,9 @@ async function animateResolutionCardGlobalFade(
     }
   )
   await waitForWebAnimation(animation)
+  clone.style.transform = endTransform
+  clone.style.opacity = '0'
+  animation.cancel()
 }
 
 async function animateResolutionCardBurnUp(
@@ -8264,6 +8357,7 @@ async function playResolutionCardPreview(
     await waitForWebAnimation(approach)
     primaryClone.style.transform = centerTransform
     primaryClone.style.opacity = '1'
+    approach.cancel()
     await waitMs(RESOLUTION_CARD_HOLD_DURATION_MS)
 
     if (plan.mode === 'global') {
@@ -8291,12 +8385,14 @@ async function playResolutionCardPreview(
       const clone = createResolutionCardClone(source)
       clone.style.transform = centerTransform
       clone.style.opacity = '1'
+      clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+      clone.getBoundingClientRect()
       clones.push(clone)
     }
 
     await Promise.all(
       clones.map((clone, index) =>
-        animateResolutionCardTargetTravel(clone, source.rect, centerTransform, targets[index], index * 36)
+        animateResolutionCardTargetTravel(clone, source.rect, centerTransform, targets[index])
       )
     )
   } finally {
@@ -11041,7 +11137,8 @@ function resolveNextActionAnimated(): void {
     currentOrder && sourceOrderEl
       ? {
           rect: sourceOrderEl.getBoundingClientRect(),
-          template: sourceOrderEl.cloneNode(true) as HTMLElement,
+          defId: currentOrder.defId,
+          owner: currentOrder.player,
         }
       : null
 
@@ -11049,7 +11146,9 @@ function resolveNextActionAnimated(): void {
     order: GameState['actionQueue'][number] | undefined,
     preview: ResolutionPreviewSource | null
   ): Promise<void> => {
-    const before = snapshotUnits(state)
+    const beforeState = cloneGameState(state)
+    const before = snapshotUnits(beforeState)
+    const shouldPreviewFizzle = order ? shouldPreviewFizzleForUnavailableTarget(order, state) : false
     const logStart = state.log.length
     resolveNextAction(state)
     if (!order) {
@@ -11079,7 +11178,7 @@ function resolveNextActionAnimated(): void {
       }
     }
     const animations = buildAnimations(order, before, orderLogs)
-    const previewPlan = buildResolutionCardPreviewPlan(order, before, orderLogs, animations)
+    const previewPlan = buildResolutionCardPreviewPlan(order, beforeState, orderLogs, animations, shouldPreviewFizzle)
     await playResolutionCardPreview(preview, previewPlan)
     const combinedAnimations = [...animations]
     if (turnEndAnimations.length > 0 && turnEndStartIndex > 0) {
