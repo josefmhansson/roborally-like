@@ -1014,6 +1014,8 @@ let overlayShowTimer: number | null = null
 let overlaySourceVisibility = ''
 let overlaySourceTransition = ''
 const overlayClones = new Map<string, HTMLElement>()
+const overlayCloneHideTokens = new WeakMap<HTMLElement, number>()
+let overlayCloneHideTokenCounter = 0
 let overlayPrewarmFrame: number | null = null
 const lastPointer = { x: 0, y: 0 }
 let overlayHideSeq = 0
@@ -2972,10 +2974,9 @@ function clearOverlayClone(): void {
   overlaySourceOrderId = null
   overlaySourceEl = null
   overlayLocked = false
-  if (source && source.isConnected) {
-    source.style.opacity = overlaySourceVisibility
-    source.style.transition = overlaySourceTransition
-  }
+  overlayCloneHideTokenCounter += 1
+  overlayCloneHideTokens.set(clone, overlayCloneHideTokenCounter)
+  restoreOverlaySourceOpacity(source, overlaySourceVisibility, overlaySourceTransition)
 
   clone.style.display = 'block'
   clone.style.visibility = 'visible'
@@ -3011,26 +3012,42 @@ function hardResetOverlayClone(): void {
   overlaySourceOrderId = null
   overlaySourceEl = null
   overlayLocked = false
-  if (source && source.isConnected) {
-    source.style.opacity = overlaySourceVisibility
-    source.style.transition = overlaySourceTransition
-  }
+  overlayCloneHideTokenCounter += 1
+  overlayCloneHideTokens.set(clone, overlayCloneHideTokenCounter)
+  restoreOverlaySourceOpacity(source, overlaySourceVisibility, overlaySourceTransition)
   clone.style.opacity = '0'
   clone.style.transform = 'scale(1)'
   clone.style.visibility = 'hidden'
   clone.style.display = 'none'
 }
 
-function animateOverlayCloneOut(clone: HTMLElement): void {
+function restoreOverlaySourceOpacity(source: HTMLElement | null, opacity: string, transition: string): void {
+  if (!source || !source.isConnected) return
+  source.style.opacity = opacity
+  source.style.transition = transition
+}
+
+function animateOverlayCloneOut(
+  clone: HTMLElement,
+  source: HTMLElement | null = null,
+  sourceOpacity = '',
+  sourceTransition = ''
+): void {
+  overlayCloneHideTokenCounter += 1
+  const hideToken = overlayCloneHideTokenCounter
+  overlayCloneHideTokens.set(clone, hideToken)
   clone.style.display = 'block'
   clone.style.visibility = 'visible'
   clone.style.transition = 'transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 120ms ease'
   requestAnimationFrame(() => {
+    if (overlayCloneHideTokens.get(clone) !== hideToken) return
     clone.style.opacity = '0'
     clone.style.transform = 'scale(1)'
   })
   const finalize = () => {
     clone.removeEventListener('transitionend', finalize)
+    if (overlayCloneHideTokens.get(clone) !== hideToken) return
+    restoreOverlaySourceOpacity(source, sourceOpacity, sourceTransition)
     if (clone.isConnected) {
       clone.style.display = 'none'
       clone.style.visibility = 'hidden'
@@ -3097,6 +3114,13 @@ function scheduleOverlayPrewarm(): void {
   })
 }
 
+function getOverlayCloneTargetScale(sourceEl: HTMLElement): number {
+  const rect = sourceEl.getBoundingClientRect()
+  const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
+  if (baseCardWidth <= 0 || rect.width <= 0) return 1.5
+  return Math.max(1.5, 1.5 * (baseCardWidth / rect.width))
+}
+
 function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = false): void {
   const cardId = sourceEl.dataset.cardId?.trim() ?? null
   const cardDefId = sourceEl.dataset.cardDefId?.trim() ?? null
@@ -3112,34 +3136,13 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
   overlayHideSeq += 1
   overlayShowSeq += 1
   const showSeq = overlayShowSeq
-
-  if (overlayClone && sourceKey === cardKey) {
-    if (!overlaySourceEl || !overlaySourceEl.isConnected) {
-      clearOverlayClone()
-    } else {
-      overlayLocked = lock
-      const rect = sourceEl.getBoundingClientRect()
-      syncOverlayCloneCardStyle(overlayClone, sourceEl)
-      overlayClone.style.left = `${rect.left}px`
-      overlayClone.style.top = `${rect.top}px`
-      overlayClone.style.width = `${rect.width}px`
-      overlayClone.style.height = `${rect.height}px`
-      overlayClone.style.display = 'block'
-      overlayClone.style.visibility = 'visible'
-      overlaySourceEl = sourceEl
-      overlaySourceVisibility = sourceEl.style.opacity
-      overlaySourceTransition = sourceEl.style.transition
-    }
-  }
-
-  if (overlaySourceEl && overlaySourceEl !== sourceEl && overlaySourceEl.isConnected) {
-    overlaySourceEl.style.transition = 'opacity 120ms ease'
-    overlaySourceEl.style.opacity = '1'
-  }
+  const outgoingSource = !overlayLocked && overlaySourceEl && overlaySourceEl !== sourceEl ? overlaySourceEl : null
+  const outgoingSourceVisibility = outgoingSource ? overlaySourceVisibility : ''
+  const outgoingSourceTransition = outgoingSource ? overlaySourceTransition : ''
   if (!overlayLocked) {
     const currentSourceKey = getOverlaySourceKey()
     if (overlayClone && currentSourceKey && currentSourceKey !== cardKey) {
-      animateOverlayCloneOut(overlayClone)
+      animateOverlayCloneOut(overlayClone, outgoingSource, outgoingSourceVisibility, outgoingSourceTransition)
     } else {
       hardResetOverlayClone()
     }
@@ -3166,12 +3169,14 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
     clone.style.transition = 'none'
     clone.style.visibility = 'hidden'
   }
+  overlayCloneHideTokenCounter += 1
+  overlayCloneHideTokens.set(clone, overlayCloneHideTokenCounter)
   syncOverlayCloneCardStyle(clone, sourceEl)
   clone.style.display = 'none'
   overlayClone = clone
 
   const applyPhase = (activeClone: HTMLElement) => {
-    activeClone.style.transition = 'transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 120ms ease'
+    activeClone.style.transition = 'transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1)'
     activeClone.style.opacity = '1'
     activeClone.style.visibility = 'visible'
   }
@@ -3190,6 +3195,7 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
     const settle = (attempt = 0) => {
       if (showSeq !== overlayShowSeq || !isCurrentSource()) return
       const rectA = sourceEl.getBoundingClientRect()
+      const targetScale = getOverlayCloneTargetScale(sourceEl)
       window.requestAnimationFrame(() => {
         if (showSeq !== overlayShowSeq || !isCurrentSource()) return
         const rectB = sourceEl.getBoundingClientRect()
@@ -3206,19 +3212,18 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
         activeClone.style.top = `${rectB.top}px`
         activeClone.style.width = `${rectB.width}px`
         activeClone.style.height = `${rectB.height}px`
+        activeClone.style.transform = 'scale(1)'
         activeClone.style.display = 'block'
         applyPhase(activeClone)
-        window.requestAnimationFrame(() => {
-          if (showSeq !== overlayShowSeq || !isCurrentSource()) return
-          activeClone.style.transform = 'scale(1.5)'
-          window.requestAnimationFrame(() => {
-            if (showSeq !== overlayShowSeq || !isCurrentSource()) return
-            if (sourceEl.isConnected) {
-              sourceEl.style.transition = 'opacity 80ms ease'
-              sourceEl.style.opacity = '0'
-            }
-          })
-        })
+        if (sourceEl.isConnected) {
+          sourceEl.style.transition = 'none'
+          sourceEl.style.opacity = '0'
+        }
+        // Force the browser to commit the source-sized clone before scaling so
+        // queue hover zoom starts from the exact source rect without a visible snap.
+        activeClone.getBoundingClientRect()
+        if (showSeq !== overlayShowSeq || !isCurrentSource()) return
+        activeClone.style.transform = `scale(${targetScale})`
       })
     }
     settle()
