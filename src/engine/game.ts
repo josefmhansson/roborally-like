@@ -288,7 +288,7 @@ function syncEncounterPersistentModifiers(state: GameState): void {
   })
 }
 
-function syncUnitState(state: GameState): void {
+export function syncUnitState(state: GameState): void {
   syncCommanderAuraStrong(state)
   syncEncounterPersistentModifiers(state)
 }
@@ -2081,17 +2081,26 @@ function getCommanderSupportParticipants(
 }
 
 function getPincerAttackParticipants(state: GameState, player: PlayerId, tile: Hex): Unit[] {
-  const participants: Unit[] = []
+  const participantsByDirection = new Map<Direction, Unit>()
   for (let dir = 0 as Direction; dir < 6; dir += 1) {
     const adjacent = neighbor(tile, dir)
-    if (!inBounds(state.boardRows, state.boardCols, adjacent)) return []
+    if (!inBounds(state.boardRows, state.boardCols, adjacent)) continue
     const unit = getUnitAt(state, adjacent)
     if (!unit || unit.owner !== player || !canActAsUnit(unit) || isUnitActionBlocked(unit)) {
-      return []
+      continue
     }
-    participants.push(unit)
+    participantsByDirection.set(dir, unit)
   }
-  return participants.sort((a, b) => a.id.localeCompare(b.id))
+  const occupiedDirections = [...participantsByDirection.keys()]
+  if (occupiedDirections.length < 2) return []
+
+  const hasOppositePair = occupiedDirections.some((dir) => participantsByDirection.has(rotateDirection(dir, 3)))
+  const hasEvenSpreadTrio =
+    ([0, 2, 4] as Direction[]).every((dir) => participantsByDirection.has(dir)) ||
+    ([1, 3, 5] as Direction[]).every((dir) => participantsByDirection.has(dir))
+  if (!hasOppositePair && !hasEvenSpreadTrio) return []
+
+  return [...participantsByDirection.values()].sort((a, b) => a.id.localeCompare(b.id))
 }
 
 function moveUnitFormation(state: GameState, unitIds: UnitId[], direction: Direction, distance: number): void {
@@ -2256,6 +2265,11 @@ function resolveSimultaneousMovePlans(state: GameState, plans: SimultaneousMoveP
   const cannotMove = new Set<UnitId>()
   resolvedPlans.forEach((plan, unitId) => {
     if (isUnitMovementBlocked(plan.unit)) {
+      cannotMove.add(unitId)
+      return
+    }
+    const requiredDistance = hexDistance(plan.unit.pos, plan.target)
+    if (getAllowedMoveDistance(plan.unit, requiredDistance) < requiredDistance) {
       cannotMove.add(unitId)
     }
   })
@@ -3340,7 +3354,7 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
         .filter((unit) => unit.owner !== order.player && canActAsUnit(unit))
         .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q || a.id.localeCompare(b.id))
       targets.forEach((target) => {
-        if (getPincerAttackParticipants(state, order.player, target.pos).length !== 6) return
+        if (getPincerAttackParticipants(state, order.player, target.pos).length === 0) return
         const liveTarget = state.units[target.id]
         if (!liveTarget || !canActAsUnit(liveTarget)) return
         applyDamage(

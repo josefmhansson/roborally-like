@@ -26,6 +26,7 @@ import {
   resolveNextAction,
   simulatePlannedState,
   startActionPhase,
+  syncUnitState,
 } from './engine/game'
 import { buildBotPlan } from './engine/bot'
 import { generateClusteredBotDeck } from './engine/botDeck'
@@ -641,6 +642,7 @@ type TeamLungeAnimation = {
 type SpawnAnimation = { type: 'spawn'; unitId: string; duration: number }
 type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
+type DamageFlashAnimation = { type: 'damageFlash'; unitIds: string[]; duration: number }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
 type BurnAnimation = { type: 'burn'; target: Hex; duration: number }
 type ExecuteAnimation = { type: 'execute'; target: Hex; duration: number }
@@ -681,6 +683,7 @@ type HarpoonAnimation = {
   from: Hex
   to: Hex
   duration: number
+  fizzle?: boolean
   pulledUnit?: {
     id: string
     from: Hex
@@ -701,6 +704,7 @@ type BoardAnimation =
   | SpawnAnimation
   | BoostAnimation
   | DeathAnimation
+  | DamageFlashAnimation
   | LightningAnimation
   | BurnAnimation
   | ExecuteAnimation
@@ -728,6 +732,7 @@ const LUNGE_DURATION_MS = 200
 const SPAWN_DURATION_MS = 260
 const BOOST_DURATION_MS = 320
 const DEATH_DURATION_MS = 260
+const DAMAGE_FLASH_DURATION_MS = 240
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
 const EXECUTE_DURATION_MS = 360
@@ -1410,7 +1415,8 @@ function setLoadoutClass(player: PlayerId, classId: PlayerClassId): void {
 function sanitizeDeckForCurrentClass(
   deck: CardDefId[],
   classId: PlayerClassId,
-  enforceClassRestrictions = true
+  enforceClassRestrictions = true,
+  maxSize: number | null = gameSettings.deckSize
 ): CardDefId[] {
   const counts: Partial<Record<CardDefId, number>> = {}
   const filtered: CardDefId[] = []
@@ -1420,15 +1426,20 @@ function sanitizeDeckForCurrentClass(
     if (currentCount >= gameSettings.maxCopies) continue
     filtered.push(cardId)
     counts[cardId] = currentCount + 1
-    if (filtered.length >= gameSettings.deckSize) break
+    if (typeof maxSize === 'number' && filtered.length >= maxSize) break
   }
   return filtered
 }
 
+function getLoadoutDeckMaxSize(modeValue: PlayMode = mode): number | null {
+  return modeValue === 'roguelike' ? null : gameSettings.deckSize
+}
+
 function sanitizeLoadoutsForCurrentClasses(options: { enforceClassRestrictions?: boolean } = {}): void {
   const enforceClassRestrictions = options.enforceClassRestrictions ?? true
-  loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, playerClasses.p1, enforceClassRestrictions)
-  loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, playerClasses.p2, enforceClassRestrictions)
+  const maxSize = getLoadoutDeckMaxSize()
+  loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, playerClasses.p1, enforceClassRestrictions, maxSize)
+  loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, playerClasses.p2, enforceClassRestrictions, maxSize)
 }
 
 function getTutorialSession() {
@@ -1468,7 +1479,7 @@ function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClass
   return {
     wins: 0,
     leaderHp: ROGUELIKE_STARTING_LEADER_HP,
-    deck: sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], normalizedClass),
+    deck: sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], normalizedClass, true, null),
     playerClass: normalizedClass,
     bonusDrawPerTurn: 0,
     bonusActionBudget: 0,
@@ -1519,7 +1530,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   if (!input || typeof input !== 'object') return null
   const source = input as Partial<RoguelikeRunState> & { strongholdHp?: unknown }
   const playerClass = normalizePlayerClassInput(source.playerClass, playerClasses.p1)
-  const deck = sanitizeDeckForCurrentClass(normalizeDeckInput(source.deck), playerClass)
+  const deck = sanitizeDeckForCurrentClass(normalizeDeckInput(source.deck), playerClass, true, null)
   const uiStage =
     source.uiStage === 'reward_choice' ||
     source.uiStage === 'reward_notice' ||
@@ -1537,7 +1548,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     deck:
       deck.length > 0
         ? deck
-        : sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass),
+        : sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true, null),
     playerClass,
     bonusDrawPerTurn: Math.max(0, Math.floor(Number(source.bonusDrawPerTurn) || 0)),
     bonusActionBudget: Math.max(0, Math.floor(Number(source.bonusActionBudget) || 0)),
@@ -1545,7 +1556,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
     bonusStartingUnitStrength: Math.max(0, Math.floor(Number(source.bonusStartingUnitStrength) || 0)),
     resultHandled: Boolean(source.resultHandled),
     uiStage,
-    draftOptions: sanitizeDeckForCurrentClass(normalizeDeckInput(source.draftOptions), playerClass, true).slice(0, 3),
+    draftOptions: sanitizeDeckForCurrentClass(normalizeDeckInput(source.draftOptions), playerClass, true, null).slice(0, 3),
     pendingRandomReward,
     rewardNoticeMessage: typeof source.rewardNoticeMessage === 'string' ? source.rewardNoticeMessage : null,
     currentEncounterId,
@@ -2517,6 +2528,7 @@ function normalizeLeaderUnitsInState(sourceState: GameState): void {
       unit.modifiers.unshift({ type: 'reinforcementPenalty', turnsRemaining: 'indefinite' })
     }
   })
+  syncUnitState(sourceState)
 }
 
 function cloneCards(cards: CardInstance[] | null): CardInstance[] {
@@ -5683,8 +5695,10 @@ function drawHarpoonAnimation(animation: HarpoonAnimation, progress: number): vo
 
   const tailX = tip.x - nx * tailLength
   const tailY = tip.y - ny * tailLength
+  const alpha = animation.fizzle ? 1 - clamp((progress - 0.72) / 0.28, 0, 1) : 1
 
   ctx.save()
+  ctx.globalAlpha = alpha
   ctx.strokeStyle = 'rgba(89, 71, 53, 0.9)'
   ctx.lineWidth = 2.4
   ctx.beginPath()
@@ -5911,7 +5925,7 @@ function drawLineProjectileAnimation(animation: LineProjectileAnimation, progres
 function drawBlizzardAnimation(animation: BlizzardAnimation, progress: number): void {
   const center = projectHex(animation.target)
   const pulse = Math.sin(progress * Math.PI)
-  const radius = layout.size * (0.62 + animation.radius * 0.55 + pulse * 0.18)
+  const radius = layout.size * (0.95 + animation.radius * 1.05 + pulse * 0.24)
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
@@ -6083,6 +6097,15 @@ function getVisibleTraps(sourceState: GameState): Trap[] {
   return traps.filter((trap) => trap.owner === planningPlayer)
 }
 
+function getTrapRenderKey(trap: Trap): string {
+  return `${trap.owner}:${trap.kind}:${trap.pos.q},${trap.pos.r}`
+}
+
+function getPreviewGhostTraps(previewSource: GameState, baseSource: GameState): Trap[] {
+  const visibleBase = new Set(getVisibleTraps(baseSource).map((trap) => getTrapRenderKey(trap)))
+  return getVisibleTraps(previewSource).filter((trap) => !visibleBase.has(getTrapRenderKey(trap)))
+}
+
 function drawTrapMarker(trap: Trap): void {
   const center = projectHex(trap.pos)
   const trapImage = trapImages[trap.kind]
@@ -6123,6 +6146,38 @@ function drawTrapMarker(trap: Trap): void {
     ctx.lineTo(center.x, center.y + half * 0.2)
     ctx.stroke()
   }
+  ctx.restore()
+}
+
+function drawGhostTrapMarker(trap: Trap): void {
+  const center = projectHex(trap.pos)
+  const trapImage = trapImages[trap.kind]
+  if (trapImage?.loaded) {
+    ctx.save()
+    ctx.globalAlpha = 0.5
+    ctx.filter = 'grayscale(1) brightness(1.9)'
+    drawAnchoredImageTo(ctx, trapImage, center, 1.15, 0.78)
+    ctx.filter = 'none'
+    ctx.strokeStyle = 'rgba(220, 242, 255, 0.9)'
+    ctx.lineWidth = 1.6
+    ctx.setLineDash([5, 4])
+    ctx.beginPath()
+    ctx.ellipse(center.x, center.y + layout.size * 0.1, layout.size * 0.42, layout.size * 0.26 * BOARD_TILT, 0, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+    return
+  }
+
+  const size = layout.size * 0.48
+  const half = size / 2
+  ctx.save()
+  ctx.globalAlpha = 0.52
+  ctx.strokeStyle = 'rgba(220, 242, 255, 0.92)'
+  ctx.lineWidth = 1.5
+  ctx.setLineDash([5, 4])
+  ctx.beginPath()
+  ctx.rect(center.x - half, center.y - half, size, size)
+  ctx.stroke()
   ctx.restore()
 }
 
@@ -6198,13 +6253,20 @@ function drawBoard(): void {
       )
     })
 
-  const trapSource = previewState && state.phase === 'planning' ? previewState : state
-  getVisibleTraps(trapSource)
+  getVisibleTraps(state)
     .filter((trap) => isTile(trap.pos))
     .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q)
     .forEach((trap) => {
       drawTrapMarker(trap)
     })
+  if (previewState && state.phase === 'planning') {
+    getPreviewGhostTraps(previewState, state)
+      .filter((trap) => isTile(trap.pos))
+      .sort((a, b) => a.pos.r - b.pos.r || a.pos.q - b.pos.q)
+      .forEach((trap) => {
+        drawGhostTrapMarker(trap)
+      })
+  }
 
   drawSelectableHighlights()
   drawTutorialBoardHighlights()
@@ -6302,15 +6364,14 @@ function drawBoard(): void {
   }
 
   if (currentAnimation?.type === 'death') {
-    const fadeCenter = projectHex(currentAnimation.unit.pos)
-    drawUnit(currentAnimation.unit, fadeCenter, getAnimationAlpha())
+    drawDeathGhostUnit(currentAnimation.unit, getAnimationAlpha())
   }
 
   pendingDeathUnits.forEach((unit) => {
     if (currentAnimation?.type === 'death' && currentAnimation.unit.id === unit.id) return
     const alpha = unitAlphaOverrides.get(unit.id) ?? deathAlphaOverrides.get(unit.id) ?? 1
     if (alpha <= 0) return
-    drawUnit(unit, getAnimatedCenter(unit), alpha)
+    drawDeathGhostUnit(unit, alpha)
   })
 
   if (currentAnimation?.type === 'execute') {
@@ -6520,6 +6581,18 @@ function unitHasActiveModifier(unit: Pick<Unit, 'modifiers'>, type: Unit['modifi
   )
 }
 
+function getDisplayedUnitFacing(unit: Pick<Unit, 'id' | 'facing'>): Direction {
+  if (!currentAnimation) return unit.facing
+  if (currentAnimation.type === 'lunge' && currentAnimation.unitId === unit.id) {
+    return currentAnimation.dir
+  }
+  if (currentAnimation.type === 'teamLunge') {
+    const lunge = currentAnimation.lunges.find((entry) => entry.unitId === unit.id)
+    if (lunge) return lunge.dir
+  }
+  return unit.facing
+}
+
 function getUnitModifierGlowColors(unit: Unit): { inner: string; mid: string; outer: string } | null {
   if (unitHasActiveModifier(unit, 'frozen')) {
     return {
@@ -6559,6 +6632,7 @@ function getUnitModifierGlowColors(unit: Unit): { inner: string; mid: string; ou
 
 function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOverride?: number): void {
   const center = centerOverride ?? projectHex(unit.pos)
+  const displayFacing = getDisplayedUnitFacing(unit)
   const color = getUnitRingColor(unit)
   const preview = previewState?.units[unit.id]
   const previewStrength =
@@ -6608,7 +6682,7 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
   }
 
   if (unit.kind === 'unit' || unit.kind === 'leader') {
-    const next = neighbor(unit.pos, unit.facing)
+    const next = neighbor(unit.pos, displayFacing)
     const target = projectHex(next)
     const dir = {
       x: target.x - center.x,
@@ -6893,6 +6967,36 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
     ghostSize,
     ghostSize
   )
+  ctx.restore()
+}
+
+function drawDeathGhostUnit(unit: Unit, alpha: number): void {
+  const center = getAnimatedCenter(unit)
+  const ghostAlpha = clamp(alpha * 1.25, 0, 1)
+  const mistRadius = layout.size * (unit.kind === 'leader' ? 0.92 : 0.74)
+
+  ctx.save()
+  ctx.globalAlpha = ghostAlpha
+  const mist = ctx.createRadialGradient(
+    center.x,
+    center.y - mistRadius * 0.08,
+    mistRadius * 0.12,
+    center.x,
+    center.y,
+    mistRadius
+  )
+  mist.addColorStop(0, 'rgba(230, 244, 255, 0.68)')
+  mist.addColorStop(0.58, 'rgba(155, 210, 255, 0.42)')
+  mist.addColorStop(1, 'rgba(105, 165, 240, 0)')
+  ctx.fillStyle = mist
+  ctx.beginPath()
+  ctx.ellipse(center.x, center.y, mistRadius, mistRadius * BOARD_TILT, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+
+  ctx.save()
+  ctx.globalAlpha = ghostAlpha
+  drawGhostComposite(center, unit, 'rgba(220, 242, 255, 0.98)')
   ctx.restore()
 }
 
@@ -7991,6 +8095,18 @@ function createResolutionCardClone(source: ResolutionPreviewSource): HTMLElement
   return clone
 }
 
+function getResolutionPreviewTransform(
+  sourceRect: DOMRect,
+  targetX: number,
+  targetY: number,
+  scale: number
+): string {
+  const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
+  const normalizedScale =
+    baseCardWidth > 0 && sourceRect.width > 0 ? scale * (baseCardWidth / sourceRect.width) : scale
+  return getTransformToPoint(sourceRect, targetX, targetY, normalizedScale)
+}
+
 function getBoardPreviewTargetRect(hex: Hex, kind: 'unit' | 'tile'): DOMRect {
   const canvasRect = canvas.getBoundingClientRect()
   const center = projectHex(hex)
@@ -8246,7 +8362,7 @@ async function animateResolutionCardTargetTravel(
     await waitMs(delayMs)
   }
   const targetCenter = getRectCenter(target.rect)
-  const endTransform = getTransformToPoint(sourceRect, targetCenter.x, targetCenter.y, target.scale)
+  const endTransform = getResolutionPreviewTransform(sourceRect, targetCenter.x, targetCenter.y, target.scale)
   const animation = clone.animate(
     [
       { transform: startTransform, opacity: 1, clipPath: 'inset(0 0 0 0 round 16px)' },
@@ -8271,8 +8387,8 @@ async function animateResolutionCardGlobalFade(
   targetX: number,
   targetY: number
 ): Promise<void> {
-  const startTransform = getTransformToPoint(sourceRect, targetX, targetY, RESOLUTION_CARD_SCALE)
-  const endTransform = getTransformToPoint(sourceRect, targetX, targetY, RESOLUTION_CARD_GLOBAL_END_SCALE)
+  const startTransform = getResolutionPreviewTransform(sourceRect, targetX, targetY, RESOLUTION_CARD_SCALE)
+  const endTransform = getResolutionPreviewTransform(sourceRect, targetX, targetY, RESOLUTION_CARD_GLOBAL_END_SCALE)
   const animation = clone.animate(
     [
       { transform: startTransform, opacity: 1 },
@@ -8315,7 +8431,7 @@ async function animateResolutionCardBurnUp(
       const eased = easeInOutCubic(raw)
       const removedPercent = eased * 100
       const scale = RESOLUTION_CARD_SCALE + eased * 0.18
-      clone.style.transform = getTransformToPoint(sourceRect, targetX, targetY, scale)
+      clone.style.transform = getResolutionPreviewTransform(sourceRect, targetX, targetY, scale)
       clone.style.opacity = `${1 - clamp((raw - 0.68) / 0.32, 0, 1)}`
       clone.style.clipPath = `inset(0 0 ${removedPercent}% 0 round 16px)`
       burnLine.style.bottom = `calc(${removedPercent}% - 2px)`
@@ -8338,7 +8454,7 @@ async function playResolutionCardPreview(
 
   const viewportCenterX = window.innerWidth / 2
   const viewportCenterY = window.innerHeight / 2
-  const centerTransform = getTransformToPoint(source.rect, viewportCenterX, viewportCenterY, RESOLUTION_CARD_SCALE)
+  const centerTransform = getResolutionPreviewTransform(source.rect, viewportCenterX, viewportCenterY, RESOLUTION_CARD_SCALE)
   const primaryClone = createResolutionCardClone(source)
   const clones = [primaryClone]
 
@@ -8437,6 +8553,8 @@ function renderLoadout(): void {
   const loadoutClass = getLoadoutClass(loadoutPlayer)
   const loadoutClassDef = PLAYER_CLASS_DEFS[loadoutClass]
   const deck = loadoutPlayer === 0 ? loadouts.p1 : loadouts.p2
+  const maxDeckSize = getLoadoutDeckMaxSize()
+  const isDeckFull = typeof maxDeckSize === 'number' && deck.length >= maxDeckSize
   const tutorialSession = getTutorialSession()
   loadoutToggleButton.textContent = mode === 'online' ? 'Your Deck' : `Player ${loadoutPlayer + 1}`
   loadoutToggleButton.classList.toggle('hidden', mode === 'online')
@@ -8446,7 +8564,10 @@ function renderLoadout(): void {
     mode === 'online' && state.winner !== null ? 'Save Deck + Back to Match' : 'Continue to Match'
   loadoutBackButton.textContent = tutorialSession ? 'Tutorial Hub' : 'Back'
   loadoutBackButton.classList.toggle('tutorial-return-ready', Boolean(tutorialSession?.completedAt))
-  loadoutCountLabel.textContent = `${deck.length}/${gameSettings.deckSize} cards | ${loadoutClassDef.name}`
+  loadoutCountLabel.textContent =
+    typeof maxDeckSize === 'number'
+      ? `${deck.length}/${maxDeckSize} cards | ${loadoutClassDef.name}`
+      : `${deck.length} cards | ${loadoutClassDef.name}`
   loadoutClassSelect.value = loadoutClass
   loadoutClassSelect.disabled = false
   loadoutClassSelect.style.borderColor = loadoutClassDef.color
@@ -8502,7 +8623,7 @@ function renderLoadout(): void {
   loadoutAll.innerHTML = allCards
     .map((def) => {
       const count = counts[def.id] ?? 0
-      const disabled = deck.length >= gameSettings.deckSize || count >= gameSettings.maxCopies
+      const disabled = isDeckFull || count >= gameSettings.maxCopies
       const cardTypeClassNames = getCardTypeClassNames(def)
       const cardClassName = getCardClassName(def.id)
       return `
@@ -8518,7 +8639,7 @@ function renderLoadout(): void {
   const addButtons = loadoutAll.querySelectorAll<HTMLButtonElement>('[data-add-id]')
   addButtons.forEach((button) => {
     button.addEventListener('click', () => {
-      if (deck.length >= gameSettings.deckSize) return
+      if (isDeckFull) return
       const defId = button.dataset.addId as CardDefId
       if (classPool && !isCardAllowedForClass(defId, loadoutClass)) return
       const count = counts[defId] ?? 0
@@ -8560,8 +8681,9 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function resizeDecks(newSize: number): void {
-  if (loadouts.p1.length > newSize) loadouts.p1 = loadouts.p1.slice(0, newSize)
-  if (loadouts.p2.length > newSize) loadouts.p2 = loadouts.p2.slice(0, newSize)
+  const maxSize = mode === 'roguelike' ? null : newSize
+  if (typeof maxSize === 'number' && loadouts.p1.length > maxSize) loadouts.p1 = loadouts.p1.slice(0, maxSize)
+  if (typeof maxSize === 'number' && loadouts.p2.length > maxSize) loadouts.p2 = loadouts.p2.slice(0, maxSize)
   sanitizeLoadoutsForCurrentClasses()
 }
 
@@ -8809,6 +8931,7 @@ function applyRoguelikeEncounterSetup(
     roguelikeEncounterId: encounter.id,
   }
   placeEncounterUnits(sourceState, encounter, matchNumber)
+  syncUnitState(sourceState)
 }
 
 function shuffleCards<T>(cards: T[]): T[] {
@@ -8914,9 +9037,9 @@ function startNextRoguelikeMatch(statusMessage: string): void {
     roguelikeEncounterId: encounter.id,
   }
   const playerClass = roguelikeRun.playerClass
-  const playerDeck = sanitizeDeckForCurrentClass([...roguelikeRun.deck], playerClass, true)
+  const playerDeck = sanitizeDeckForCurrentClass([...roguelikeRun.deck], playerClass, true, null)
   if (playerDeck.length === 0) {
-    playerDeck.push(...sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true))
+    playerDeck.push(...sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true, null))
   }
   roguelikeRun.deck = [...playerDeck]
   roguelikeRun.currentEncounterId = encounter.id
@@ -8991,7 +9114,7 @@ function pickRandomCardOptions(count: number, classId: PlayerClassId): CardDefId
 function getRoguelikeRandomRewardLabel(reward: RoguelikeRandomReward): string {
   if (!roguelikeRun) return 'Reward'
   if (reward === 'leaderHp') {
-    return `+10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
+    return `+5 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP`
   }
   if (reward === 'extraDraw') return '+1 extra card each hand'
   if (reward === 'extraAp') return '+1 action budget'
@@ -9034,8 +9157,8 @@ function prepareRoguelikeRewardChoiceOptions(): void {
 function applyRoguelikeRandomReward(reward: RoguelikeRandomReward): void {
   if (!roguelikeRun) return
   if (reward === 'leaderHp') {
-    roguelikeRun.leaderHp += 10
-    showRoguelikeRewardNotice(`Reward gained: +10 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP.`)
+    roguelikeRun.leaderHp += 5
+    showRoguelikeRewardNotice(`Reward gained: +5 ${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP.`)
     return
   }
   if (reward === 'extraDraw') {
@@ -9146,11 +9269,12 @@ function renderRoguelikeWinnerModal(): void {
       winnerMenuButton.textContent = 'End Run'
       winnerResetButton.classList.add('hidden')
       winnerRematchButton.classList.add('hidden')
-      winnerExtraEl.innerHTML = roguelikeRun.deck
-        .map((cardId, index) =>
+      winnerExtraEl.innerHTML = [
+        ...roguelikeRun.deck.map((cardId, index) =>
           renderRoguelikeRewardCardOption(cardId, 'remove-card', 'Remove from deck', `data-deck-index="${index}"`)
-        )
-        .join('')
+        ),
+        '<button class="btn winner-option" data-roguelike-action="skip-reward" type="button">Skip Reward</button>',
+      ].join('')
       winnerModal.classList.remove('hidden')
       return
     }
@@ -9164,9 +9288,10 @@ function renderRoguelikeWinnerModal(): void {
     roguelikeRun.pendingRandomReward = randomReward
     winnerRematchButton.textContent = `Random: ${getRoguelikeRandomRewardLabel(randomReward)}`
     winnerRematchButton.disabled = false
-    winnerExtraEl.innerHTML = roguelikeRun.draftOptions
-      .map((cardId) => renderRoguelikeRewardCardOption(cardId, 'draft', 'Add to deck'))
-      .join('')
+    winnerExtraEl.innerHTML = [
+      ...roguelikeRun.draftOptions.map((cardId) => renderRoguelikeRewardCardOption(cardId, 'draft', 'Add to deck')),
+      '<button class="btn winner-option" data-roguelike-action="skip-reward" type="button">Skip Reward</button>',
+    ].join('')
   } else {
     winnerTextEl.textContent = 'Roguelike run ended.'
     winnerNoteEl.textContent = `Matches won before loss: ${roguelikeRun.wins}.`
@@ -9288,6 +9413,7 @@ function render(): void {
   applyMatchClassTheme()
   syncPhaseControlPlacement()
   previewState = state.phase === 'planning' ? simulatePlannedState(state, planningPlayer) : null
+  const canShowWinnerModal = screen === 'game' && !gameScreen.classList.contains('hidden')
   const handScroll = handEl.scrollLeft
   const ordersScroll = ordersEl.scrollLeft
   computeLayout()
@@ -9320,13 +9446,17 @@ function render(): void {
         state.winner === BOT_HUMAN_PLAYER
           ? `Match ${roguelikeRun.wins} won. Choose your reward.`
           : `Run over. Matches won: ${roguelikeRun.wins}.`
-      renderRoguelikeWinnerModal()
+      if (canShowWinnerModal) {
+        renderRoguelikeWinnerModal()
+      } else {
+        winnerModal.classList.add('hidden')
+      }
     } else {
       statusEl.textContent = `Player ${state.winner + 1} wins!`
       winnerTextEl.textContent = `Player ${state.winner + 1} wins the game.`
       winnerNoteEl.textContent =
         mode === 'online' && onlineRematchRequested ? 'Rematch requested, waiting for opponent.' : ''
-      winnerModal.classList.toggle('hidden', suppressWinnerModalForRestoredOutcome)
+      winnerModal.classList.toggle('hidden', suppressWinnerModalForRestoredOutcome || !canShowWinnerModal)
     }
   } else {
     suppressWinnerModalForRestoredOutcome = false
@@ -9953,6 +10083,15 @@ function buildTurnEndReplayAnimations(
       .filter((animation): animation is BoardAnimation => animation !== null)
   )
 
+  const damageFlashUnitIds = [...new Set(parseDamageEvents(turnEndLogs).filter((event) => event.amount > 0).map((event) => event.unitId))]
+  if (damageFlashUnitIds.length > 0) {
+    animations.push({
+      type: 'damageFlash',
+      unitIds: damageFlashUnitIds,
+      duration: DAMAGE_FLASH_DURATION_MS,
+    })
+  }
+
   animations.push({
     type: 'stateSync',
     upToLogIndex: logOffset + turnEndLogs.length - 1,
@@ -10074,6 +10213,7 @@ function buildAnimations(
   const deferredDestroyedByUnit = new Map<string, { index: number; unitId: string }[]>()
   const shoveCollisions = parseShoveCollisions(logEntries)
   const slimeSplitEvents = parseSlimeSplitEvents(logEntries)
+  const damageFlashUnitIds = [...new Set(damageEvents.filter((event) => event.amount > 0).map((event) => event.unitId))]
   const animatedPositions = new Map<string, Hex>()
   const spawnedFallbackSnapshots = new Map<string, UnitSnapshot>()
   const destroyedAnimated = new Set<string>()
@@ -10529,6 +10669,30 @@ function buildAnimations(
         origin: { ...origin },
         duration: WHIRLWIND_DURATION_MS,
       })
+      const pushMoves: Array<{ unitId: string; from: Hex; to: Hex }> = []
+      for (let dir = 0 as Direction; dir < 6; dir += 1) {
+        const target = findSnapshotUnitAt(before, neighbor(origin, dir))
+        if (!target) continue
+        const from = animatedPositions.get(target.id) ?? target.pos
+        const to = state.units[target.id]?.pos ?? loggedPositions.get(target.id)
+        if (!to) continue
+        if (from.q === to.q && from.r === to.r) continue
+        pushMoves.push({
+          unitId: target.id,
+          from: { ...from },
+          to: { ...to },
+        })
+      }
+      if (pushMoves.length > 0) {
+        animations.push({
+          type: 'teamMove',
+          moves: pushMoves,
+          duration: SHOVE_DURATION_MS,
+        })
+        pushMoves.forEach((move) => {
+          animatedPositions.set(move.unitId, { ...move.to })
+        })
+      }
     }
 
     if (effect.type === 'teleport') {
@@ -10561,7 +10725,22 @@ function buildAnimations(
       const resolvedId = resolveUnitIdFromParams(order.params, state.spawnedByOrder)
       const tile = getOrderTileParam(order.params, effect.tileParam)
       if (!resolvedId || !tile) continue
-      const participants = getCommanderAnimationParticipants(before, order.player, tile, resolvedId)
+      const actingUnit = before[resolvedId] ?? state.units[resolvedId]
+      const actingLunge =
+        actingUnit
+          ? (() => {
+              const dir = getDirectionToNeighbor(animatedPositions.get(resolvedId) ?? actingUnit.pos, tile)
+              if (dir === null) return null
+              return {
+                unitId: resolvedId,
+                from: { ...(animatedPositions.get(resolvedId) ?? actingUnit.pos) },
+                dir,
+              }
+            })()
+          : null
+      const participants = [
+        actingLunge,
+        ...getCommanderAnimationParticipants(before, order.player, tile, resolvedId)
         .map((participant) => {
           const dir = getDirectionToNeighbor(participant.pos, tile)
           if (dir === null) return null
@@ -10571,7 +10750,8 @@ function buildAnimations(
             dir,
           }
         })
-        .filter((entry): entry is { unitId: string; from: Hex; dir: Direction } => entry !== null)
+          .filter((entry): entry is { unitId: string; from: Hex; dir: Direction } => entry !== null),
+      ].filter((entry): entry is { unitId: string; from: Hex; dir: Direction } => entry !== null)
       if (participants.length > 0) {
         animations.push({
           type: 'teamLunge',
@@ -10734,7 +10914,16 @@ function buildAnimations(
       if (!beforeUnit || !afterUnit) continue
 
       const target = findFirstUnitInLine(before, beforeUnit.pos, beforeUnit.facing)
-      if (!target) continue
+      if (!target) {
+        animations.push({
+          type: 'harpoon',
+          from: { ...beforeUnit.pos },
+          to: findLineEndHex(beforeUnit.pos, beforeUnit.facing) ?? findLineExitHex(beforeUnit.pos, beforeUnit.facing),
+          duration: HARPOON_DURATION_MS,
+          fizzle: true,
+        })
+        continue
+      }
 
       const afterTarget = state.units[target.id]
       const hasPull = Boolean(
@@ -10759,6 +10948,8 @@ function buildAnimations(
                   facing: afterTarget.facing,
                   strength: afterTarget.strength,
                   modifiers: afterTarget.modifiers.map((modifier) => ({ ...modifier })),
+                  roguelikeRole: afterTarget.roguelikeRole ?? target.roguelikeRole,
+                  isMinion: afterTarget.isMinion ?? target.isMinion,
                 },
               }
             : undefined,
@@ -11062,6 +11253,19 @@ function buildAnimations(
     events.sort((a, b) => a.index - b.index).forEach((event) => enqueueDestroyedEvent(event))
   })
   deferredDestroyedByUnit.clear()
+  if (damageFlashUnitIds.length > 0) {
+    const damageFlashAnimation: BoardAnimation = {
+      type: 'damageFlash',
+      unitIds: damageFlashUnitIds,
+      duration: DAMAGE_FLASH_DURATION_MS,
+    }
+    const firstDeathIndex = animations.findIndex((animation) => animation.type === 'death')
+    if (firstDeathIndex === -1) {
+      animations.push(damageFlashAnimation)
+    } else {
+      animations.splice(firstDeathIndex, 0, damageFlashAnimation)
+    }
+  }
 
   return animations
 }
@@ -11072,6 +11276,11 @@ function tickAnimation(time: number): void {
   animationProgress = Math.min(1, elapsed / currentAnimation.duration)
   if (currentAnimation.type === 'spawn') {
     unitAlphaOverrides.set(currentAnimation.unitId, easeInOutCubic(animationProgress))
+  } else if (currentAnimation.type === 'damageFlash') {
+    const flicker = 0.35 + Math.abs(Math.sin(animationProgress * Math.PI * 4)) * 0.65
+    currentAnimation.unitIds.forEach((unitId) => {
+      unitAlphaOverrides.set(unitId, flicker)
+    })
   } else if (currentAnimation.type === 'death') {
     deathAlphaOverrides.set(currentAnimation.unit.id, 1 - easeInOutCubic(animationProgress))
   }
@@ -11079,6 +11288,10 @@ function tickAnimation(time: number): void {
   if (animationProgress >= 1) {
     if (currentAnimation.type === 'spawn') {
       unitAlphaOverrides.delete(currentAnimation.unitId)
+    } else if (currentAnimation.type === 'damageFlash') {
+      currentAnimation.unitIds.forEach((unitId) => {
+        unitAlphaOverrides.delete(unitId)
+      })
     } else if (currentAnimation.type === 'death') {
       pendingDeathUnits.delete(currentAnimation.unit.id)
       deathAlphaOverrides.delete(currentAnimation.unit.id)
@@ -12753,10 +12966,11 @@ loadoutClassSelect.addEventListener('change', () => {
     return
   }
   setLoadoutClass(loadoutPlayer, nextClass)
+  const maxSize = getLoadoutDeckMaxSize()
   if (loadoutPlayer === 0) {
-    loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, nextClass, true)
+    loadouts.p1 = sanitizeDeckForCurrentClass(loadouts.p1, nextClass, true, maxSize)
   } else {
-    loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, nextClass, true)
+    loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, nextClass, true, maxSize)
   }
   notifyTutorialEvent('loadout_class_changed', { classId: nextClass })
   renderLoadout()
@@ -13038,6 +13252,10 @@ winnerExtraEl.addEventListener('click', (event) => {
   const action = target.dataset.roguelikeAction
   if (action === 'continue-reward') {
     continueAfterRoguelikeRewardNotice()
+    return
+  }
+  if (action === 'skip-reward' && (roguelikeRun.uiStage === 'reward_choice' || roguelikeRun.uiStage === 'remove_choice')) {
+    startRoguelikeMatchAfterReward('Reward skipped.')
     return
   }
   if (action === 'remove-card' && roguelikeRun.uiStage === 'remove_choice') {
