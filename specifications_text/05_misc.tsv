@@ -1,0 +1,7 @@
+	Classes
+	Commander: Soldier unit. Leader grants adjacent friendly units Strong.
+	Warleader: Warrior unit. Leader is not Slowed by default.
+	Archmage: Mage unit. Leader grants +1 AP next turn if it held position.
+	Document
+	n in encounter/unit formulas means roguelike match number, starting at 1.
+	Spreadsheet rows are intended to stay aligned with player-facing content in code.

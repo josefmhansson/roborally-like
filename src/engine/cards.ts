@@ -757,7 +757,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   attack_charge: {
     id: 'attack_charge',
     name: 'Charge',
-    description: 'Face a direction, move up to 5 tiles, then deal 2 damage to the tile in front.',
+    description: 'Face a direction, move up to 5 tiles, then deal 3 damage to the tile in front.',
     type: 'attack',
     countsAs: ['movement'],
     classId: 'warleader',
@@ -780,7 +780,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
         unitParam: 'unitId',
         mode: 'nearest',
         directions: 'facing',
-        damage: 2,
+        damage: 3,
       },
     ],
   },

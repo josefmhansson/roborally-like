@@ -1065,17 +1065,44 @@ const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
   unitStrength: 5,
   removeCard: 4,
 } as const
-const ROGUELIKE_STARTING_DECK: CardDefId[] = [
-  'reinforce_spawn',
-  'reinforce_spawn',
-  'move_forward_face',
-  'move_forward_face',
-  'reinforce_boost',
-  'move_forward',
-  'attack_fwd_lr',
-  'attack_fwd',
-  'attack_arrow',
-]
+const ROGUELIKE_STARTING_DECKS: Record<PlayerClassId, CardDefId[]> = {
+  commander: [
+    'reinforce_battlefield_recruitment',
+    'reinforce_battlefield_recruitment',
+    'attack_arrow',
+    'attack_fwd_lr',
+    'reinforce_boost',
+    'move_forward_face',
+    'move_forward_face',
+    'move_tandem',
+    'spell_snare',
+    'attack_volley',
+  ],
+  warleader: [
+    'reinforce_spawn',
+    'reinforce_spawn',
+    'attack_arrow',
+    'attack_fwd_lr',
+    'reinforce_rage',
+    'move_forward_face',
+    'move_forward_face',
+    'move_forward',
+    'spell_snare',
+    'attack_charge',
+  ],
+  archmage: [
+    'reinforce_spawn',
+    'reinforce_spawn',
+    'attack_ice_bolt',
+    'attack_chain_lightning',
+    'reinforce_boost',
+    'move_forward_face',
+    'move_forward_face',
+    'move_forward',
+    'spell_snare',
+    'attack_fireball',
+  ],
+}
 
 type RoguelikeRandomReward = keyof typeof ROGUELIKE_RANDOM_REWARD_WEIGHTS
 type RoguelikeUiStage = 'reward_choice' | 'reward_notice' | 'remove_choice' | 'run_over'
@@ -1448,6 +1475,10 @@ function sanitizeLoadoutsForCurrentClasses(options: { enforceClassRestrictions?:
   loadouts.p2 = sanitizeDeckForCurrentClass(loadouts.p2, playerClasses.p2, enforceClassRestrictions, maxSize)
 }
 
+function getDefaultRoguelikeDeckForClass(playerClass: PlayerClassId): CardDefId[] {
+  return sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECKS[playerClass]], playerClass, true, null)
+}
+
 function getTutorialSession() {
   return tutorialController.getSession()
 }
@@ -1485,7 +1516,7 @@ function createInitialRoguelikeRunState(playerClass: PlayerClassId = playerClass
   return {
     wins: 0,
     leaderHp: ROGUELIKE_STARTING_LEADER_HP,
-    deck: sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], normalizedClass, true, null),
+    deck: getDefaultRoguelikeDeckForClass(normalizedClass),
     playerClass: normalizedClass,
     bonusDrawPerTurn: 0,
     bonusActionBudget: 0,
@@ -1551,10 +1582,7 @@ function normalizeRoguelikeRunInput(input: unknown): RoguelikeRunState | null {
   return {
     wins: Math.max(0, Math.floor(Number(source.wins) || 0)),
     leaderHp: Math.max(1, Math.floor(Number(source.leaderHp ?? source.strongholdHp) || ROGUELIKE_STARTING_LEADER_HP)),
-    deck:
-      deck.length > 0
-        ? deck
-        : sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true, null),
+    deck: deck.length > 0 ? deck : getDefaultRoguelikeDeckForClass(playerClass),
     playerClass,
     bonusDrawPerTurn: Math.max(0, Math.floor(Number(source.bonusDrawPerTurn) || 0)),
     bonusActionBudget: Math.max(0, Math.floor(Number(source.bonusActionBudget) || 0)),
@@ -7853,7 +7881,7 @@ function getCardDescriptionForMatch(def: CardDef, owner?: PlayerId, matchNumber 
     return `Deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the nearest unit in the facing direction.`
   }
   if (def.id === 'attack_charge') {
-    return `Face a direction, move up to 5 tiles, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the tile in front.`
+    return `Face a direction, move up to 5 tiles, then deal ${scaleRoguelikeMonsterCardDamageValue(3, matchNumber)} damage to the tile in front.`
   }
   if (def.id === 'attack_whirlwind') {
     return `Deal ${scaleRoguelikeMonsterCardDamageValue(3, matchNumber)} damage to surrounding units and push them back 1 tile if possible.`
@@ -8197,7 +8225,7 @@ type ResolutionPreviewSource = {
 
 type ResolutionCardPreviewTarget = {
   kind: 'unit' | 'tile' | 'player'
-  rect: DOMRect
+  getRect: () => DOMRect
   scale: number
 }
 
@@ -8368,7 +8396,7 @@ function buildResolutionCardPreviewPlan(
         targets: [
           {
             kind: 'unit',
-            rect: getBoardPreviewTargetRect(actingTarget.pos, 'unit'),
+            getRect: () => getBoardPreviewTargetRect(actingTarget.pos, 'unit'),
             scale: RESOLUTION_CARD_TARGET_SCALE_UNIT,
           },
         ],
@@ -8457,7 +8485,7 @@ function buildResolutionCardPreviewPlan(
       mode: 'targeted',
       targets: playerTargets.map((player) => ({
         kind: 'player' as const,
-        rect: getPlayerPreviewTargetRect(player),
+        getRect: () => getPlayerPreviewTargetRect(player),
         scale: RESOLUTION_CARD_TARGET_SCALE_PLAYER,
       })),
     }
@@ -8468,7 +8496,7 @@ function buildResolutionCardPreviewPlan(
       mode: 'targeted',
       targets: tileTargets.map((tile) => ({
         kind: 'tile' as const,
-        rect: getBoardPreviewTargetRect(tile, 'tile'),
+        getRect: () => getBoardPreviewTargetRect(tile, 'tile'),
         scale: RESOLUTION_CARD_TARGET_SCALE_TILE,
       })),
     }
@@ -8479,7 +8507,7 @@ function buildResolutionCardPreviewPlan(
     unitTargets.forEach((pos) => {
       targets.push({
         kind: 'unit' as const,
-        rect: getBoardPreviewTargetRect(pos, 'unit'),
+        getRect: () => getBoardPreviewTargetRect(pos, 'unit'),
         scale: RESOLUTION_CARD_TARGET_SCALE_UNIT,
       })
     })
@@ -8540,35 +8568,41 @@ function shouldPreviewFizzleForUnavailableTarget(
 async function animateResolutionCardTargetTravel(
   clone: HTMLElement,
   sourceRect: DOMRect,
-  startTransform: string,
+  startX: number,
+  startY: number,
+  startScale: number,
   target: ResolutionCardPreviewTarget,
   delayMs = 0
 ): Promise<void> {
-  clone.style.transform = startTransform
+  clone.style.transform = getResolutionPreviewTransform(sourceRect, startX, startY, startScale)
   clone.style.opacity = '1'
   clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+  clone.style.transition = 'none'
   clone.getBoundingClientRect()
   if (delayMs > 0) {
     await waitMs(delayMs)
   }
-  const targetCenter = getRectCenter(target.rect)
-  const endTransform = getResolutionPreviewTransform(sourceRect, targetCenter.x, targetCenter.y, target.scale)
-  const animation = clone.animate(
-    [
-      { transform: startTransform, opacity: 1, clipPath: 'inset(0 0 0 0 round 16px)' },
-      { transform: endTransform, opacity: 1, clipPath: 'inset(0 0 0 0 round 16px)' },
-    ],
-    {
-      duration: RESOLUTION_CARD_SHRINK_DURATION_MS,
-      easing: 'cubic-bezier(0.18, 0.72, 0.24, 1)',
-      fill: 'forwards',
+
+  await new Promise<void>((resolve) => {
+    const startTime = performance.now()
+    const tick = (now: number) => {
+      const raw = clamp((now - startTime) / RESOLUTION_CARD_SHRINK_DURATION_MS, 0, 1)
+      const eased = easeOutCubic(raw)
+      const targetCenter = getRectCenter(target.getRect())
+      const currentX = startX + (targetCenter.x - startX) * eased
+      const currentY = startY + (targetCenter.y - startY) * eased
+      const currentScale = startScale + (target.scale - startScale) * eased
+      clone.style.transform = getResolutionPreviewTransform(sourceRect, currentX, currentY, currentScale)
+      clone.style.opacity = '1'
+      clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
+      if (raw >= 1) {
+        resolve()
+        return
+      }
+      requestAnimationFrame(tick)
     }
-  )
-  await waitForWebAnimation(animation)
-  clone.style.transform = endTransform
-  clone.style.opacity = '1'
-  clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
-  animation.cancel()
+    requestAnimationFrame(tick)
+  })
 }
 
 async function animateResolutionCardGlobalFade(
@@ -8695,7 +8729,14 @@ async function playResolutionCardPreview(
         await animateResolutionCardGlobalFade(primaryClone, source.rect, viewportCenterX, viewportCenterY)
         return
       }
-      await animateResolutionCardTargetTravel(primaryClone, source.rect, centerTransform, target)
+      await animateResolutionCardTargetTravel(
+        primaryClone,
+        source.rect,
+        viewportCenterX,
+        viewportCenterY,
+        RESOLUTION_CARD_SCALE,
+        target
+      )
       return
     }
 
@@ -8710,7 +8751,14 @@ async function playResolutionCardPreview(
 
     await Promise.all(
       clones.map((clone, index) =>
-        animateResolutionCardTargetTravel(clone, source.rect, centerTransform, targets[index])
+        animateResolutionCardTargetTravel(
+          clone,
+          source.rect,
+          viewportCenterX,
+          viewportCenterY,
+          RESOLUTION_CARD_SCALE,
+          targets[index]
+        )
       )
     )
   } finally {
@@ -9243,7 +9291,7 @@ function startNextRoguelikeMatch(statusMessage: string): void {
   const playerClass = roguelikeRun.playerClass
   const playerDeck = sanitizeDeckForCurrentClass([...roguelikeRun.deck], playerClass, true, null)
   if (playerDeck.length === 0) {
-    playerDeck.push(...sanitizeDeckForCurrentClass([...ROGUELIKE_STARTING_DECK], playerClass, true, null))
+    playerDeck.push(...getDefaultRoguelikeDeckForClass(playerClass))
   }
   roguelikeRun.deck = [...playerDeck]
   roguelikeRun.currentEncounterId = encounter.id
@@ -9508,6 +9556,7 @@ function renderRoguelikeWinnerModal(): void {
     winnerTextEl.textContent = 'Roguelike run ended.'
     winnerNoteEl.textContent = `Matches won before loss: ${roguelikeRun.wins}.`
     winnerMenuButton.textContent = 'Main Menu'
+    winnerMenuButton.classList.remove('hidden')
     winnerResetButton.classList.add('hidden')
     winnerRematchButton.classList.add('hidden')
   }

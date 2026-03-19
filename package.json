@@ -16,6 +16,7 @@
     "telemetry:cards": "tsx server/scripts/telemetryCards.ts",
     "telemetry:simulate": "tsx server/scripts/simulateBotMatches.ts",
     "bot:tune": "tsx server/scripts/tuneBotParameters.ts",
+    "specs:export-text": "python3 scripts/exportSpecificationsText.py",
     "test:client": "node --import tsx --test src/**/*.test.ts",
     "test:resolution-preview": "node --import tsx --test src/ui/resolutionPreviewGeometry.test.ts",
     "test:server": "node --import tsx --test --test-concurrency=1 --experimental-test-isolation=none server/tests/*.test.ts",

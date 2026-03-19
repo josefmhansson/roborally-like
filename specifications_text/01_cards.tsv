@@ -1,0 +1,67 @@
+Name	AP	Type	Class	Description	Animation	Notes
+Advance	1	mov	All	Move up to 5 steps in any direction, facing that direction.	Moving unit	Id: move_forward
+Arrow	1	atk	All	Deal 2 damage to the nearest unit in the facing direction.	Arrow projectile	Id: attack_arrow
+Attack	1	atk	All	Face a direction, then deal damage to an adjacent unit.	Attack impact	Id: attack_roguelike_basic; Roguelike only
+Barricade	1	reinforce	Commander	Spawns 2 1-strength barricades adjacent to an existing unit or building.	Spawn effect	Id: reinforce_barricade
+Bash	2	atk	Warleader	Face a direction, then deal 2 damage and Stun an adjacent unit this turn.	Attack impact	Id: attack_bash; Keywords: Priority
+Battlefield Recruitment	1	reinforce	Commander	Spawn a 1-strength unit adjacent to a friendly unit, facing a chosen direction.	Spawn effect	Id: reinforce_battlefield_recruitment
+Bear Trap	1	spell	Commander	Place a hidden bear trap adjacent to a friendly unit. Trigger: 2 damage and Snare for 2 turns; movement stops.	Trap placement marker	Id: spell_pitfall_trap
+Berserk	1	reinforce	Warleader	Give a unit Strong and Undying this turn. It dies at end of turn.	Status effect pulse	Id: reinforce_berserk; Keywords: Priority; Cannot target barricades
+Blade Dance	3	atk	Warleader	Chain 3 moves: each move 1 tile, then deal 1 to all adjacent units.	Moving unit	Id: attack_blade_dance; Counts as: movement
+Bleed	1	atk	All	Deal 1 damage to an adjacent tile and inflict Vulnerable for 2 turns.	Attack impact	Id: attack_bleed
+Blizzard	3	spell	Archmage	Choose a tile. All units within 2 tiles take 2 damage and are Slowed for 2 turns.	Frost burst over radius	Id: spell_blizzard
+Bolster	0	reinforce	All	Give a unit Strong this turn.	Status effect pulse	Id: reinforce_bolster; Cannot target barricades
+Boost	1	reinforce	All	Add 1 strength to up to two different units.	Buff pulse	Id: reinforce_boost
+Brain Freeze	2	spell	Archmage	All opponent cards become Slow next turn. If a card would be both Priority and Slow, both cancel out.	Spell effect	Id: spell_brain_freeze
+Burn	1	spell	All	Apply Burn to a unit (stackable; deals 1 damage per stack at end of each turn).	Status effect pulse	Id: spell_burn
+Chain Lightning	1	atk	Archmage	Deal 2 damage to a random adjacent unit, then jump to random adjacent units until no new targets remain.	Chain lightning arcs	Id: attack_chain_lightning
+Charge	2	atk	Warleader	Face a direction, move up to 5 tiles, then deal 3 damage to the tile in front.	Moving unit	Id: attack_charge; Counts as: movement
+Cleave	1	atk	All	Deal 2 damage to the nearest tile in the forward, left and right directions.	Attack impact	Id: attack_fwd_lr
+Converge	1	mov	Commander	Every friendly unit moves 1 tile toward a chosen tile and faces the moved direction.	Moving unit	Id: move_converge
+Coordinated Attack	2	atk	Commander	All friendly units deal 2 damage to the tile in front of them.	Attack impact	Id: attack_coordinated
+Dash	0	mov	Warleader	Move 1 or 2 steps forward.	Moving unit	Id: move_dash
+Disarm	1	atk	All	Deal 1 damage to an adjacent tile and inflict Disarmed for 2 turns.	Attack impact	Id: attack_disarm
+Dispel	1	spell	All	Remove all buffs and debuffs from a target unit.	Status effect pulse	Id: spell_dispel
+Divination	1	spell	Archmage	Draw 3 extra cards next turn.	Spell effect	Id: spell_divination
+Double Steps	1	mov	Commander	Move 2 different friendly units 1 tile each.	Moving unit	Id: move_double_steps
+Execute	2	atk	Warleader	Destroy a non-leader unit in front. Leaders take 3 damage instead.	Attack impact	Id: attack_execute
+Explosive Trap	1	spell	Commander	Place a hidden explosive trap adjacent to a friendly unit. Trigger: 3 damage; does not stop movement.	Trap placement marker	Id: spell_explosive_trap
+Fireball	2	atk	Archmage	Face a direction, then deal 2 damage to the first unit in line and all adjacent tiles around it.	Fireball projectile and splash	Id: attack_fireball
+Flame Thrower	1	atk	Archmage	Spew flames forward up to 3 tiles, dealing 2 damage to every unit in line.	Flame line	Id: attack_line
+Harpoon	1	atk	Warleader	Deal 1 damage to the first unit forward, then pull it toward you.	Harpoon pull	Id: attack_harpoon
+Ice Bolt	1	atk	Archmage	Face a direction, then deal 2 damage to the first unit in line and Slow it for 2 turns.	Ice bolt projectile	Id: attack_ice_bolt
+Invest	2	spell	All	Permanently increase your action budget by 1.	Spell effect	Id: spell_invest
+Jab	1	atk	All	Face a direction, then deal 2 damage to an adjacent unit.	Attack impact	Id: attack_jab; Keywords: Priority
+Joint Attack	1	atk	Commander	Choose a tile adjacent to a friendly unit. That unit and each other adjacent friendly unit face that tile and deal 2 damage to it.	Attack impact	Id: attack_joint_attack
+Lightning Barrier	1	reinforce	Archmage	Give a unit a lightning barrier that deals 1 damage to adjacent enemies at the end of each turn.	Status effect pulse	Id: reinforce_lightning_barrier; Cannot target barricades
+Lightning Strike	1	spell	Archmage	Deal 1 damage to any unit on the board.	Lightning strike	Id: spell_lightning
+Mark	1	spell	All	Target an enemy unit. All allied units move 1 tile toward it.	Spell effect	Id: spell_roguelike_mark; Counts as: movement; Roguelike only
+Mass Boost	2	reinforce	Commander	All friendly units gain +2 strength.	Buff pulse	Id: reinforce_mass_boost
+Meteor	3	spell	Archmage	Deal 5 damage to a chosen tile and 2 damage to adjacent tiles (units only). Slow	Meteor impact and blast	Id: spell_meteor; Keywords: Slow
+Pack Hunt	1	atk	All	Alpha wolf only. Move 1 tile in any direction, then attack the tile in front for each allied unit adjacent to that tile.	Attack impact	Id: attack_roguelike_pack_hunt; Counts as: movement; Roguelike only
+Petrify	1	spell	Archmage	Target unit is Stunned for 2 turns.	Status effect pulse	Id: spell_petrify; Cannot target barricades
+Pincer Attack	1	atk	Commander	Deal 4 damage to all enemy units fully surrounded by friendly units.	Attack impact	Id: attack_pincer_attack
+Pivot	0	mov	All	Change a unitâ€™s facing to any direction.	Card effect	Id: move_pivot; Keywords: Priority
+Quick Boost	1	reinforce	All	Increase a unit strength by 1.	Buff pulse	Id: reinforce_quick_boost; Keywords: Priority
+Quickstep	1	mov	All	Take one step in the forward direction.	Moving unit	Id: move_quickstep; Keywords: Priority
+Rage	0	reinforce	Warleader	Give a unit Vulnerable and Strong indefinitely.	Status effect pulse	Id: reinforce_rage; Cannot target barricades
+Raise	1	spell	All	Choose the necromancer and an adjacent tile. Spawn a 2-strength skeleton there.	Spawn effect	Id: spell_roguelike_raise; Roguelike only; Cannot target barricades
+Recruit	1	reinforce	All	Add a 1-strength unit to a spawning tile facing any direction.	Spawn effect	Id: reinforce_spawn
+Roundhouse Kick	2	atk	Warleader	Face a direction, then kick an adjacent unit back up to 3 tiles. Deal 2 damage after the push, or 5 if it collides with another unit.	Attack impact	Id: attack_roundhouse_kick
+Shove	1	atk	All	Push an adjacent unit backwards 1 tile. If occupied, deal 3 damage to both.	Attack impact	Id: attack_shove
+Shrug Off	1	reinforce	Warleader	Remove all debuffs from a unit and give it Undying this turn.	Status effect pulse	Id: reinforce_shrug_off; Cannot target barricades
+Slow Attack	1	atk	All	Face a direction, then deal heavy damage to an adjacent unit.	Attack impact	Id: attack_roguelike_slow; Keywords: Slow; Roguelike only
+Snare	1	spell	All	Target unit can't move for 4 turns.	Status effect pulse	Id: spell_snare
+Spikes	1	reinforce	Warleader	A unit reflects 1 damage back to its attacker for 2 turns.	Status effect pulse	Id: reinforce_spikes; Cannot target barricades
+Split	1	reinforce	All	Split a unit into two identical units. Each keeps half the original strength, rounded up.	Split and spawn effect	Id: reinforce_roguelike_split; Roguelike only; Cannot target barricades
+Step	1	mov	All	Move 1 step in any direction, then face any direction.	Moving unit	Id: move_forward_face
+Stomp	1	atk	All	Deal 1 damage and Stun all adjacent units for the rest of the turn.	Attack impact	Id: attack_roguelike_stomp; Roguelike only
+Strafe	1	mov	All	Move 1, 2, or 3 steps in any direction.	Moving unit	Id: move_any
+Strike	2	atk	All	Face any direction, then deal damage equal to unit strength to the nearest tile.	Attack impact	Id: attack_fwd
+Tandem Movement	1	mov	Commander	A unit and all adjacent friendly units move up to 3 tiles in one direction.	Moving unit	Id: move_tandem
+Teleport	2	mov	Archmage	Teleport to any unoccupied tile within 3 tiles. Does not move through intermediate tiles.	Teleport flash	Id: move_teleport; Keywords: Priority
+Thunderstorm	2	spell	All	Cast Chain Lightning from every friendly unit.	Chain lightning arcs	Id: spell_roguelike_thunderstorm; Roguelike only
+Train	1	reinforce	All	Add 3 strength to an existing unit on a spawning tile.	Buff pulse	Id: reinforce_boost_spawn
+Trip	0	spell	All	Target unit can't move for 2 turns.	Status effect pulse	Id: spell_trip
+Volley	1	atk	Commander	A unit and all adjacent friendly units each deal 1 damage to a chosen tile within 2 tiles.	Volley projectiles	Id: attack_volley
+Whirlwind	2	atk	Warleader	Deal 3 damage to surrounding units and push them back 1 tile if possible.	Whirlwind hit and push	Id: attack_whirlwind
