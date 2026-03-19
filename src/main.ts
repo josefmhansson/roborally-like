@@ -1,5 +1,5 @@
 import './style.css'
-import { CARD_DEFS, STARTING_DECK, cardCountsAsType, getCardTypes } from './engine/cards'
+import { CARD_DEFS, STARTING_DECK, cardCountsAsType, getCardTypes, type CardDef } from './engine/cards'
 import { cloneGameState } from './engine/clone'
 import {
   DEFAULT_PLAYER_CLASSES,
@@ -30,7 +30,6 @@ import {
 } from './engine/game'
 import { buildBotPlan } from './engine/bot'
 import { generateClusteredBotDeck } from './engine/botDeck'
-import { getCardArtSvg } from './ui/cardArt'
 import { createQrSvgDataUrl } from './ui/qr'
 import {
   getRectCenter,
@@ -290,7 +289,6 @@ app.innerHTML = `
             <div class="board-menu">
               <button id="game-menu" class="btn ghost board-menu-btn">Main Menu</button>
               <button id="game-tutorial-hub" class="btn ghost board-menu-btn hidden">Tutorial Hub</button>
-              <button id="reset-game" class="btn ghost board-menu-btn">Reset Game</button>
             </div>
             <div id="planner-name" class="board-planner"></div>
             <div class="board-controls">
@@ -478,7 +476,6 @@ const switchPlannerButton = document.querySelector<HTMLButtonElement>('#switch-p
 const readyButton = document.querySelector<HTMLButtonElement>('#ready-btn')!
 const resolveNextButton = document.querySelector<HTMLButtonElement>('#resolve-next')!
 const resolveAllButton = document.querySelector<HTMLButtonElement>('#resolve-all')!
-const resetGameButton = document.querySelector<HTMLButtonElement>('#reset-game')!
 const boardControlsEl = document.querySelector<HTMLDivElement>('.board-controls')!
 const planningReadySlotEl = document.querySelector<HTMLDivElement>('#planning-ready-slot')!
 const resolutionControlsEl = document.querySelector<HTMLDivElement>('#resolution-controls')!
@@ -579,7 +576,6 @@ if (
   !readyButton ||
   !resolveNextButton ||
   !resolveAllButton ||
-  !resetGameButton ||
   !boardControlsEl ||
   !planningReadySlotEl ||
   !resolutionControlsEl
@@ -640,7 +636,7 @@ type TeamLungeAnimation = {
   duration: number
 }
 type SpawnAnimation = { type: 'spawn'; unitId: string; duration: number }
-type BoostAnimation = { type: 'boost'; unitId: string; duration: number }
+type BoostAnimation = { type: 'boost'; unitIds: string[]; duration: number }
 type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type DamageFlashAnimation = { type: 'damageFlash'; unitIds: string[]; duration: number }
 type StrengthChangeAnimation = {
@@ -738,7 +734,9 @@ const LUNGE_DURATION_MS = 200
 const SPAWN_DURATION_MS = 260
 const BOOST_DURATION_MS = 320
 const DEATH_DURATION_MS = 260
-const DAMAGE_FLASH_DURATION_MS = 240
+const DAMAGE_FLASH_DURATION_MS = 500
+const DAMAGE_FLASH_FLICKER_COUNT = 3
+const DAMAGE_FLASH_MIN_ALPHA = 0.12
 const STRENGTH_CHANGE_DURATION_MS = 760
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
@@ -1010,13 +1008,10 @@ let overlaySourceOrderId: string | null = null
 let overlaySourceEl: HTMLElement | null = null
 let overlayLocked = false
 let overlayHideTimer: number | null = null
-let overlayShowTimer: number | null = null
 let overlaySourceVisibility = ''
 let overlaySourceTransition = ''
-const overlayClones = new Map<string, HTMLElement>()
-const overlayCloneHideTokens = new WeakMap<HTMLElement, number>()
-let overlayCloneHideTokenCounter = 0
-let overlayPrewarmFrame: number | null = null
+const OVERLAY_HANDOFF_HIDE_DELAY_MS = 90
+const OVERLAY_VIEWPORT_MARGIN_PX = 12
 const lastPointer = { x: 0, y: 0 }
 let overlayHideSeq = 0
 let overlayShowSeq = 0
@@ -1352,6 +1347,8 @@ const UNIT_ANCHOR_Y = 0.78
 const BARRICADE_IMAGE_SCALE = UNIT_IMAGE_SCALE * 0.74 * 1.3
 const BARRICADE_ANCHOR_Y = UNIT_ANCHOR_Y - 0.2
 const GHOST_ALPHA = 0.6
+const DEFAULT_GHOST_SPRITE_FILTER = 'grayscale(1) brightness(1.8)'
+const PLANNING_DEATH_GHOST_SPRITE_FILTER = 'grayscale(1) sepia(1) saturate(9) hue-rotate(-42deg) brightness(1.4)'
 
 type SeedPayload = {
   settings: GameSettings
@@ -2522,10 +2519,12 @@ function normalizeLeaderUnitsInState(sourceState: GameState): void {
     }
     if (unit.kind !== 'leader') return
     const leaderClass = sourceState.playerClasses?.[unit.owner] ?? null
+    const suppressSlowForIceSpiritsLeader =
+      unit.owner === BOT_HUMAN_PLAYER && sourceState.settings.roguelikeEncounterId === 'ice_spirits'
     const hasSlow = unit.modifiers.some((modifier) => modifier.type === 'slow')
     const hasSpellResistance = unit.modifiers.some((modifier) => modifier.type === 'spellResistance')
     const hasReinforcementPenalty = unit.modifiers.some((modifier) => modifier.type === 'reinforcementPenalty')
-    if (leaderClass === 'warleader') {
+    if (leaderClass === 'warleader' || suppressSlowForIceSpiritsLeader) {
       unit.modifiers = unit.modifiers.filter((modifier) => modifier.type !== 'slow')
     } else if (!hasSlow) {
       unit.modifiers.unshift({ type: 'slow', turnsRemaining: 'indefinite' })
@@ -2907,10 +2906,6 @@ function clearActionAnimationState(): void {
 }
 
 function clearOverlayTimers(): void {
-  if (overlayShowTimer !== null) {
-    window.clearTimeout(overlayShowTimer)
-    overlayShowTimer = null
-  }
   if (overlayHideTimer !== null) {
     window.clearTimeout(overlayHideTimer)
     overlayHideTimer = null
@@ -2960,11 +2955,59 @@ function findCardElementByIdentity(cardId: string, cardDefId: string | null, ord
   return handEl.querySelector<HTMLElement>(fallback) ?? ordersEl.querySelector<HTMLElement>(fallback)
 }
 
+function restoreOverlaySourceOpacity(source: HTMLElement | null, opacity: string, transition: string): void {
+  if (!source || !source.isConnected) return
+  source.style.opacity = opacity
+  source.style.transition = transition
+}
+
+function ensureOverlayClone(): HTMLElement {
+  if (!overlayClone) {
+    overlayClone = document.createElement('div')
+    overlayClone.className = 'card card-overlay-clone'
+    overlayClone.dataset.cardLayer = 'overlay'
+    overlayClone.style.transformOrigin = 'center center'
+    overlayClone.style.opacity = '0'
+    overlayClone.style.transform = 'translate(0px, 0px) scale(1)'
+    overlayClone.style.transition = 'none'
+    overlayClone.style.display = 'none'
+    overlayClone.style.visibility = 'hidden'
+    cardOverlay.appendChild(overlayClone)
+  } else if (!overlayClone.isConnected) {
+    cardOverlay.appendChild(overlayClone)
+  }
+  return overlayClone
+}
+
+function syncOverlayCloneFromSource(clone: HTMLElement, sourceEl: HTMLElement): void {
+  clone.className = `${sourceEl.className} card-overlay-clone`
+  clone.innerHTML = sourceEl.innerHTML
+  clone.dataset.cardLayer = 'overlay'
+  if (sourceEl.dataset.cardId) {
+    clone.dataset.cardId = sourceEl.dataset.cardId
+  } else {
+    delete clone.dataset.cardId
+  }
+  if (sourceEl.dataset.cardDefId) {
+    clone.dataset.cardDefId = sourceEl.dataset.cardDefId
+  } else {
+    delete clone.dataset.cardDefId
+  }
+  if (sourceEl.dataset.orderId) {
+    clone.dataset.orderId = sourceEl.dataset.orderId
+  } else {
+    delete clone.dataset.orderId
+  }
+  syncOverlayCloneCardStyle(clone, sourceEl)
+}
+
 function clearOverlayClone(): void {
   clearOverlayTimers()
   if (!overlayClone) return
   const clone = overlayClone
   const source = overlaySourceEl
+  const sourceVisibility = overlaySourceVisibility
+  const sourceTransition = overlaySourceTransition
   overlayShowSeq += 1
   overlayHideSeq += 1
   const hideSeq = overlayHideSeq
@@ -2974,9 +3017,11 @@ function clearOverlayClone(): void {
   overlaySourceOrderId = null
   overlaySourceEl = null
   overlayLocked = false
-  overlayCloneHideTokenCounter += 1
-  overlayCloneHideTokens.set(clone, overlayCloneHideTokenCounter)
-  restoreOverlaySourceOpacity(source, overlaySourceVisibility, overlaySourceTransition)
+
+  if (clone.style.display === 'none' || clone.style.visibility === 'hidden') {
+    restoreOverlaySourceOpacity(source, sourceVisibility, sourceTransition)
+    return
+  }
 
   clone.style.display = 'block'
   clone.style.visibility = 'visible'
@@ -2984,12 +3029,13 @@ function clearOverlayClone(): void {
   window.requestAnimationFrame(() => {
     if (hideSeq !== overlayHideSeq) return
     clone.style.opacity = '0'
-    clone.style.transform = 'scale(1)'
+    clone.style.transform = 'translate(0px, 0px) scale(1)'
   })
 
   const finalize = () => {
     if (hideSeq !== overlayHideSeq) return
     clone.removeEventListener('transitionend', finalize)
+    restoreOverlaySourceOpacity(source, sourceVisibility, sourceTransition)
     if (clone.isConnected) {
       clone.style.display = 'none'
       clone.style.visibility = 'hidden'
@@ -3006,112 +3052,20 @@ function hardResetOverlayClone(): void {
   overlayHideSeq += 1
   const clone = overlayClone
   const source = overlaySourceEl
+  const sourceVisibility = overlaySourceVisibility
+  const sourceTransition = overlaySourceTransition
   overlaySourceKey = null
   overlaySourceId = null
   overlaySourceDefId = null
   overlaySourceOrderId = null
   overlaySourceEl = null
   overlayLocked = false
-  overlayCloneHideTokenCounter += 1
-  overlayCloneHideTokens.set(clone, overlayCloneHideTokenCounter)
-  restoreOverlaySourceOpacity(source, overlaySourceVisibility, overlaySourceTransition)
+  restoreOverlaySourceOpacity(source, sourceVisibility, sourceTransition)
   clone.style.opacity = '0'
-  clone.style.transform = 'scale(1)'
+  clone.style.transform = 'translate(0px, 0px) scale(1)'
   clone.style.visibility = 'hidden'
   clone.style.display = 'none'
-}
-
-function restoreOverlaySourceOpacity(source: HTMLElement | null, opacity: string, transition: string): void {
-  if (!source || !source.isConnected) return
-  source.style.opacity = opacity
-  source.style.transition = transition
-}
-
-function animateOverlayCloneOut(
-  clone: HTMLElement,
-  source: HTMLElement | null = null,
-  sourceOpacity = '',
-  sourceTransition = ''
-): void {
-  overlayCloneHideTokenCounter += 1
-  const hideToken = overlayCloneHideTokenCounter
-  overlayCloneHideTokens.set(clone, hideToken)
-  clone.style.display = 'block'
-  clone.style.visibility = 'visible'
-  clone.style.transition = 'transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 120ms ease'
-  requestAnimationFrame(() => {
-    if (overlayCloneHideTokens.get(clone) !== hideToken) return
-    clone.style.opacity = '0'
-    clone.style.transform = 'scale(1)'
-  })
-  const finalize = () => {
-    clone.removeEventListener('transitionend', finalize)
-    if (overlayCloneHideTokens.get(clone) !== hideToken) return
-    restoreOverlaySourceOpacity(source, sourceOpacity, sourceTransition)
-    if (clone.isConnected) {
-      clone.style.display = 'none'
-      clone.style.visibility = 'hidden'
-    }
-  }
-  clone.addEventListener('transitionend', finalize)
-  window.setTimeout(finalize, 260)
-}
-
-function prewarmOverlayClones(): void {
-  const elements = [
-    ...handEl.querySelectorAll<HTMLElement>('[data-card-id]'),
-    ...ordersEl.querySelectorAll<HTMLElement>('[data-card-id]'),
-  ]
-  const liveKeys = new Set<string>()
-  elements.forEach((el) => {
-    const key = getCardVisualKey(el)
-    if (!key) return
-    liveKeys.add(key)
-    let clone = overlayClones.get(key)
-    if (!clone) {
-      clone = el.cloneNode(true) as HTMLElement
-      clone.classList.add('card-overlay-clone')
-      clone.dataset.cardLayer = 'overlay'
-      clone.style.transformOrigin = 'center center'
-      clone.style.opacity = '0'
-      clone.style.transform = 'scale(1)'
-      clone.style.transition = 'none'
-      clone.style.display = 'none'
-      clone.style.visibility = 'hidden'
-      cardOverlay.appendChild(clone)
-      overlayClones.set(key, clone)
-    } else {
-      clone.className = `${el.className} card-overlay-clone`
-      clone.innerHTML = el.innerHTML
-      clone.dataset.cardLayer = 'overlay'
-    }
-    syncOverlayCloneCardStyle(clone, el)
-    const rect = el.getBoundingClientRect()
-    clone.style.left = `${rect.left}px`
-    clone.style.top = `${rect.top}px`
-    clone.style.width = `${rect.width}px`
-    clone.style.height = `${rect.height}px`
-  })
-
-  overlayClones.forEach((clone, key) => {
-    if (!liveKeys.has(key)) {
-      if (clone.isConnected) clone.remove()
-      overlayClones.delete(key)
-    }
-  })
-}
-
-function scheduleOverlayPrewarm(): void {
-  if (overlayPrewarmFrame !== null) {
-    cancelAnimationFrame(overlayPrewarmFrame)
-    overlayPrewarmFrame = null
-  }
-  overlayPrewarmFrame = requestAnimationFrame(() => {
-    overlayPrewarmFrame = requestAnimationFrame(() => {
-      overlayPrewarmFrame = null
-      prewarmOverlayClones()
-    })
-  })
+  clone.style.transition = 'none'
 }
 
 function getOverlayCloneTargetScale(sourceEl: HTMLElement): number {
@@ -3119,6 +3073,22 @@ function getOverlayCloneTargetScale(sourceEl: HTMLElement): number {
   const baseCardWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-width'))
   if (baseCardWidth <= 0 || rect.width <= 0) return 1.5
   return Math.max(1.5, 1.5 * (baseCardWidth / rect.width))
+}
+
+function getOverlayCloneTransform(rect: DOMRect, scale: number): string {
+  const scaledWidth = rect.width * scale
+  const scaledHeight = rect.height * scale
+  const halfExtraWidth = Math.max(0, scaledWidth - rect.width) / 2
+  const halfExtraHeight = Math.max(0, scaledHeight - rect.height) / 2
+  const minTranslateX = OVERLAY_VIEWPORT_MARGIN_PX - (rect.left - halfExtraWidth)
+  const maxTranslateX = window.innerWidth - OVERLAY_VIEWPORT_MARGIN_PX - (rect.right + halfExtraWidth)
+  const minTranslateY = OVERLAY_VIEWPORT_MARGIN_PX - (rect.top - halfExtraHeight)
+  const maxTranslateY = window.innerHeight - OVERLAY_VIEWPORT_MARGIN_PX - (rect.bottom + halfExtraHeight)
+  const translateX =
+    minTranslateX > maxTranslateX ? (minTranslateX + maxTranslateX) / 2 : clamp(0, minTranslateX, maxTranslateX)
+  const translateY =
+    minTranslateY > maxTranslateY ? (minTranslateY + maxTranslateY) / 2 : clamp(0, minTranslateY, maxTranslateY)
+  return `translate(${translateX}px, ${translateY}px) scale(${scale})`
 }
 
 function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = false): void {
@@ -3133,54 +3103,16 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
   if (overlayLocked && sourceKey === cardKey) {
     return
   }
+  clearOverlayTimers()
   overlayHideSeq += 1
   overlayShowSeq += 1
   const showSeq = overlayShowSeq
-  const outgoingSource = !overlayLocked && overlaySourceEl && overlaySourceEl !== sourceEl ? overlaySourceEl : null
-  const outgoingSourceVisibility = outgoingSource ? overlaySourceVisibility : ''
-  const outgoingSourceTransition = outgoingSource ? overlaySourceTransition : ''
-  if (!overlayLocked) {
-    const currentSourceKey = getOverlaySourceKey()
-    if (overlayClone && currentSourceKey && currentSourceKey !== cardKey) {
-      animateOverlayCloneOut(overlayClone, outgoingSource, outgoingSourceVisibility, outgoingSourceTransition)
-    } else {
-      hardResetOverlayClone()
-    }
+  const switchingCards = sourceKey !== null && sourceKey !== cardKey
+  if (!overlayLocked && switchingCards) {
+    hardResetOverlayClone()
   }
-  let clone = overlayClones.get(cardKey)
-  if (!clone) {
-    clone = sourceEl.cloneNode(true) as HTMLElement
-    clone.classList.add('card-overlay-clone')
-    clone.dataset.cardLayer = 'overlay'
-    clone.style.transformOrigin = 'center center'
-    clone.style.opacity = '0'
-    clone.style.transform = 'scale(1)'
-    clone.style.transition = 'none'
-    clone.style.display = 'none'
-    clone.style.visibility = 'hidden'
-    cardOverlay.appendChild(clone)
-    overlayClones.set(cardKey, clone)
-  } else {
-    clone.className = `${sourceEl.className} card-overlay-clone`
-    clone.innerHTML = sourceEl.innerHTML
-    clone.dataset.cardLayer = 'overlay'
-    clone.style.opacity = '0'
-    clone.style.transform = 'scale(1)'
-    clone.style.transition = 'none'
-    clone.style.visibility = 'hidden'
-  }
-  overlayCloneHideTokenCounter += 1
-  overlayCloneHideTokens.set(clone, overlayCloneHideTokenCounter)
-  syncOverlayCloneCardStyle(clone, sourceEl)
-  clone.style.display = 'none'
-  overlayClone = clone
-
-  const applyPhase = (activeClone: HTMLElement) => {
-    activeClone.style.transition = 'transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1)'
-    activeClone.style.opacity = '1'
-    activeClone.style.visibility = 'visible'
-  }
-
+  const clone = ensureOverlayClone()
+  syncOverlayCloneFromSource(clone, sourceEl)
   overlaySourceKey = cardKey
   overlaySourceId = cardId
   overlaySourceDefId = cardDefId
@@ -3189,50 +3121,33 @@ function showOverlayClone(sourceEl: HTMLElement, lock: boolean, immediate = fals
   overlayLocked = lock
   overlaySourceVisibility = sourceEl.style.opacity
   overlaySourceTransition = sourceEl.style.transition
+  const rect = sourceEl.getBoundingClientRect()
+  const targetScale = getOverlayCloneTargetScale(sourceEl)
+  const targetTransform = getOverlayCloneTransform(rect, targetScale)
+  clone.style.left = `${rect.left}px`
+  clone.style.top = `${rect.top}px`
+  clone.style.width = `${rect.width}px`
+  clone.style.height = `${rect.height}px`
+  clone.style.transform = 'translate(0px, 0px) scale(1)'
+  clone.style.transition = 'none'
+  clone.style.opacity = '1'
+  clone.style.display = 'block'
+  clone.style.visibility = 'visible'
+  if (sourceEl.isConnected) {
+    sourceEl.style.transition = 'none'
+    sourceEl.style.opacity = '0'
+  }
 
-  const start = (activeClone: HTMLElement) => {
-    const isCurrentSource = () => getOverlaySourceKey() === cardKey
-    const settle = (attempt = 0) => {
-      if (showSeq !== overlayShowSeq || !isCurrentSource()) return
-      const rectA = sourceEl.getBoundingClientRect()
-      const targetScale = getOverlayCloneTargetScale(sourceEl)
-      window.requestAnimationFrame(() => {
-        if (showSeq !== overlayShowSeq || !isCurrentSource()) return
-        const rectB = sourceEl.getBoundingClientRect()
-        const dx = Math.abs(rectA.left - rectB.left)
-        const dy = Math.abs(rectA.top - rectB.top)
-        const dw = Math.abs(rectA.width - rectB.width)
-        const dh = Math.abs(rectA.height - rectB.height)
-        const stable = dx < 0.5 && dy < 0.5 && dw < 0.5 && dh < 0.5
-        if (!stable && attempt < 2) {
-          settle(attempt + 1)
-          return
-        }
-        activeClone.style.left = `${rectB.left}px`
-        activeClone.style.top = `${rectB.top}px`
-        activeClone.style.width = `${rectB.width}px`
-        activeClone.style.height = `${rectB.height}px`
-        activeClone.style.transform = 'scale(1)'
-        activeClone.style.display = 'block'
-        applyPhase(activeClone)
-        if (sourceEl.isConnected) {
-          sourceEl.style.transition = 'none'
-          sourceEl.style.opacity = '0'
-        }
-        // Force the browser to commit the source-sized clone before scaling so
-        // queue hover zoom starts from the exact source rect without a visible snap.
-        activeClone.getBoundingClientRect()
-        if (showSeq !== overlayShowSeq || !isCurrentSource()) return
-        activeClone.style.transform = `scale(${targetScale})`
-      })
-    }
-    settle()
+  const animateIn = () => {
+    if (showSeq !== overlayShowSeq || getOverlaySourceKey() !== cardKey) return
+    clone.style.transition = 'transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 120ms ease'
+    clone.style.transform = targetTransform
   }
 
   if (immediate) {
-    start(clone)
+    window.requestAnimationFrame(animateIn)
   } else {
-    window.requestAnimationFrame(() => start(clone))
+    window.requestAnimationFrame(() => window.requestAnimationFrame(animateIn))
   }
 }
 
@@ -3260,6 +3175,7 @@ function updateHoverFromPointer(): void {
   if (performance.now() < suppressOverlayUntil) return
   if (hiddenCardIds.size > 0) return
   const el = document.elementFromPoint(lastPointer.x, lastPointer.y) as HTMLElement | null
+  const hoveredCardStrip = el?.closest<HTMLElement>('.orders, .hand-row') ?? null
   const hoveredEl = el?.closest<HTMLElement>('.card[data-card-id]')
   const cardEl = hoveredEl?.classList.contains('hidden-card') ? null : hoveredEl
   let cardKey = cardEl ? getCardVisualKey(cardEl) : null
@@ -3270,7 +3186,8 @@ function updateHoverFromPointer(): void {
   }
 
   if (cardKey) {
-    if (cardKey !== hoverCardKey || (overlayClone && overlayClone.style.display === 'none')) {
+    clearOverlayTimers()
+    if (cardKey !== hoverCardKey || !overlayClone || overlayClone.style.display === 'none' || overlayClone.style.visibility === 'hidden') {
       hoverCardKey = cardKey
       if (cardEl) {
         showOverlayClone(cardEl, false, true)
@@ -3279,6 +3196,17 @@ function updateHoverFromPointer(): void {
     return
   }
   if (hoverCardKey) {
+    hoverCardKey = null
+    if (hoveredCardStrip) {
+      if (overlayHideTimer === null) {
+        overlayHideTimer = window.setTimeout(() => {
+          overlayHideTimer = null
+          if (hoverCardKey || overlayLocked) return
+          clearOverlayClone()
+        }, OVERLAY_HANDOFF_HIDE_DELAY_MS)
+      }
+      return
+    }
     hoverCardKey = null
     clearOverlayClone()
   }
@@ -3302,6 +3230,7 @@ function syncOverlayPositionWithSource(): void {
   overlayClone.style.top = `${rect.top}px`
   overlayClone.style.width = `${rect.width}px`
   overlayClone.style.height = `${rect.height}px`
+  overlayClone.style.transform = getOverlayCloneTransform(rect, getOverlayCloneTargetScale(source))
 }
 
 function syncOverlayFromSelection(): void {
@@ -3894,6 +3823,20 @@ function getAnimationAlpha(): number {
   if (currentAnimation.type === 'spawn') return easeInOutCubic(animationProgress)
   if (currentAnimation.type === 'death') return 1 - easeInOutCubic(animationProgress)
   return 1
+}
+
+function getDamageFlashAlpha(progress: number): number {
+  if (progress <= 0) return 1
+  if (progress >= 1) return 1
+  const transitions = DAMAGE_FLASH_FLICKER_COUNT * 2
+  const scaledProgress = clamp(progress, 0, 0.999999) * transitions
+  const transitionIndex = Math.floor(scaledProgress)
+  const localProgress = scaledProgress - transitionIndex
+  const eased = easeInOutCubic(localProgress)
+  const startsVisible = transitionIndex % 2 === 0
+  const fromAlpha = startsVisible ? 1 : DAMAGE_FLASH_MIN_ALPHA
+  const toAlpha = startsVisible ? DAMAGE_FLASH_MIN_ALPHA : 1
+  return fromAlpha + (toAlpha - fromAlpha) * eased
 }
 
 function drawStrengthDots(
@@ -4948,7 +4891,7 @@ function notifyTutorialEvent(event: Parameters<TutorialController['recordEvent']
     setTutorialFeedback('Lesson complete. Use Tutorial Hub to return.')
     if (state.winner !== null) {
       winnerMenuButton.textContent = 'Back to Tutorials'
-      winnerResetButton.textContent = 'Replay Lesson'
+      winnerResetButton.classList.add('hidden')
       winnerRematchButton.classList.add('hidden')
       winnerRematchButton.disabled = true
     }
@@ -6700,9 +6643,8 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
 
   if (
     currentAnimation &&
-    'unitId' in currentAnimation &&
-    currentAnimation.unitId === unit.id &&
-    currentAnimation.type === 'boost'
+    currentAnimation.type === 'boost' &&
+    currentAnimation.unitIds.includes(unit.id)
   ) {
     drawBoostGlow(center, animationProgress)
   }
@@ -6871,7 +6813,12 @@ function drawPlannedMoves(snapshot: GameState): void {
   ctx.restore()
 }
 
-function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringColor: string): void {
+function drawGhostComposite(
+  center: { x: number; y: number },
+  unit: Unit,
+  ringColor: string,
+  spriteFilter = DEFAULT_GHOST_SPRITE_FILTER
+): void {
   const ghostScale = Math.max(1, Math.ceil(window.devicePixelRatio || 1))
   const ghostSize = Math.ceil(layout.size * 4)
   const ghostPixelSize = ghostSize * ghostScale
@@ -6897,7 +6844,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
 
     if (barricadeBaseImage.loaded) {
       ghostCtx.save()
-      ghostCtx.filter = 'grayscale(1) brightness(1.8)'
+      ghostCtx.filter = spriteFilter
       drawBarricadeSprite(localCenter, unit.owner, ghostCtx)
       ghostCtx.filter = 'none'
       ghostCtx.restore()
@@ -6956,7 +6903,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
     let monsterDrawn = false
     if (unit.kind === 'unit') {
       ghostCtx.save()
-      ghostCtx.filter = 'grayscale(1) brightness(1.8)'
+      ghostCtx.filter = spriteFilter
       monsterDrawn = drawMonsterSprite(ghostCtx, localCenter, unit, unitSpriteScale * getUnitRenderScale(unit))
       ghostCtx.filter = 'none'
       ghostCtx.restore()
@@ -6965,7 +6912,7 @@ function drawGhostComposite(center: { x: number; y: number }, unit: Unit, ringCo
       const spriteOffsetX = unit.kind === 'leader' ? spriteSet.leaderOffsetX : spriteSet.unitOffsetX
       const spriteOffsetY = unit.kind === 'leader' ? spriteSet.leaderOffsetY : spriteSet.unitOffsetY
       ghostCtx.save()
-      ghostCtx.filter = 'grayscale(1) brightness(1.8)'
+      ghostCtx.filter = spriteFilter
       drawAnchoredImageTo(
         ghostCtx,
         troopBaseImage,
@@ -7054,7 +7001,12 @@ function drawGhostUnits(snapshot: GameState): void {
       ringColor = '#7CFF8A'
     }
 
-    drawGhostComposite(center, unit, ringColor)
+    drawGhostComposite(
+      center,
+      unit,
+      ringColor,
+      ringColor === '#ff2b2b' ? PLANNING_DEATH_GHOST_SPRITE_FILTER : DEFAULT_GHOST_SPRITE_FILTER
+    )
 
     if (showStrengthChange) {
       const baseStrength = actual?.strength ?? 0
@@ -7070,7 +7022,7 @@ function drawGhostUnits(snapshot: GameState): void {
 
     const center = projectHex(unit.pos)
     const ringColor = '#ff2b2b'
-    drawGhostComposite(center, unit, ringColor)
+    drawGhostComposite(center, unit, ringColor, PLANNING_DEATH_GHOST_SPRITE_FILTER)
 
     ctx.save()
     ctx.globalAlpha = GHOST_ALPHA
@@ -7577,6 +7529,8 @@ function renderHand(): void {
     })
     .join('')
 
+  fitCardTitles(handEl)
+
   const cardButtons = Array.from(handEl.querySelectorAll<HTMLButtonElement>('.hand-card'))
   bindCardStripReorder({
     container: handEl,
@@ -7627,6 +7581,8 @@ function renderOrders(): void {
     })
     .join('')
 
+  fitCardTitles(ordersEl)
+
   if (inPlanning) {
     const cards = Array.from(ordersEl.querySelectorAll<HTMLDivElement>('.order-card'))
 
@@ -7659,7 +7615,7 @@ function renderOrderForm(): void {
   const apCost = def.actionCost ?? 1
   const nextStep = getNextRequirement(def.id, activeOrder.params)
   const summary = renderOrderSummary(def.id, activeOrder.params)
-  const description = getCardDescriptionForMatch(def.id, def.description)
+  const description = getCardDescriptionForMatch(def)
 
   orderFormEl.innerHTML = `
     <div class="order-summary">
@@ -7784,26 +7740,157 @@ function scaleRoguelikeMonsterCardDamageValue(baseDamage: number, matchNumber: n
   return Math.max(1, Math.round(normalized * getRoguelikeMonsterDamageModifierForMatch(matchNumber)))
 }
 
-function getCardDescriptionForMatch(defId: CardDefId, fallback: string, owner?: PlayerId): string {
-  if (mode !== 'roguelike' || owner !== BOT_PLAYER) return fallback
-  const matchNumber = getCurrentRoguelikeMatchNumber()
-  if (defId === 'attack_roguelike_basic') {
-    return `Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} damage to an adjacent unit.`
+function scaleCardEffectForRoguelikeDisplay(effect: CardEffect, matchNumber: number): CardEffect {
+  switch (effect.type) {
+    case 'damage':
+    case 'damageTile':
+    case 'damageAdjacent':
+    case 'damageRadius':
+      return {
+        ...effect,
+        amount: scaleRoguelikeMonsterCardDamageValue(effect.amount, matchNumber),
+      }
+    case 'damageTileArea':
+      return {
+        ...effect,
+        centerAmount: scaleRoguelikeMonsterCardDamageValue(effect.centerAmount, matchNumber),
+        splashAmount: scaleRoguelikeMonsterCardDamageValue(effect.splashAmount, matchNumber),
+      }
+    case 'attack':
+    case 'chainLightning':
+    case 'chainLightningAllFriendly':
+    case 'teamAttackForward':
+    case 'pincerAttack':
+    case 'volley':
+    case 'lineSplash':
+      return typeof effect.damage === 'number'
+        ? {
+            ...effect,
+            damage: scaleRoguelikeMonsterCardDamageValue(effect.damage, matchNumber),
+          }
+        : effect
+    case 'jointAttack':
+      return {
+        ...effect,
+        damagePerAdjacentAlly: scaleRoguelikeMonsterCardDamageValue(effect.damagePerAdjacentAlly, matchNumber),
+      }
+    case 'harpoon':
+      return {
+        ...effect,
+        damage: scaleRoguelikeMonsterCardDamageValue(effect.damage, matchNumber),
+      }
+    case 'executeForward':
+      return {
+        ...effect,
+        leaderDamage: scaleRoguelikeMonsterCardDamageValue(effect.leaderDamage, matchNumber),
+      }
+    case 'shove':
+      return {
+        ...effect,
+        collisionDamage: scaleRoguelikeMonsterCardDamageValue(effect.collisionDamage, matchNumber),
+        impactDamage:
+          effect.impactDamage === undefined
+            ? undefined
+            : scaleRoguelikeMonsterCardDamageValue(effect.impactDamage, matchNumber),
+      }
+    case 'whirlwind':
+      return {
+        ...effect,
+        damage: scaleRoguelikeMonsterCardDamageValue(effect.damage, matchNumber),
+      }
+    case 'packHunt':
+      return {
+        ...effect,
+        damagePerAdjacent: scaleRoguelikeMonsterCardDamageValue(effect.damagePerAdjacent, matchNumber),
+      }
+    default:
+      return effect
   }
-  if (defId === 'attack_roguelike_slow') {
-    return `Slow. Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(5, matchNumber)} damage to an adjacent unit.`
-  }
-  if (defId === 'attack_roguelike_stomp') {
-    return `Deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} damage and Stun all adjacent units for the rest of the turn.`
-  }
-  if (defId === 'attack_roguelike_pack_hunt') {
-    return `Move 1 tile in any direction, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage per adjacent ally to the tile in front.`
-  }
-  return fallback
 }
 
-function renderCardArt(defId: CardDefId): string {
-  return `<div class="card-art" aria-hidden="true">${getCardArtSvg(defId)}</div>`
+function getCardDescriptionForMatch(def: CardDef, owner?: PlayerId, matchNumber = getCurrentRoguelikeMatchNumber()): string {
+  if (mode !== 'roguelike' || owner !== BOT_PLAYER) return def.description
+  if (def.id === 'attack_roguelike_basic') {
+    return `Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} damage to an adjacent unit.`
+  }
+  if (def.id === 'attack_roguelike_slow') {
+    return `Slow. Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(5, matchNumber)} damage to an adjacent unit.`
+  }
+  if (def.id === 'attack_roguelike_stomp') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} damage and Stun all adjacent units for the rest of the turn.`
+  }
+  if (def.id === 'attack_roguelike_pack_hunt') {
+    return `Move 1 tile in any direction, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage per adjacent ally to the tile in front.`
+  }
+  if (def.id === 'attack_coordinated') {
+    return `All friendly units deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the tile in front of them.`
+  }
+  if (def.id === 'attack_ice_bolt') {
+    return `Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the first unit in line and Slow it for 2 turns.`
+  }
+  if (def.id === 'spell_blizzard') {
+    return `Choose a tile. All units within 2 tiles take ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage and are Slowed for 2 turns.`
+  }
+  if (def.id === 'attack_fireball') {
+    return `Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the first unit in line and all adjacent tiles around it.`
+  }
+  if (def.id === 'attack_line') {
+    return `Spew flames forward up to 3 tiles, dealing ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to every unit in line.`
+  }
+  if (def.id === 'spell_meteor') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(5, matchNumber)} damage to a chosen tile and ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to adjacent tiles (units only). Slow`
+  }
+  if (def.id === 'attack_chain_lightning') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to a random adjacent unit, then jump to random adjacent units until no new targets remain.`
+  }
+  if (def.id === 'spell_roguelike_thunderstorm') {
+    return `Cast Chain Lightning for ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage from every friendly unit.`
+  }
+  if (def.id === 'attack_fwd_lr') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the nearest tile in the forward, left and right directions.`
+  }
+  if (def.id === 'attack_arrow') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the nearest unit in the facing direction.`
+  }
+  if (def.id === 'attack_charge') {
+    return `Face a direction, move up to 5 tiles, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to the tile in front.`
+  }
+  if (def.id === 'attack_whirlwind') {
+    return `Deal ${scaleRoguelikeMonsterCardDamageValue(3, matchNumber)} damage to surrounding units and push them back 1 tile if possible.`
+  }
+  if (def.id === 'attack_blade_dance') {
+    return `Chain 3 moves: each move 1 tile, then deal ${scaleRoguelikeMonsterCardDamageValue(1, matchNumber)} to all adjacent units.`
+  }
+  if (def.id === 'attack_execute') {
+    return `Destroy a non-leader unit in front. Leaders take ${scaleRoguelikeMonsterCardDamageValue(3, matchNumber)} damage instead.`
+  }
+  if (def.id === 'attack_jab') {
+    return `Face a direction, then deal ${scaleRoguelikeMonsterCardDamageValue(2, matchNumber)} damage to an adjacent unit.`
+  }
+  if (def.id === 'attack_shove') {
+    return `Push an adjacent unit backwards 1 tile. If occupied, deal ${scaleRoguelikeMonsterCardDamageValue(3, matchNumber)} damage to both.`
+  }
+  return def.description
+}
+
+function getCardDisplayDef(def: CardDef, owner?: PlayerId): CardDef {
+  if (mode !== 'roguelike' || owner !== BOT_PLAYER) return def
+  const matchNumber = getCurrentRoguelikeMatchNumber()
+  let effectsChanged = false
+  const effects = def.effects.map((effect) => {
+    const scaled = scaleCardEffectForRoguelikeDisplay(effect, matchNumber)
+    if (scaled !== effect) {
+      effectsChanged = true
+    }
+    return scaled
+  })
+  const description = getCardDescriptionForMatch(def, owner, matchNumber)
+  if (!effectsChanged && description === def.description) return def
+  return {
+    ...def,
+    description,
+    effects,
+  }
 }
 
 const CARD_TYPE_LABELS: Record<CardType, string> = {
@@ -7863,41 +7950,88 @@ function getCardClassName(defId: CardDefId): string {
 
 function renderCardClassMark(defId: CardDefId): string {
   const classId = getCardClassId(defId)
-  if (!classId) return ''
+  if (!classId) return '<div class="card-class-mark card-class-mark-hidden" aria-hidden="true"></div>'
   return `<div class="card-class-mark">${PLAYER_CLASS_DEFS[classId].name}</div>`
 }
 
-function renderCardFace(
-  def: {
-    id: CardDefId
-    name: string
-    description: string
-    type: CardType
-    countsAs?: CardType[]
-    actionCost?: number
-    keywords?: string[]
-  },
-  options: { metaText?: string; orderIndex?: number; owner?: PlayerId } = {}
-): string {
+function renderCardFace(def: CardDef, options: { metaText?: string; orderIndex?: number; owner?: PlayerId } = {}): string {
+  const displayDef = getCardDisplayDef(def, options.owner)
   const apCost = def.actionCost ?? 1
+  const apCount = Math.max(1, apCost)
   const meta = options.metaText ? `<div class="card-meta">${options.metaText}</div>` : ''
   const keywords =
-    def.keywords && def.keywords.length > 0
-      ? `<div class="card-keywords">${def.keywords.map((keyword) => `<span class="card-keyword">${keyword}</span>`).join('')}</div>`
+    displayDef.keywords && displayDef.keywords.length > 0
+      ? `<div class="card-keywords">${displayDef.keywords.map((keyword) => `<span class="card-keyword">${keyword}</span>`).join('')}</div>`
       : ''
-  const description = getCardDescriptionForMatch(def.id, def.description, options.owner)
-  const classMark = renderCardClassMark(def.id)
+  const description = displayDef.description
+  const classMark = renderCardClassMark(displayDef.id)
   const orderIndex = options.orderIndex ? `<div class="order-index">#${options.orderIndex}</div>` : ''
-  return [
-    renderApBadge(apCost),
+  const copy = [
+    `<div class="card-title">${displayDef.name}</div>`,
     classMark,
-    `<div class="card-title">${def.name}</div>`,
-    renderCardArt(def.id),
     `<div class="card-desc">${description}</div>`,
     keywords,
     meta,
+  ]
+    .filter(Boolean)
+    .join('')
+  return [
+    renderApBadge(apCost),
+    `<div class="card-copy" style="--card-ap-count:${apCount}">${copy}</div>`,
     orderIndex,
   ].join('')
+}
+
+function fitCardTitles(root: ParentNode): void {
+  const titleElements =
+    root instanceof Element && root.matches('.card-title')
+      ? [root as HTMLElement]
+      : Array.from(root.querySelectorAll<HTMLElement>('.card-title'))
+
+  titleElements.forEach((titleEl) => {
+    if (titleEl.clientWidth <= 0) return
+
+    titleEl.style.removeProperty('font-size')
+    titleEl.style.removeProperty('transform')
+    titleEl.style.removeProperty('white-space')
+    titleEl.style.removeProperty('text-overflow')
+    titleEl.style.removeProperty('max-height')
+    titleEl.style.removeProperty('min-height')
+    const baseFontSize = Number.parseFloat(getComputedStyle(titleEl).fontSize)
+    const baseLineHeight = Number.parseFloat(getComputedStyle(titleEl).lineHeight)
+    if (!Number.isFinite(baseFontSize) || baseFontSize <= 0) return
+
+    const minSingleLineFontSize = baseFontSize * 0.5
+    let fittedFontSize = baseFontSize
+    let attempts = 0
+
+    while (
+      titleEl.scrollWidth > titleEl.clientWidth &&
+      fittedFontSize > minSingleLineFontSize &&
+      attempts < 80
+    ) {
+      fittedFontSize = Math.max(minSingleLineFontSize, fittedFontSize - 0.25)
+      titleEl.style.fontSize = `${fittedFontSize}px`
+      attempts += 1
+    }
+
+    const resolvedLineHeight = Number.isFinite(baseLineHeight) && baseLineHeight > 0 ? baseLineHeight : baseFontSize
+
+    if (titleEl.scrollWidth > titleEl.clientWidth) {
+      titleEl.style.fontSize = `${minSingleLineFontSize}px`
+      titleEl.style.whiteSpace = 'normal'
+      titleEl.style.textOverflow = 'clip'
+      const wrappedLineHeight = resolvedLineHeight * (minSingleLineFontSize / baseFontSize)
+      titleEl.style.maxHeight = `${wrappedLineHeight * 2}px`
+      titleEl.style.minHeight = `${wrappedLineHeight * 2}px`
+      return
+    }
+
+    if (fittedFontSize < baseFontSize) {
+      const verticalShift = resolvedLineHeight * (1 - fittedFontSize / baseFontSize)
+      titleEl.style.transform = `translateY(${verticalShift.toFixed(2)}px)`
+    }
+  })
 }
 
 function captureCardRects(container: HTMLElement): Map<string, DOMRect> {
@@ -8123,6 +8257,7 @@ function createResolutionCardClone(source: ResolutionPreviewSource): HTMLElement
   clone.style.clipPath = 'inset(0 0 0 0 round 16px)'
   clone.style.overflow = 'hidden'
   cardOverlay.appendChild(clone)
+  fitCardTitles(clone)
   return clone
 }
 
@@ -8223,6 +8358,22 @@ function buildResolutionCardPreviewPlan(
   void animations
   if (shouldFizzleForUnavailableTarget) {
     return { mode: 'fizzle' }
+  }
+
+  if (order.defId === 'attack_blade_dance') {
+    const actingTarget = getPreviewUnitTargetSnapshot(beforeState, order, 'unitId')
+    if (actingTarget) {
+      return {
+        mode: 'targeted',
+        targets: [
+          {
+            kind: 'unit',
+            rect: getBoardPreviewTargetRect(actingTarget.pos, 'unit'),
+            scale: RESOLUTION_CARD_TARGET_SCALE_UNIT,
+          },
+        ],
+      }
+    }
   }
 
   const playerTargets: PlayerId[] = []
@@ -8686,6 +8837,8 @@ function renderLoadout(): void {
       `
     })
     .join('')
+
+  fitCardTitles(loadoutAll)
 
   const addButtons = loadoutAll.querySelectorAll<HTMLButtonElement>('[data-add-id]')
   addButtons.forEach((button) => {
@@ -9268,6 +9421,12 @@ function chooseRoguelikeRandomReward(): void {
   applyRoguelikeRandomReward(reward)
 }
 
+function skipRoguelikeRewardIfAvailable(): void {
+  if (!roguelikeRun || state.winner !== BOT_HUMAN_PLAYER) return
+  if (roguelikeRun.uiStage !== 'reward_choice' && roguelikeRun.uiStage !== 'remove_choice') return
+  startRoguelikeMatchAfterReward('Reward skipped.')
+}
+
 function handleRoguelikeMatchResultIfNeeded(): void {
   if (mode !== 'roguelike' || !roguelikeRun) return
   if (state.winner === null) return
@@ -9295,8 +9454,8 @@ function renderRoguelikeWinnerModal(): void {
   if (mode !== 'roguelike' || !roguelikeRun || state.winner === null) return
 
   winnerExtraEl.innerHTML = ''
-  winnerMenuButton.classList.remove('hidden')
-  winnerResetButton.classList.remove('hidden')
+  winnerMenuButton.classList.add('hidden')
+  winnerResetButton.classList.add('hidden')
   winnerRematchButton.classList.add('hidden')
   winnerResetButton.disabled = false
   winnerRematchButton.disabled = false
@@ -9306,49 +9465,50 @@ function renderRoguelikeWinnerModal(): void {
     if (roguelikeRun.uiStage === 'reward_notice') {
       winnerTextEl.textContent = `Match ${roguelikeRun.wins} won. Reward received.`
       winnerNoteEl.textContent = roguelikeRun.rewardNoticeMessage ?? 'Reward gained.'
-      winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.classList.add('hidden')
+      winnerMenuButton.textContent = 'Main Menu'
       winnerRematchButton.classList.add('hidden')
       winnerExtraEl.innerHTML =
         '<button class="btn winner-option" data-roguelike-action="continue-reward" type="button">Continue to Next Match</button>'
+      fitCardTitles(winnerExtraEl)
       winnerModal.classList.remove('hidden')
       return
     }
     if (roguelikeRun.uiStage === 'remove_choice') {
       winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
       winnerNoteEl.textContent = 'Choose a card to remove before the next match.'
-      winnerMenuButton.textContent = 'End Run'
-      winnerResetButton.classList.add('hidden')
+      winnerMenuButton.textContent = 'Main Menu'
+      winnerResetButton.textContent = 'Skip Reward'
+      winnerResetButton.classList.remove('hidden')
       winnerRematchButton.classList.add('hidden')
-      winnerExtraEl.innerHTML = [
-        ...roguelikeRun.deck.map((cardId, index) =>
+      winnerExtraEl.innerHTML = roguelikeRun.deck
+        .map((cardId, index) =>
           renderRoguelikeRewardCardOption(cardId, 'remove-card', 'Remove from deck', `data-deck-index="${index}"`)
-        ),
-        '<button class="btn winner-option" data-roguelike-action="skip-reward" type="button">Skip Reward</button>',
-      ].join('')
+        )
+        .join('')
+      fitCardTitles(winnerExtraEl)
       winnerModal.classList.remove('hidden')
       return
     }
     prepareRoguelikeRewardChoiceOptions()
     winnerTextEl.textContent = `Match ${roguelikeRun.wins} won.`
     winnerNoteEl.textContent = `${PLAYER_CLASS_DEFS[roguelikeRun.playerClass].name} HP carries over: ${roguelikeRun.leaderHp}. Choose your reward for match ${nextMatch}.`
-    winnerMenuButton.textContent = 'End Run'
-    winnerResetButton.classList.add('hidden')
+    winnerMenuButton.textContent = 'Main Menu'
+    winnerResetButton.textContent = 'Skip Reward'
+    winnerResetButton.classList.remove('hidden')
     winnerRematchButton.classList.remove('hidden')
     const randomReward = roguelikeRun.pendingRandomReward ?? pickWeightedRoguelikeReward()
     roguelikeRun.pendingRandomReward = randomReward
     winnerRematchButton.textContent = `Random: ${getRoguelikeRandomRewardLabel(randomReward)}`
     winnerRematchButton.disabled = false
-    winnerExtraEl.innerHTML = [
-      ...roguelikeRun.draftOptions.map((cardId) => renderRoguelikeRewardCardOption(cardId, 'draft', 'Add to deck')),
-      '<button class="btn winner-option" data-roguelike-action="skip-reward" type="button">Skip Reward</button>',
-    ].join('')
+    winnerExtraEl.innerHTML = roguelikeRun.draftOptions
+      .map((cardId) => renderRoguelikeRewardCardOption(cardId, 'draft', 'Add to deck'))
+      .join('')
+    fitCardTitles(winnerExtraEl)
   } else {
     winnerTextEl.textContent = 'Roguelike run ended.'
     winnerNoteEl.textContent = `Matches won before loss: ${roguelikeRun.wins}.`
     winnerMenuButton.textContent = 'Main Menu'
-    winnerResetButton.textContent = 'New Run'
-    winnerResetButton.classList.remove('hidden')
+    winnerResetButton.classList.add('hidden')
     winnerRematchButton.classList.add('hidden')
   }
 
@@ -9419,28 +9579,19 @@ function renderMeta(): void {
     mode === 'online' ? (compactLabels ? 'Leave' : 'Leave Match') : compactLabels ? 'Menu' : 'Main Menu'
   gameTutorialHubButton.textContent = compactLabels ? 'Tutorial' : 'Tutorial Hub'
   gameTutorialHubButton.classList.toggle('hidden', !isTutorialLessonActive())
-  resetGameButton.textContent =
-    mode === 'online'
-      ? compactLabels
-        ? 'Reset Off'
-        : 'Reset (Local Only)'
-      : mode === 'roguelike'
-        ? compactLabels
-          ? 'Restart'
-          : 'Restart Match'
-        : compactLabels
-          ? 'Reset'
-          : 'Reset Game'
+  winnerMenuButton.classList.remove('hidden')
   const tutorialSession = getTutorialSession()
   if (tutorialSession?.completedAt && state.winner !== null) {
     winnerMenuButton.textContent = 'Back to Tutorials'
-    winnerResetButton.textContent = 'Replay Lesson'
+    winnerResetButton.classList.add('hidden')
     winnerRematchButton.classList.add('hidden')
     winnerRematchButton.disabled = true
     return
   }
   winnerMenuButton.textContent = mode === 'online' ? 'Leave Match' : 'Main Menu'
-  winnerResetButton.textContent = mode === 'online' ? 'Edit Deck' : 'Reset Game'
+  winnerResetButton.textContent = 'Edit Deck'
+  winnerResetButton.classList.toggle('hidden', mode !== 'online')
+  winnerResetButton.disabled = mode !== 'online'
   winnerRematchButton.classList.toggle('hidden', mode !== 'online')
   winnerRematchButton.textContent = onlineRematchRequested ? 'Rematch Pending' : 'Rematch'
   winnerRematchButton.disabled = mode !== 'online' || onlineRematchRequested || !(onlineSession?.connected ?? false)
@@ -9480,7 +9631,6 @@ function render(): void {
   handEl.scrollLeft = handScroll
   ordersEl.scrollLeft = ordersScroll
   runPendingCardTransfer()
-  scheduleOverlayPrewarm()
   syncOverlayFromSelection()
   updateHoverFromPointer()
   if (hasPointer && !lastInputWasTouch) {
@@ -9558,7 +9708,6 @@ function render(): void {
   const cardsCanReorder = inPlanning && !state.ready[planningPlayer] && !isBotPlanningLocked()
   handEl.classList.toggle('reorder-enabled', cardsCanReorder)
   ordersEl.classList.toggle('reorder-enabled', cardsCanReorder)
-  resetGameButton.disabled = inOnlineMode
   scheduleProgressSave()
   syncTutorialUi()
 }
@@ -10285,10 +10434,12 @@ function collectStrengthChangeAnimationEntries(
 
   Object.values(before).forEach((snapshot) => {
     if (unitsWithExplicitEvents.has(snapshot.id)) return
+    const splitIndex = splitIndexByUnit.get(snapshot.id)
+    if (splitIndex === undefined) return
     const afterStrength = afterUnits[snapshot.id]?.strength
     if (afterStrength === undefined || afterStrength === snapshot.strength) return
     silentDeltaEvents.push({
-      index: splitIndexByUnit.get(snapshot.id) ?? logEntries.length,
+      index: splitIndex,
       unitId: snapshot.id,
       amount: afterStrength - snapshot.strength,
     })
@@ -10381,6 +10532,7 @@ function buildAnimations(
   const animatedPositions = new Map<string, Hex>()
   const spawnedFallbackSnapshots = new Map<string, UnitSnapshot>()
   const destroyedAnimated = new Set<string>()
+  const boostedUnitIds = new Set<string>()
   let destroyedCursor = 0
   let lastConsumedLogIndex = -1
   let lastQueuedSyncLogIndex = -1
@@ -11241,11 +11393,7 @@ function buildAnimations(
       const afterUnit = state.units[resolvedId]
       if (!beforeUnit || !afterUnit) continue
       if (afterUnit.strength > beforeUnit.strength) {
-        animations.push({
-          type: 'boost',
-          unitId: resolvedId,
-          duration: BOOST_DURATION_MS,
-        })
+        boostedUnitIds.add(resolvedId)
       }
     }
 
@@ -11255,11 +11403,7 @@ function buildAnimations(
         const afterUnit = state.units[beforeUnit.id]
         if (!afterUnit) return
         if (afterUnit.strength <= beforeUnit.strength) return
-        animations.push({
-          type: 'boost',
-          unitId: beforeUnit.id,
-          duration: BOOST_DURATION_MS,
-        })
+        boostedUnitIds.add(beforeUnit.id)
       })
     }
 
@@ -11300,6 +11444,14 @@ function buildAnimations(
         duration: BLIZZARD_DURATION_MS,
       })
     }
+  }
+
+  if (boostedUnitIds.size > 0) {
+    animations.push({
+      type: 'boost',
+      unitIds: [...boostedUnitIds].sort(),
+      duration: BOOST_DURATION_MS,
+    })
   }
 
   trapTriggers.forEach((trigger) => {
@@ -11456,7 +11608,7 @@ function tickAnimation(time: number): void {
   if (currentAnimation.type === 'spawn') {
     unitAlphaOverrides.set(currentAnimation.unitId, easeInOutCubic(animationProgress))
   } else if (currentAnimation.type === 'damageFlash') {
-    const flicker = 0.35 + Math.abs(Math.sin(animationProgress * Math.PI * 4)) * 0.65
+    const flicker = getDamageFlashAlpha(animationProgress)
     currentAnimation.unitIds.forEach((unitId) => {
       unitAlphaOverrides.set(unitId, flicker)
     })
@@ -13363,19 +13515,6 @@ resolveAllButton.addEventListener('click', () => {
   resolveNextActionAnimated()
 })
 
-resetGameButton.addEventListener('click', () => {
-  if (isTutorialLessonActive()) {
-    if (!guardTutorialAction('reset_game')) return
-    returnToTutorialHub()
-    return
-  }
-  if (mode === 'online') {
-    statusEl.textContent = 'Reset is disabled in online mode.'
-    return
-  }
-  resetGameState('Game reset.')
-})
-
 winnerMenuButton.addEventListener('click', () => {
   if (isTutorialLessonActive()) {
     if (!guardTutorialAction('winner_primary')) return
@@ -13398,17 +13537,12 @@ winnerResetButton.addEventListener('click', () => {
     return
   }
   if (mode === 'roguelike') {
-    if (!roguelikeRun) return
-    if (state.winner === BOT_HUMAN_PLAYER) return
-    startRoguelikeRun()
+    skipRoguelikeRewardIfAvailable()
     return
   }
-  if (mode === 'online') {
-    setScreen('loadout')
-    statusEl.textContent = 'Adjust your deck. Return to the match and press Rematch when ready.'
-    return
-  }
-  resetGameState('Game reset.')
+  if (mode !== 'online') return
+  setScreen('loadout')
+  statusEl.textContent = 'Adjust your deck. Return to the match and press Rematch when ready.'
 })
 
 winnerRematchButton.addEventListener('click', () => {
@@ -13437,7 +13571,7 @@ winnerExtraEl.addEventListener('click', (event) => {
     return
   }
   if (action === 'skip-reward' && (roguelikeRun.uiStage === 'reward_choice' || roguelikeRun.uiStage === 'remove_choice')) {
-    startRoguelikeMatchAfterReward('Reward skipped.')
+    skipRoguelikeRewardIfAvailable()
     return
   }
   if (action === 'remove-card' && roguelikeRun.uiStage === 'remove_choice') {

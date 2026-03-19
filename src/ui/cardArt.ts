@@ -146,11 +146,13 @@ export const CARD_ART_OVERRIDES: Partial<Record<CardDefId, CardArtOverrideFn>> =
   spell_invest: buildInvestOverrideScene,
 }
 
-export function getCardArtSvg(defId: CardDefId): string {
-  const cached = CARD_ART_CACHE.get(defId)
-  if (cached) return cached
+export function getCardArtSvg(defId: CardDefId, defOverride?: CardDef): string {
+  if (!defOverride) {
+    const cached = CARD_ART_CACHE.get(defId)
+    if (cached) return cached
+  }
 
-  const def = CARD_DEFS[defId]
+  const def = defOverride ?? CARD_DEFS[defId]
   const context: CardArtBuildContext = {
     defId,
     def,
@@ -162,7 +164,9 @@ export function getCardArtSvg(defId: CardDefId): string {
   const effectRuleScene = buildEffectRuleScene(context)
   const scene = override ? override(context) : effectRuleScene ?? buildGenericScene(context)
   const svg = renderSceneToSvg(context, scene)
-  CARD_ART_CACHE.set(defId, svg)
+  if (!defOverride) {
+    CARD_ART_CACHE.set(defId, svg)
+  }
   return svg
 }
 

@@ -248,6 +248,10 @@ function ensureUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number][
   unit.modifiers.push({ type: modifierType, turnsRemaining: 'indefinite' })
 }
 
+function removeUnitModifier(unit: Unit, modifierType: Unit['modifiers'][number]['type']): void {
+  unit.modifiers = unit.modifiers.filter((modifier) => modifier.type !== modifierType)
+}
+
 function syncFrozenModifier(unit: Unit): void {
   const shouldBeFrozen = hasUnitModifier(unit, 'chilled') && hasUnitModifier(unit, 'slow')
   const hasFrozen = hasUnitModifier(unit, 'frozen')
@@ -270,7 +274,10 @@ function isNecromancerEncounter(state: Pick<GameState, 'settings'>): boolean {
 
 function syncEncounterPersistentModifiers(state: GameState): void {
   Object.values(state.units).forEach((unit) => {
-    if (unit.kind === 'unit' && unit.owner === 0 && isIceSpiritsEncounter(state)) {
+    if ((unit.kind === 'unit' || isLeaderUnit(unit)) && unit.owner === 0 && isIceSpiritsEncounter(state)) {
+      if (isLeaderUnit(unit)) {
+        removeUnitModifier(unit, 'slow')
+      }
       ensureUnitModifier(unit, 'chilled')
     }
     if (unit.kind === 'unit' && unit.owner === 1 && unit.roguelikeRole === 'fire_spirit') {
@@ -2245,6 +2252,24 @@ type SimultaneousMoveResolution = {
   cannotMove: Set<UnitId>
 }
 
+function getResolvableDoubleStepsPlans(state: GameState, order: Order): SimultaneousMovePlan[] {
+  const plans: SimultaneousMovePlan[] = []
+  ;([
+    ['unitId', 'tile'],
+    ['unitId2', 'tile2'],
+  ] as const).forEach(([unitParam, tileParam]) => {
+    const rawUnitId = getOrderUnitParam(order.params, unitParam)
+    const tile = getOrderTileParam(order.params, tileParam)
+    if (!rawUnitId || !tile) return
+    const resolvedUnitId = resolveUnitId(state, order.player, rawUnitId)
+    if (!resolvedUnitId) return
+    const unit = state.units[resolvedUnitId]
+    if (!unit || !canActAsUnit(unit)) return
+    plans.push({ unitId: resolvedUnitId, target: tile })
+  })
+  return plans
+}
+
 function resolveSimultaneousMovePlans(state: GameState, plans: SimultaneousMovePlan[]): SimultaneousMoveResolution {
   const resolvedPlans = new Map<UnitId, { unit: Unit; target: Hex; direction: Direction; faceMovedDirection: boolean }>()
 
@@ -2622,6 +2647,7 @@ function applyOrderForPlanning(state: GameState, order: Order): void {
 function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState): boolean {
   const def = CARD_DEFS[order.defId]
   const params = order.params
+  let handledDoubleStepsMoveValidation = false
   if (isActingUnitRequirement(order.defId)) {
     if (!params.unitId) return false
     const resolved = resolveUnitId(state, order.player, params.unitId)
@@ -2681,38 +2707,23 @@ function canApplyOrder(state: GameState, order: Order, fallbackState?: GameState
     }
 
     if (effect.type === 'moveToTile') {
+      if (order.defId === 'move_double_steps') {
+        if (handledDoubleStepsMoveValidation) continue
+        handledDoubleStepsMoveValidation = true
+        const plans = getResolvableDoubleStepsPlans(state, order)
+        if (plans.length === 0) return false
+        if (!canResolveSimultaneousMoves(state, plans)) return false
+        continue
+      }
       const rawUnitId = getOrderUnitParam(params, effect.unitParam)
       const tile = getOrderTileParam(params, effect.tileParam)
-      if (!rawUnitId || !tile) {
-        if (order.defId === 'move_double_steps' && effect.unitParam === 'unitId2' && !rawUnitId && !tile) {
-          continue
-        }
-        return false
-      }
+      if (!rawUnitId || !tile) return false
       const resolved = resolveUnitId(state, order.player, rawUnitId)
       if (!resolved) return false
       const unit = state.units[resolved]
       if (!unit || !canActAsUnit(unit)) return false
       if (!inBounds(state.boardRows, state.boardCols, tile)) return false
       if (getDirectionToAdjacentTile(unit.pos, tile) === null) return false
-      if (order.defId === 'move_double_steps') {
-        const firstUnitId =
-          effect.unitParam === 'unitId'
-            ? resolved
-            : params.unitId
-              ? resolveUnitId(state, order.player, params.unitId)
-              : null
-        const firstTile = effect.unitParam === 'unitId' ? tile : params.tile
-        const plans: SimultaneousMovePlan[] = []
-        if (firstUnitId && firstTile) {
-          plans.push({ unitId: firstUnitId, target: firstTile })
-        }
-        if (effect.unitParam === 'unitId2') {
-          plans.push({ unitId: resolved, target: tile })
-        }
-        if (!canResolveSimultaneousMoves(state, plans)) return false
-        continue
-      }
       const occupyingUnit = getUnitAt(state, tile)
       if (occupyingUnit && occupyingUnit.id !== unit.id) return false
       continue
@@ -3093,28 +3104,15 @@ function applyEffect(state: GameState, order: Order, effect: CardEffect, context
       if (order.defId === 'move_double_steps') {
         if (context.resolvedCompositeEffects.has('move_double_steps')) return
         context.resolvedCompositeEffects.add('move_double_steps')
-        const firstUnitId = getOrderUnitParam(params, 'unitId')
-        const firstTile = getOrderTileParam(params, 'tile')
-        const secondUnitId = getOrderUnitParam(params, 'unitId2')
-        const secondTile = getOrderTileParam(params, 'tile2')
-        const firstResolved = firstUnitId ? resolveUnitId(state, order.player, firstUnitId) : null
-        const secondResolved = secondUnitId ? resolveUnitId(state, order.player, secondUnitId) : null
-        const plans: SimultaneousMovePlan[] = []
-        if (firstResolved && firstTile) {
-          if (!context.movedUnitOrigins[firstResolved]) {
-            context.movedUnitOrigins[firstResolved] = { ...state.units[firstResolved].pos }
+        const plans = getResolvableDoubleStepsPlans(state, order)
+        plans.forEach((plan) => {
+          if (!context.movedUnitOrigins[plan.unitId]) {
+            context.movedUnitOrigins[plan.unitId] = { ...state.units[plan.unitId].pos }
           }
-          plans.push({ unitId: firstResolved, target: firstTile })
-        }
-        if (secondResolved && secondTile) {
-          if (!context.movedUnitOrigins[secondResolved]) {
-            context.movedUnitOrigins[secondResolved] = { ...state.units[secondResolved].pos }
-          }
-          plans.push({ unitId: secondResolved, target: secondTile })
-        }
+        })
         executeSimultaneousMoves(state, plans)
-        ;([firstResolved, secondResolved] as Array<UnitId | null>).forEach((unitId) => {
-          if (!unitId) return
+        plans.forEach((plan) => {
+          const unitId = plan.unitId
           const origin = context.movedUnitOrigins[unitId]
           const movedUnit = state.units[unitId]
           context.lastMoveSucceededByUnit[unitId] = Boolean(origin && movedUnit && !sameHex(origin, movedUnit.pos))

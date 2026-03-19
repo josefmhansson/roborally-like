@@ -222,6 +222,7 @@ public static class GeneratedTeamAssetGenerator
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptRoot '..')
+$stretchScript = Join-Path $scriptRoot 'stretchImageWidth.ps1'
 
 $jobs = @(
   @{
@@ -271,6 +272,14 @@ $jobs = @(
     Base = 'public/assets/buildings/spawn_village_base.png'
     Team = 'public/assets/buildings/spawn_village_team.png'
     SquareCanvas = $false
+  },
+  @{
+    Source = 'public/assets/new style/action_card_template.png'
+    PreparedSource = 'public/assets/generated/action_card_template_wide.png'
+    StretchWidth = 1.1
+    Base = 'public/assets/cards/action_card_base.png'
+    Team = 'public/assets/cards/action_card_team.png'
+    SquareCanvas = $false
   }
 )
 
@@ -278,7 +287,19 @@ foreach ($job in $jobs) {
   $sourcePath = Join-Path $repoRoot $job.Source
   $basePath = Join-Path $repoRoot $job.Base
   $teamPath = Join-Path $repoRoot $job.Team
+  $preparedSourcePath = $sourcePath
 
-  [GeneratedTeamAssetGenerator]::Generate($sourcePath, $basePath, $teamPath, [bool]$job.SquareCanvas)
+  if (-not (Test-Path -LiteralPath $sourcePath)) {
+    Write-Warning "Skipping $($job.Source) because the source file was not found."
+    continue
+  }
+
+  if ($job.ContainsKey('StretchWidth')) {
+    $preparedSourcePath = Join-Path $repoRoot $job.PreparedSource
+    & $stretchScript -SourcePath $sourcePath -OutputPath $preparedSourcePath -WidthScale ([double]$job.StretchWidth)
+  }
+
+  Write-Host "Generating from $preparedSourcePath"
+  [GeneratedTeamAssetGenerator]::Generate($preparedSourcePath, $basePath, $teamPath, [bool]$job.SquareCanvas)
   Write-Host "Generated $($job.Base) and $($job.Team)"
 }
