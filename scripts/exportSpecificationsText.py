@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 from pathlib import Path
 from zipfile import ZipFile
@@ -18,7 +19,7 @@ XML_NS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Export specifications.xlsx to git-friendly TSV files.')
+    parser = argparse.ArgumentParser(description='Export specifications.xlsx to git-friendly CSV files.')
     parser.add_argument('--workbook', default=str(WORKBOOK_PATH))
     parser.add_argument('--output', default=str(OUTPUT_DIR))
     return parser.parse_args()
@@ -111,7 +112,7 @@ def read_sheet_rows(archive: ZipFile, sheet_path: str, shared_strings: list[str]
     return rows
 
 
-def escape_tsv(value: str) -> str:
+def escape_csv_value(value: str) -> str:
     return (
         value.replace('\\', '\\\\')
         .replace('\r\n', '\n')
@@ -128,8 +129,9 @@ def slugify_sheet_name(sheet_name: str) -> str:
 
 def write_sheet_exports(workbook_path: Path, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for existing in output_dir.glob('*.tsv'):
-        existing.unlink()
+    for pattern in ('*.csv', '*.tsv'):
+        for existing in output_dir.glob(pattern):
+            existing.unlink()
 
     with ZipFile(workbook_path) as archive:
         shared_strings = read_shared_strings(archive)
@@ -138,9 +140,11 @@ def write_sheet_exports(workbook_path: Path, output_dir: Path) -> list[Path]:
 
         for index, (sheet_name, sheet_path) in enumerate(sheets, start=1):
             rows = read_sheet_rows(archive, sheet_path, shared_strings)
-            file_path = output_dir / f'{index:02d}_{slugify_sheet_name(sheet_name)}.tsv'
-            contents = '\n'.join('\t'.join(escape_tsv(value) for value in row) for row in rows)
-            file_path.write_text(contents + ('\n' if contents else ''), encoding='utf-8')
+            file_path = output_dir / f'{index:02d}_{slugify_sheet_name(sheet_name)}.csv'
+            with file_path.open('w', encoding='utf-8', newline='') as handle:
+                writer = csv.writer(handle, lineterminator='\n')
+                for row in rows:
+                    writer.writerow([escape_csv_value(value) for value in row])
             written_files.append(file_path)
 
     return written_files

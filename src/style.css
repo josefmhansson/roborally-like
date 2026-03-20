@@ -775,8 +775,8 @@ input[type='number'] {
 .unit-status-popover {
   position: absolute;
   z-index: 6;
-  min-width: 190px;
-  max-width: 260px;
+  min-width: 210px;
+  max-width: 280px;
   transform: translate(-50%, calc(-100% - 10px));
   border-radius: 10px;
   border: 1px solid rgba(104, 236, 150, 0.55);
@@ -800,7 +800,7 @@ input[type='number'] {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .unit-status-row {
@@ -809,11 +809,62 @@ input[type='number'] {
   gap: 8px;
   align-items: center;
   font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(122, 197, 155, 0.12);
+  background: rgba(14, 27, 22, 0.72);
 }
 
 .unit-status-row.none {
   grid-template-columns: 1fr;
   color: #b5cfc0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.unit-status-row.buff {
+  border-color: rgba(104, 236, 150, 0.14);
+  background: rgba(16, 43, 28, 0.76);
+}
+
+.unit-status-row.debuff {
+  border-color: rgba(255, 120, 120, 0.16);
+  background: rgba(46, 20, 20, 0.76);
+}
+
+.unit-status-row.mixed {
+  border-color: rgba(255, 208, 122, 0.18);
+  background: rgba(53, 35, 16, 0.78);
+}
+
+.unit-status-icon-wrap {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.unit-status-icon {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+  filter:
+    drop-shadow(-0.75px 0 0 rgba(0, 0, 0, 0.82))
+    drop-shadow(0.75px 0 0 rgba(0, 0, 0, 0.82))
+    drop-shadow(0 -0.75px 0 rgba(0, 0, 0, 0.82))
+    drop-shadow(0 0.75px 0 rgba(0, 0, 0, 0.82))
+    drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.unit-status-icon-fallback {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  color: #f6faf8;
+  text-transform: uppercase;
 }
 
 .unit-status-kind {
@@ -836,6 +887,7 @@ input[type='number'] {
 }
 
 .unit-status-name {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -844,6 +896,7 @@ input[type='number'] {
 .unit-status-turns {
   color: #b8dec8;
   font-size: 10px;
+  text-align: right;
 }
 
 .player-status-title {
@@ -1968,8 +2021,8 @@ body.debug-cards .hidden-card {
   }
 
   .unit-status-popover {
-    min-width: 170px;
-    max-width: min(220px, calc(100% - 18px));
+    min-width: 180px;
+    max-width: min(240px, calc(100% - 18px));
     padding: 6px 8px;
     border-radius: 8px;
     transform: translate(-50%, calc(-100% - 8px));
@@ -1983,6 +2036,16 @@ body.debug-cards .hidden-card {
   .unit-status-row {
     font-size: 10px;
     gap: 6px;
+  }
+
+  .unit-status-icon-wrap {
+    width: 24px;
+    height: 24px;
+  }
+
+  .unit-status-icon {
+    width: 24px;
+    height: 24px;
   }
 
   #status {

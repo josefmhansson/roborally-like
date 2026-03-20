@@ -209,7 +209,7 @@ export const CARD_DEFS: Record<CardDefId, CardDef> = {
   reinforce_berserk: {
     id: 'reinforce_berserk',
     name: 'Berserk',
-    description: 'Give a unit Strong and Undying this turn. It dies at end of turn.',
+    description: 'Give a unit Strong and Undying this turn. It becomes Marked for Death.',
     type: 'reinforcement',
     classId: 'warleader',
     actionCost: 1,

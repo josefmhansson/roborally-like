@@ -829,6 +829,25 @@ if (!boardPanel || !hudEl) {
 canvas.style.cursor = 'grab'
 
 type ImageAsset = { img: HTMLImageElement; loaded: boolean }
+type UnitModifierVisualKind = 'buff' | 'debuff' | 'mixed'
+type UnitModifierVisual = {
+  label: string
+  kind: UnitModifierVisualKind
+  iconPath: string
+}
+type UnitModifierSummary = {
+  type: Unit['modifiers'][number]['type']
+  label: string
+  kind: UnitModifierVisualKind
+  turnsRemaining: number | 'indefinite'
+  count: number
+  iconUrl: string
+}
+type StrengthOrbMetrics = {
+  centerX: number
+  centerY: number
+  radius: number
+}
 
 let isInitialized = false
 
@@ -901,6 +920,49 @@ const monsterRoleImages: Record<RoguelikeEncounterUnitRole, ImageAsset[]> = {
   skeleton_warrior: [loadImage(resolveAssetUrl('assets/monsters/monster_skeleton_warrior.png'))],
   skeleton_mage: [loadImage(resolveAssetUrl('assets/monsters/monster_skeleton_mage.png'))],
 }
+const UNIT_MODIFIER_VISUALS: Record<Unit['modifiers'][number]['type'], UnitModifierVisual> = {
+  cannotMove: { label: 'Cannot Move', kind: 'debuff', iconPath: 'assets/status effects/status_snare.png' },
+  stunned: { label: 'Stunned', kind: 'debuff', iconPath: 'assets/status effects/status_stun.png' },
+  slow: { label: 'Slow', kind: 'debuff', iconPath: 'assets/status effects/status_slow.png' },
+  chilled: { label: 'Chilled', kind: 'debuff', iconPath: 'assets/status effects/status_cold.png' },
+  frozen: { label: 'Frozen', kind: 'debuff', iconPath: 'assets/status effects/status_frozen.png' },
+  spellResistance: {
+    label: 'Spell Resistance',
+    kind: 'buff',
+    iconPath: 'assets/status effects/status_spell_resistance.png',
+  },
+  reinforcementPenalty: {
+    label: 'Reinforcement Penalty',
+    kind: 'debuff',
+    iconPath: 'assets/status effects/status_reinforcement_penatly.png',
+  },
+  burn: { label: 'Burn', kind: 'debuff', iconPath: 'assets/status effects/status_burn.png' },
+  regeneration: { label: 'Regeneration', kind: 'buff', iconPath: 'assets/status effects/status_regeneration.png' },
+  disarmed: { label: 'Disarmed', kind: 'debuff', iconPath: 'assets/status effects/status_disarmed.png' },
+  vulnerable: { label: 'Vulnerable', kind: 'debuff', iconPath: 'assets/status effects/status_vulnerable.png' },
+  strong: { label: 'Strong', kind: 'buff', iconPath: 'assets/status effects/status_strong.png' },
+  undying: { label: 'Undying', kind: 'buff', iconPath: 'assets/status effects/status_undying.png' },
+  spikes: { label: 'Spikes', kind: 'buff', iconPath: 'assets/status effects/status_spikes.png' },
+  berserk: {
+    label: 'Marked for Death',
+    kind: 'mixed',
+    iconPath: 'assets/status effects/status_marked_for_death.png',
+  },
+  scalding: { label: 'Scalding', kind: 'buff', iconPath: 'assets/status effects/status_scaldning.png' },
+  lightningBarrier: {
+    label: 'Lightning Barrier',
+    kind: 'buff',
+    iconPath: 'assets/status effects/status_lightning_barrier.png',
+  },
+}
+const unitModifierIconUrls = {} as Record<Unit['modifiers'][number]['type'], string>
+const unitModifierIconAssets = {} as Record<Unit['modifiers'][number]['type'], ImageAsset>
+;(Object.entries(UNIT_MODIFIER_VISUALS) as [Unit['modifiers'][number]['type'], UnitModifierVisual][])
+  .forEach(([modifierType, visual]) => {
+    const url = resolveAssetUrl(visual.iconPath)
+    unitModifierIconUrls[modifierType] = url
+    unitModifierIconAssets[modifierType] = loadImage(url)
+  })
 const roguelikeMonsterVariantByUnitId = new Map<string, number>()
 const barricadeTeamCache = new Map<PlayerId, HTMLCanvasElement>()
 const spawnTeamCache = new Map<PlayerId, HTMLCanvasElement>()
@@ -3876,127 +3938,180 @@ function getDamageFlashAlpha(progress: number): number {
   return fromAlpha + (toAlpha - fromAlpha) * eased
 }
 
+function getStrengthOrbMetrics(center: { x: number; y: number }): StrengthOrbMetrics {
+  const dotRadius = Math.max(2, layout.size * 0.07)
+  return {
+    centerX: center.x + layout.size * 0.48,
+    centerY: center.y,
+    radius: Math.max(dotRadius * 1.95, layout.size * 0.17),
+  }
+}
+
+function getUnitModifierAccent(kind: UnitModifierVisualKind): { stroke: string; badge: string } {
+  if (kind === 'buff') {
+    return {
+      stroke: 'rgba(104, 236, 150, 0.62)',
+      badge: 'rgba(50, 112, 71, 0.96)',
+    }
+  }
+  if (kind === 'mixed') {
+    return {
+      stroke: 'rgba(255, 196, 108, 0.68)',
+      badge: 'rgba(132, 82, 24, 0.96)',
+    }
+  }
+  return {
+    stroke: 'rgba(255, 112, 112, 0.64)',
+    badge: 'rgba(128, 38, 38, 0.96)',
+  }
+}
+
+function drawUnitModifierFallback(
+  center: { x: number; y: number },
+  radius: number,
+  modifierType: Unit['modifiers'][number]['type']
+): void {
+  const label = getUnitModifierShortLabel(modifierType)
+  const fontSize = Math.max(8, radius * (label.length > 1 ? 0.7 : 0.95))
+  ctx.save()
+  ctx.font = `800 ${fontSize}px "Trebuchet MS", "Verdana", sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#f7f8fb'
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)'
+  ctx.lineWidth = Math.max(1.5, fontSize * 0.15)
+  ctx.strokeText(label, center.x, center.y + radius * 0.02)
+  ctx.fillText(label, center.x, center.y + radius * 0.02)
+  ctx.restore()
+}
+
+function drawUnitModifierCountBadge(
+  center: { x: number; y: number },
+  radius: number,
+  count: number,
+  kind: UnitModifierVisualKind
+): void {
+  if (count <= 1) return
+  const badgeRadius = Math.max(6, radius * 0.4)
+  const badgeX = center.x + radius * 0.62
+  const badgeY = center.y + radius * 0.6
+  const accent = getUnitModifierAccent(kind)
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(badgeX, badgeY, badgeRadius, 0, Math.PI * 2)
+  ctx.fillStyle = accent.badge
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'
+  ctx.lineWidth = Math.max(1, badgeRadius * 0.18)
+  ctx.stroke()
+  const label = String(count)
+  const fontSize = Math.max(7, badgeRadius * (label.length >= 2 ? 0.95 : 1.15))
+  ctx.font = `800 ${fontSize}px "Trebuchet MS", "Verdana", sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#fffaf2'
+  ctx.fillText(label, badgeX, badgeY + badgeRadius * 0.02)
+  ctx.restore()
+}
+
+function drawOutlinedModifierAsset(asset: ImageAsset, center: { x: number; y: number }, size: number): void {
+  const offset = Math.max(1, size * 0.035)
+  const offsets = [
+    { x: -offset, y: 0 },
+    { x: offset, y: 0 },
+    { x: 0, y: -offset },
+    { x: 0, y: offset },
+  ]
+
+  ctx.save()
+  ctx.filter = 'brightness(0)'
+  ctx.globalAlpha = 0.9
+  offsets.forEach(({ x, y }) => {
+    ctx.drawImage(asset.img, center.x - size / 2 + x, center.y - size / 2 + y, size, size)
+  })
+  ctx.restore()
+
+  ctx.drawImage(asset.img, center.x - size / 2, center.y - size / 2, size, size)
+}
+
+function drawUnitModifierColumn(modifiers: Unit['modifiers'], orb: StrengthOrbMetrics): void {
+  const summaries = summarizeUnitModifiers(modifiers)
+  if (summaries.length === 0) return
+
+  const drawSize = orb.radius * 2.18
+  const gap = orb.radius * 0.28
+  const stepY = (drawSize + gap) * 0.65
+
+  summaries.forEach((summary, index) => {
+    const center = {
+      x: orb.centerX,
+      y: orb.centerY - stepY * (index + 1),
+    }
+    const asset = unitModifierIconAssets[summary.type]
+
+    ctx.save()
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.42)'
+    ctx.shadowBlur = Math.max(4, orb.radius * 0.5)
+    if (asset?.loaded) {
+      drawOutlinedModifierAsset(asset, center, drawSize)
+    } else {
+      drawUnitModifierFallback(center, orb.radius, summary.type)
+    }
+    ctx.restore()
+
+    drawUnitModifierCountBadge(center, drawSize * 0.5, summary.count, summary.kind)
+  })
+}
+
 function drawStrengthDots(
   center: { x: number; y: number },
   baseStrength: number,
   previewStrength: number | null,
   baseColor: string
-): void {
+): StrengthOrbMetrics | null {
   const strength = previewStrength !== null ? Math.max(0, previewStrength) : baseStrength
-  if (strength <= 0) return
-  const dotRadius = Math.max(2, layout.size * 0.07)
-  const orbHeight = dotRadius * 2
-  const gap = dotRadius * 0.9
-  const baseX = center.x + layout.size * 0.48
-  const baseY = center.y
+  if (strength <= 0) return null
 
-  if (strength >= 5) {
-    const orbColor =
-      previewStrength === null || previewStrength === baseStrength
-        ? baseColor
-        : previewStrength < baseStrength
-          ? '#ff4a4a'
-          : '#7CFF8A'
-    const orbRadius = Math.max(dotRadius * 1.95, layout.size * 0.17)
-    const gradient = ctx.createRadialGradient(
-      baseX - orbRadius * 0.38,
-      baseY - orbRadius * 0.38,
-      orbRadius * 0.24,
-      baseX,
-      baseY,
-      orbRadius
-    )
-    gradient.addColorStop(0, '#ffffff')
-    gradient.addColorStop(0.32, orbColor)
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.62)')
-
-    ctx.save()
-    ctx.beginPath()
-    ctx.arc(baseX, baseY, orbRadius, 0, Math.PI * 2)
-    ctx.fillStyle = gradient
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)'
-    ctx.lineWidth = 1
-    ctx.stroke()
-
-    const label = String(strength)
-    const fontSize = Math.max(10, orbRadius * (label.length >= 3 ? 0.9 : 1.18))
-    ctx.font = `700 ${fontSize}px "Trebuchet MS", "Verdana", sans-serif`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.lineWidth = Math.max(2, fontSize * 0.13)
-    ctx.strokeStyle = 'rgba(12, 12, 18, 0.78)'
-    ctx.fillStyle = '#fffaf2'
-    ctx.strokeText(label, baseX, baseY + orbRadius * 0.03)
-    ctx.fillText(label, baseX, baseY + orbRadius * 0.03)
-    ctx.restore()
-    return
-  }
-
-  type StrengthIcon = { start: number; end: number }
-  const icons: StrengthIcon[] = []
-  for (let i = 0; i < strength; i += 1) {
-    const start = i + 1
-    icons.push({ start, end: start })
-  }
-
-  const centerYs: number[] = []
-  for (let i = 0; i < icons.length; i += 1) {
-    if (i === 0) {
-      centerYs.push(baseY)
-      continue
-    }
-    const nextY = centerYs[i - 1] - (orbHeight + gap) * BOARD_TILT
-    centerYs.push(nextY)
-  }
-
-  const getRemovedFraction = (icon: StrengthIcon): number => {
-    if (previewStrength === null) return 0
-    if (previewStrength >= icon.end) return 0
-    const iconHp = icon.end - icon.start + 1
-    const removed = icon.end - Math.max(previewStrength, icon.start - 1)
-    return Math.max(0, Math.min(1, removed / iconHp))
-  }
-
-  const getAddedFraction = (icon: StrengthIcon): number => {
-    if (previewStrength === null) return 0
-    if (previewStrength <= baseStrength) return 0
-    const iconHp = icon.end - icon.start + 1
-    const addedTop = Math.min(icon.end, previewStrength)
-    const addedBottomExclusive = Math.max(icon.start - 1, baseStrength)
-    const added = addedTop - addedBottomExclusive
-    return Math.max(0, Math.min(1, added / iconHp))
-  }
+  const orb = getStrengthOrbMetrics(center)
+  const orbColor =
+    previewStrength === null || previewStrength === baseStrength
+      ? baseColor
+      : previewStrength < baseStrength
+        ? '#ff4a4a'
+        : '#7CFF8A'
+  const gradient = ctx.createRadialGradient(
+    orb.centerX - orb.radius * 0.38,
+    orb.centerY - orb.radius * 0.38,
+    orb.radius * 0.24,
+    orb.centerX,
+    orb.centerY,
+    orb.radius
+  )
+  gradient.addColorStop(0, '#ffffff')
+  gradient.addColorStop(0.32, orbColor)
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0.62)')
 
   ctx.save()
-  for (let i = 0; i < icons.length; i += 1) {
-    const icon = icons[i]
-    const y = centerYs[i]
-    const damageFraction = getRemovedFraction(icon)
-    const healFraction = getAddedFraction(icon)
-    const overlayFraction = damageFraction > 0 ? damageFraction : healFraction
-    const overlayColor = damageFraction > 0 ? '#ff2b2b' : '#7CFF8A'
-    const orbColor = overlayFraction >= 1 ? overlayColor : baseColor
-    const gradient = ctx.createRadialGradient(
-      baseX - dotRadius * 0.35,
-      y - dotRadius * 0.35,
-      dotRadius * 0.2,
-      baseX,
-      y,
-      dotRadius
-    )
-    gradient.addColorStop(0, '#ffffff')
-    gradient.addColorStop(0.3, orbColor)
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
-    ctx.beginPath()
-    ctx.arc(baseX, y, dotRadius, 0, Math.PI * 2)
-    ctx.fillStyle = gradient
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
-    ctx.lineWidth = 0.8
-    ctx.stroke()
-  }
+  ctx.beginPath()
+  ctx.arc(orb.centerX, orb.centerY, orb.radius, 0, Math.PI * 2)
+  ctx.fillStyle = gradient
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)'
+  ctx.lineWidth = 1
+  ctx.stroke()
+
+  const label = String(strength)
+  const fontSize = Math.max(10, orb.radius * (label.length >= 3 ? 0.9 : 1.18))
+  ctx.font = `700 ${fontSize}px "Trebuchet MS", "Verdana", sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.lineWidth = Math.max(2, fontSize * 0.13)
+  ctx.strokeStyle = 'rgba(12, 12, 18, 0.78)'
+  ctx.fillStyle = '#fffaf2'
+  ctx.strokeText(label, orb.centerX, orb.centerY + orb.radius * 0.03)
+  ctx.fillText(label, orb.centerX, orb.centerY + orb.radius * 0.03)
   ctx.restore()
+  return orb
 }
 
 function drawStrengthChangeAnimation(animation: StrengthChangeAnimation, progress: number): void {
@@ -4045,64 +4160,31 @@ function getUnitAtStateHex(hex: Hex): Unit | null {
   return null
 }
 
-function describeUnitModifier(modifier: Unit['modifiers'][number]): { label: string; kind: 'buff' | 'debuff' } {
-  if (modifier.type === 'cannotMove') {
-    return { label: 'Cannot move', kind: 'debuff' }
-  }
-  if (modifier.type === 'stunned') {
-    return { label: 'Stunned', kind: 'debuff' }
-  }
-  if (modifier.type === 'slow') {
-    return { label: 'Slow', kind: 'debuff' }
-  }
-  if (modifier.type === 'chilled') {
-    return { label: 'Chilled', kind: 'debuff' }
-  }
-  if (modifier.type === 'frozen') {
-    return { label: 'Frozen', kind: 'debuff' }
-  }
-  if (modifier.type === 'spellResistance') {
-    return { label: 'Spell resistance', kind: 'buff' }
-  }
-  if (modifier.type === 'reinforcementPenalty') {
-    return { label: 'Reinforcement penalty', kind: 'debuff' }
-  }
-  if (modifier.type === 'burn') {
-    return { label: 'Burn', kind: 'debuff' }
-  }
-  if (modifier.type === 'scalding') {
-    return { label: 'Scalding', kind: 'buff' }
-  }
-  if (modifier.type === 'regeneration') {
-    return { label: 'Regeneration', kind: 'buff' }
-  }
-  if (modifier.type === 'disarmed') {
-    return { label: 'Disarmed', kind: 'debuff' }
-  }
-  if (modifier.type === 'vulnerable') {
-    return { label: 'Vulnerable', kind: 'debuff' }
-  }
-  if (modifier.type === 'strong') {
-    return { label: 'Strong', kind: 'buff' }
-  }
-  if (modifier.type === 'undying') {
-    return { label: 'Undying', kind: 'buff' }
-  }
-  if (modifier.type === 'spikes') {
-    return { label: 'Spikes', kind: 'buff' }
-  }
-  if (modifier.type === 'berserk') {
-    return { label: 'Berserk', kind: 'buff' }
-  }
-  if (modifier.type === 'lightningBarrier') {
-    return { label: 'Lightning barrier', kind: 'buff' }
-  }
-  return { label: modifier.type, kind: 'debuff' }
+function humanizeModifierType(modifierType: string): string {
+  return modifierType
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/^./, (letter) => letter.toUpperCase())
 }
 
-function summarizeUnitModifiers(
-  modifiers: Unit['modifiers']
-): { label: string; kind: 'buff' | 'debuff'; turnsRemaining: number | 'indefinite'; count: number }[] {
+function getUnitModifierVisual(modifierType: Unit['modifiers'][number]['type']): UnitModifierVisual {
+  return UNIT_MODIFIER_VISUALS[modifierType] ?? { label: humanizeModifierType(modifierType), kind: 'debuff', iconPath: '' }
+}
+
+function getUnitModifierLabelForDisplay(modifierType: string): string {
+  if (modifierType in UNIT_MODIFIER_VISUALS) {
+    return getUnitModifierVisual(modifierType as Unit['modifiers'][number]['type']).label
+  }
+  return humanizeModifierType(modifierType)
+}
+
+function getUnitModifierShortLabel(modifierType: Unit['modifiers'][number]['type']): string {
+  const words = getUnitModifierVisual(modifierType).label.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return '?'
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
+  return `${words[0][0] ?? ''}${words[1][0] ?? ''}`.toUpperCase()
+}
+
+function summarizeUnitModifiers(modifiers: Unit['modifiers']): UnitModifierSummary[] {
   const grouped = new Map<
     Unit['modifiers'][number]['type'],
     { modifier: Unit['modifiers'][number]; count: number; maxTurns: number }
@@ -4128,14 +4210,22 @@ function summarizeUnitModifiers(
   })
 
   return Array.from(grouped.values()).map(({ modifier, count, maxTurns }) => {
-    const details = describeUnitModifier(modifier)
+    const details = getUnitModifierVisual(modifier.type)
     return {
+      type: modifier.type,
       label: details.label,
       kind: details.kind,
       turnsRemaining: modifier.turnsRemaining === 'indefinite' ? 'indefinite' : maxTurns,
       count,
+      iconUrl: unitModifierIconUrls[modifier.type],
     }
   })
+}
+
+function renderUnitModifierIconMarkup(summary: Pick<UnitModifierSummary, 'type' | 'iconUrl'>): string {
+  return summary.iconUrl
+    ? `<span class="unit-status-icon-wrap"><img class="unit-status-icon" src="${summary.iconUrl}" alt="" aria-hidden="true"></span>`
+    : `<span class="unit-status-icon-wrap"><span class="unit-status-icon-fallback">${getUnitModifierShortLabel(summary.type)}</span></span>`
 }
 
 function getUnitPopoverLabel(unit: Unit): string {
@@ -4202,7 +4292,13 @@ function renderUnitStatusPopover(): void {
                 ? 'indefinite'
                 : `${summary.turnsRemaining} turn${summary.turnsRemaining === 1 ? '' : 's'}`
             const stackSuffix = summary.count > 1 ? ` x${summary.count}` : ''
-            return `<li class="unit-status-row ${summary.kind}"><span class="unit-status-kind">${summary.kind}</span><span class="unit-status-name">${summary.label}${stackSuffix}</span><span class="unit-status-turns">${turns}</span></li>`
+            return [
+              `<li class="unit-status-row ${summary.kind}">`,
+              renderUnitModifierIconMarkup(summary),
+              `<span class="unit-status-name">${summary.label}${stackSuffix}</span>`,
+              `<span class="unit-status-turns">${turns}</span>`,
+              `</li>`,
+            ].join('')
           })
           .join('')
       : '<li class="unit-status-row none"><span class="unit-status-name">No active effects.</span></li>'
@@ -6829,7 +6925,10 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     ctx.restore()
   }
 
-  drawStrengthDots(center, unit.strength, previewStrength, color)
+  const strengthOrb = drawStrengthDots(center, unit.strength, previewStrength, color)
+  if (strengthOrb) {
+    drawUnitModifierColumn(unit.modifiers, strengthOrb)
+  }
   ctx.restore()
 }
 
@@ -8812,9 +8911,21 @@ function runPendingCardTransfer(): void {
   })
 }
 
+function formatLogEntryForDisplay(entry: string): string {
+  const affectedMatch = entry.match(/^(Unit .+ is affected: )([a-zA-Z]+)( .+)$/)
+  if (affectedMatch) {
+    return `${affectedMatch[1]}${getUnitModifierLabelForDisplay(affectedMatch[2])}${affectedMatch[3]}`
+  }
+  const ignoredMatch = entry.match(/^(Unit .+ ignores )([a-zA-Z]+)( because of Undying\.)$/)
+  if (ignoredMatch) {
+    return `${ignoredMatch[1]}${getUnitModifierLabelForDisplay(ignoredMatch[2])}${ignoredMatch[3]}`
+  }
+  return entry
+}
+
 function renderLog(): void {
   const recent = state.log.slice(-8).reverse()
-  logEl.innerHTML = recent.map((entry) => `<div class="log-item">${entry}</div>`).join('')
+  logEl.innerHTML = recent.map((entry) => `<div class="log-item">${formatLogEntryForDisplay(entry)}</div>`).join('')
 }
 
 function renderLoadout(): void {

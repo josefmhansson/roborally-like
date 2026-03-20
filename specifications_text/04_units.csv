@@ -1,0 +1,22 @@
+Name,Encounter/Class,Default Health,Asset(s),Traits
+Soldier,Commander,2,assets/units/unit_soldier_base.png\nassets/units/unit_soldier_team.png,Base class unit. Gets Strong while adjacent to the Commander leader.
+Commander,Commander,5,assets/units/unit_commander_base.png\nassets/units/unit_commander_team.png,Leader. Slow by default. Spell Resistance. Reinforcement gains halved. Adjacent friendly units gain Strong.
+Warrior,Warleader,2,assets/units/unit_warrior_base.png\nassets/units/unit_warrior_team.png,Base class unit.
+Warleader,Warleader,5,assets/units/unit_warleader_base.png\nassets/units/unit_warleader_team.png,Leader. No default Slow. Spell Resistance. Reinforcement gains halved.
+Mage,Archmage,2,assets/units/unit_mage_base.png\nassets/units/unit_mage_team.png,Base class unit.
+Archmage,Archmage,5,assets/units/unit_archmage_base.png\nassets/units/unit_archmage_team.png,Leader. Slow by default. Spell Resistance. Reinforcement gains halved. Grants +1 AP next turn if it held position.
+Barricade,Commander,1,assets/units/unit_barricade_base.png\nassets/units/unit_barricade_team.png,Summoned structure created by the Barricade card.
+Grandslime,Slimes,5 + floor(n/2),assets/monsters/monster_grandslime.png,Splits into 2 Slimes on death.
+Slime,Slimes,3 + floor(n/4),assets/monsters/monster_slime.png,Splits into 2 Slimelings on death.
+Slimeling,Slimes,1 + floor(n/8),assets/monsters/monster_slimeling.png,Small slime spawned by larger slimes.
+Troll,Trolls,10 + floor(n/2),assets/monsters/monster_troll.png,Large brute used by the Trolls encounter.
+Alpha Wolf,Wolf Pack,4 + floor(n/3),assets/monsters/monster_alpha_wolf.png,Only unit that can use Pack Hunt.
+Wolf,Wolf Pack,2 + floor(n/6),assets/monsters/monster_wolf_2.png,Pack unit that supports Alpha Wolf.
+Ice Spirit,Ice Spirits,2 + floor(n/3),assets/monsters/monster_ice_elemental.png,Encounter pressures player units with Chilled and Slow synergies.
+Fire Spirit,Fire Spirits,2 + floor(n/3),assets/monsters/monster_fire_elemental.png,Has Scalding: attack damage also applies Burn.
+Lightning Spirit,Lightning Spirits,2 + floor(n/3),assets/monsters/monster_lightning_elemental.png,Has Lightning Barrier.
+Bandit,Bandits,3 + floor(n/5),assets/monsters/monster_bandit_1.png\nassets/monsters/monster_bandit_2.png\nassets/monsters/monster_bandit_3.png,Humanoid encounter unit with three art variants.
+Necromancer,Necromancer,4 + floor(n/4),assets/monsters/monster_necromancer.png,Slow. Spell Resistance. Reinforcement gains halved. Raises skeletons from fallen player units.
+Skeleton Soldier,Necromancer,2,assets/monsters/monster_skeleton_soldier.png,Minion skeleton raised by Necromancer.
+Skeleton Warrior,Necromancer,2,assets/monsters/monster_skeleton_warrior.png,Minion skeleton raised by Necromancer.
+Skeleton Mage,Necromancer,2,assets/monsters/monster_skeleton_mage.png,Minion skeleton raised by Necromancer.

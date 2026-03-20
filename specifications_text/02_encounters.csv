@@ -1,0 +1,9 @@
+Name,Units,AP budget,Deck
+Slimes,1x Grandslime (5 + floor(n/2)); floor(n/4)x Slime (3 + floor(n/4)); floor(n/3)x Slimeling (1 + floor(n/8)),3 + floor(n/5),"4x Step, 2x Coordinated Attack, 4x Attack, 2x Tandem Movement"
+Trolls,2 + floor(n/5)x Troll (10 + floor(n/2)),3 + floor(n/5),"3x Step, 4x Slow Attack, 3x Stomp"
+Wolf Pack,1x Alpha Wolf (4 + floor(n/3)); 4x Wolf (2 + floor(n/6)),3 + floor(n/5),"4x Advance, 4x Attack, 2x Pack Hunt, 2x Mark"
+Ice Spirits,3x Ice Spirit (2 + floor(n/3)),3 + floor(n/5),"4x Ice Bolt, 1x Blizzard, 4x Advance, 1x Split"
+Fire Spirits,3x Fire Spirit (2 + floor(n/3)),3 + floor(n/5),"2x Fireball, 2x Flame Thrower, 1x Meteor, 2x Advance, 2x Strafe, 1x Split"
+Lightning Spirits,3x Lightning Spirit (2 + floor(n/3)),3 + floor(n/5),"4x Chain Lightning, 1x Thunderstorm, 4x Advance, 1x Split"
+Bandits,5x Bandit (3 + floor(n/5)),3 + floor(n/5),"3x Advance, 3x Strafe, 2x Pivot, 2x Double Steps, 2x Cleave, 2x Arrow, 1x Charge, 1x Whirlwind, 1x Blade Dance, 1x Execute, 2x Boost, 1x Snare, 2x Jab, 1x Shove"
+Necromancer,1x Necromancer (4 + floor(n/4)); 2 + floor(n/4)x Skeleton Soldier/Warrior/Mage (2),3 + floor(n/5),"2x Raise, 2x Ice Bolt, 1x Coordinated Attack, 2x Attack, 1x Tandem Movement, 3x Strafe, 2x Advance, 1x Brain Freeze"

@@ -1,0 +1,18 @@
+Name,Buff/debuff,Description,Notes
+Burn,Debuff,Deals 1 damage to the unit at end of turn.,Multiple applications currently collapse back to one remaining Burn entry after ticking.
+Cannot Move,Debuff,Unit cannot move while the effect lasts.,"Used by Trip, Snare, and bear traps."
+Stunned,Debuff,Unit cannot act while the effect lasts.,"Applied by Bash, Petrify, and Stomp."
+Slow,Debuff,Unit movement is limited to 1 tile total per turn.,Also used as a card keyword on some roguelike attacks.
+Chilled,Debuff,Counts as a movement-slowing debuff.,If a unit is both Chilled and Slowed it also becomes Frozen.
+Frozen,Debuff,Unit cannot move or act.,Derived from Chilled + Slow.
+Spell Resistance,Buff,"Spell damage to this unit is halved, rounded down.",Base leader modifier and also used by Necromancer.
+Reinforcement Penalty,Debuff,"Strength gains from reinforcement effects are halved, rounded down.",Base leader modifier and also used by Necromancer.
+Regeneration,Buff,Heals 1 strength at end of turn per stack.,Present in engine support and tests.
+Disarmed,Debuff,Reduces damage dealt by 1 per stack.,Applied by Disarm.
+Vulnerable,Debuff,Increases damage taken by 1 per stack.,Applied by Bleed and Rage; stacks.
+Strong,Buff,Increases damage dealt by 1 per stack.,Stacks; Commander aura also grants an indefinite Strong source.
+Undying,Buff,Prevents damage and ignores incoming debuffs while active.,Used by Shrug Off and Berserk.
+Spikes,Buff,Reflects 1 damage to the attacker when this unit takes damage.,Used by Spikes.
+Marked for Death,Mixed,Unit is destroyed at the end of the turn.,Renamed from Berserk. Paired with Strong and Undying for the same turn on the Berserk card.
+Scalding,Buff,Attack damage from this unit also applies Burn.,Encounter-only modifier used by Fire Spirits.
+Lightning Barrier,Buff,Deals 1 damage to each adjacent enemy at end of turn.,Encounter-only on Lightning Spirits and granted by the Lightning Barrier card.

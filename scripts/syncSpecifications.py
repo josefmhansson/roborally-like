@@ -309,7 +309,7 @@ STATUS_ROWS = [
     ('Strong', 'Buff', 'Increases damage dealt by 1 per stack.', 'Stacks; Commander aura also grants an indefinite Strong source.'),
     ('Undying', 'Buff', 'Prevents damage and ignores incoming debuffs while active.', 'Used by Shrug Off and Berserk.'),
     ('Spikes', 'Buff', 'Reflects 1 damage to the attacker when this unit takes damage.', 'Used by Spikes.'),
-    ('Berserk', 'Mixed', 'Unit is destroyed at the end of the turn.', 'Usually paired with Strong and Undying for the same turn.'),
+    ('Marked for Death', 'Mixed', 'Unit is destroyed at the end of the turn.', 'Renamed from Berserk. Paired with Strong and Undying for the same turn on the Berserk card.'),
     ('Scalding', 'Buff', 'Attack damage from this unit also applies Burn.', 'Encounter-only modifier used by Fire Spirits.'),
     ('Lightning Barrier', 'Buff', 'Deals 1 damage to each adjacent enemy at end of turn.', 'Encounter-only on Lightning Spirits and granted by the Lightning Barrier card.'),
 ]
