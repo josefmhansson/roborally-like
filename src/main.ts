@@ -4161,35 +4161,6 @@ function getStrengthChangeEntryProgress(
   return clamp((progress - delay) / Math.max(0.0001, 1 - delay), 0, 1)
 }
 
-function getPendingStrengthChangeAnimation(): StrengthChangeAnimation | null {
-  if (currentAnimation?.type === 'strengthChange') return currentAnimation
-  const queued = animationQueue.find(
-    (animation): animation is StrengthChangeAnimation => animation.type === 'strengthChange'
-  )
-  return queued ?? null
-}
-
-function getDisplayedUnitStrength(unit: Unit): number {
-  const strengthChangeAnimation = getPendingStrengthChangeAnimation()
-  if (!strengthChangeAnimation) return unit.strength
-
-  const progress = currentAnimation?.type === 'strengthChange' ? animationProgress : 0
-  let displayAdjustment = 0
-  strengthChangeAnimation.entries.forEach((entry) => {
-    if (entry.unitId !== unit.id) return
-    const shown = getStrengthChangeEntryProgress(entry, progress) > 0
-    const applied = entry.logIndex <= animationAppliedLogIndex
-    if (applied && !shown) {
-      displayAdjustment -= entry.amount
-      return
-    }
-    if (!applied && shown) {
-      displayAdjustment += entry.amount
-    }
-  })
-  return Math.max(0, unit.strength + displayAdjustment)
-}
-
 function drawStrengthChangeAnimation(animation: StrengthChangeAnimation, progress: number): void {
   ctx.save()
   ctx.textAlign = 'center'
@@ -7000,8 +6971,7 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     ctx.restore()
   }
 
-  const displayedStrength = getDisplayedUnitStrength(unit)
-  const strengthOrb = drawStrengthDots(center, displayedStrength, previewStrength, color)
+  const strengthOrb = drawStrengthDots(center, unit.strength, previewStrength, color)
   if (strengthOrb) {
     drawUnitModifierColumn(unit.modifiers, strengthOrb)
   }
@@ -10570,12 +10540,9 @@ function buildTurnEndReplayAnimations(
   }
 
   const strengthChangeEntries = collectStrengthChangeAnimationEntries(before, state.units, turnEndLogs, turnEndPositions)
-  if (strengthChangeEntries.length > 0) {
-    animations.push({
-      type: 'strengthChange',
-      entries: strengthChangeEntries,
-      duration: STRENGTH_CHANGE_DURATION_MS,
-    })
+  const strengthChangeAnimation = buildStrengthChangeAnimation(strengthChangeEntries)
+  if (strengthChangeAnimation) {
+    animations.push(strengthChangeAnimation)
   }
 
   animations.push({
@@ -10768,6 +10735,81 @@ function collectStrengthChangeAnimationEntries(
     ...entry,
     delay: rawDelay * delayScale,
   }))
+}
+
+function buildStrengthChangeAnimationEntries(entries: StrengthChangeAnimation['entries']): StrengthChangeAnimation['entries'] {
+  if (entries.length === 0) return []
+  const orderedEntries = [...entries].sort((a, b) => a.logIndex - b.logIndex || a.unitId.localeCompare(b.unitId))
+  const groupOrderByLogIndex = new Map<number, number>()
+  const simultaneousCountsByLogIndex = new Map<number, number>()
+  const stackCounts = new Map<string, number>()
+  const rawEntries = orderedEntries.map((entry) => {
+    const stackIndex = stackCounts.get(entry.unitId) ?? 0
+    stackCounts.set(entry.unitId, stackIndex + 1)
+    const groupOrder = groupOrderByLogIndex.get(entry.logIndex) ?? groupOrderByLogIndex.size
+    if (!groupOrderByLogIndex.has(entry.logIndex)) {
+      groupOrderByLogIndex.set(entry.logIndex, groupOrder)
+    }
+    const simultaneousIndex = simultaneousCountsByLogIndex.get(entry.logIndex) ?? 0
+    simultaneousCountsByLogIndex.set(entry.logIndex, simultaneousIndex + 1)
+    return {
+      ...entry,
+      stackIndex,
+      rawDelay: groupOrder * STRENGTH_CHANGE_GROUP_DELAY + simultaneousIndex * STRENGTH_CHANGE_SIMULTANEOUS_DELAY,
+    }
+  })
+  const maxRawDelay = rawEntries.reduce((maxDelay, entry) => Math.max(maxDelay, entry.rawDelay), 0)
+  const delayScale = maxRawDelay > STRENGTH_CHANGE_MAX_DELAY ? STRENGTH_CHANGE_MAX_DELAY / maxRawDelay : 1
+  return rawEntries.map(({ rawDelay, ...entry }) => ({
+    ...entry,
+    delay: rawDelay * delayScale,
+  }))
+}
+
+function buildStrengthChangeAnimation(entries: StrengthChangeAnimation['entries']): StrengthChangeAnimation | null {
+  const timedEntries = buildStrengthChangeAnimationEntries(entries)
+  if (timedEntries.length === 0) return null
+  return {
+    type: 'strengthChange',
+    entries: timedEntries,
+    duration: STRENGTH_CHANGE_DURATION_MS,
+  }
+}
+
+function interleaveStrengthChangeAnimations(
+  animations: BoardAnimation[],
+  entries: StrengthChangeAnimation['entries']
+): BoardAnimation[] {
+  if (entries.length === 0) return animations
+  const orderedEntries = [...entries].sort((a, b) => a.logIndex - b.logIndex || a.unitId.localeCompare(b.unitId))
+  const result: BoardAnimation[] = []
+  let consumedEntryCount = 0
+
+  animations.forEach((animation) => {
+    if (animation.type === 'stateSync') {
+      const stageEntries: StrengthChangeAnimation['entries'] = []
+      while (
+        consumedEntryCount < orderedEntries.length &&
+        orderedEntries[consumedEntryCount].logIndex <= animation.upToLogIndex
+      ) {
+        stageEntries.push(orderedEntries[consumedEntryCount])
+        consumedEntryCount += 1
+      }
+      const strengthChangeAnimation = buildStrengthChangeAnimation(stageEntries)
+      if (strengthChangeAnimation) {
+        result.push(strengthChangeAnimation)
+      }
+    }
+    result.push(animation)
+  })
+
+  const trailingEntries = orderedEntries.slice(consumedEntryCount)
+  const trailingAnimation = buildStrengthChangeAnimation(trailingEntries)
+  if (trailingAnimation) {
+    result.push(trailingAnimation)
+  }
+
+  return result
 }
 
 function parseShoveCollisions(logEntries: string[]): { index: number; targetUnitId: string }[] {
@@ -11886,21 +11928,7 @@ function buildAnimations(
   }
 
   const strengthChangeEntries = collectStrengthChangeAnimationEntries(before, state.units, logEntries, loggedPositions, animatedPositions)
-  if (strengthChangeEntries.length > 0) {
-    const strengthChangeAnimation: BoardAnimation = {
-      type: 'strengthChange',
-      entries: strengthChangeEntries,
-      duration: STRENGTH_CHANGE_DURATION_MS,
-    }
-    const firstDeathIndex = animations.findIndex((animation) => animation.type === 'death')
-    if (firstDeathIndex === -1) {
-      animations.push(strengthChangeAnimation)
-    } else {
-      animations.splice(firstDeathIndex, 0, strengthChangeAnimation)
-    }
-  }
-
-  return animations
+  return interleaveStrengthChangeAnimations(animations, strengthChangeEntries)
 }
 
 function tickAnimation(time: number): void {
