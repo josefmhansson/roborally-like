@@ -641,7 +641,7 @@ type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type DamageFlashAnimation = { type: 'damageFlash'; unitIds: string[]; duration: number }
 type StrengthChangeAnimation = {
   type: 'strengthChange'
-  entries: Array<{ unitId: string; anchor: Hex; amount: number; stackIndex: number }>
+  entries: Array<{ unitId: string; anchor: Hex; amount: number; stackIndex: number; delay: number }>
   duration: number
 }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
@@ -738,6 +738,9 @@ const DAMAGE_FLASH_DURATION_MS = 500
 const DAMAGE_FLASH_FLICKER_COUNT = 3
 const DAMAGE_FLASH_MIN_ALPHA = 0.12
 const STRENGTH_CHANGE_DURATION_MS = 760
+const STRENGTH_CHANGE_GROUP_DELAY = 0.18
+const STRENGTH_CHANGE_SIMULTANEOUS_DELAY = 0.07
+const STRENGTH_CHANGE_MAX_DELAY = 0.56
 const LIGHTNING_DURATION_MS = 240
 const BURN_DURATION_MS = 420
 const EXECUTE_DURATION_MS = 360
@@ -4114,14 +4117,43 @@ function drawStrengthDots(
   return orb
 }
 
+function getStrengthChangeEntryProgress(
+  entry: StrengthChangeAnimation['entries'][number],
+  progress: number
+): number {
+  const delay = entry.delay
+  return clamp((progress - delay) / Math.max(0.0001, 1 - delay), 0, 1)
+}
+
+function getPendingStrengthChangeAnimation(): StrengthChangeAnimation | null {
+  if (currentAnimation?.type === 'strengthChange') return currentAnimation
+  const queued = animationQueue.find(
+    (animation): animation is StrengthChangeAnimation => animation.type === 'strengthChange'
+  )
+  return queued ?? null
+}
+
+function getDisplayedUnitStrength(unit: Unit): number {
+  const strengthChangeAnimation = getPendingStrengthChangeAnimation()
+  if (!strengthChangeAnimation) return unit.strength
+
+  const progress = currentAnimation?.type === 'strengthChange' ? animationProgress : 0
+  let pendingDelta = 0
+  strengthChangeAnimation.entries.forEach((entry) => {
+    if (entry.unitId !== unit.id) return
+    if (getStrengthChangeEntryProgress(entry, progress) > 0) return
+    pendingDelta += entry.amount
+  })
+  return Math.max(0, unit.strength - pendingDelta)
+}
+
 function drawStrengthChangeAnimation(animation: StrengthChangeAnimation, progress: number): void {
   ctx.save()
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
 
   animation.entries.forEach((entry) => {
-    const delay = Math.min(0.3, entry.stackIndex * 0.12)
-    const localProgress = clamp((progress - delay) / Math.max(0.0001, 1 - delay), 0, 1)
+    const localProgress = getStrengthChangeEntryProgress(entry, progress)
     if (localProgress <= 0 || localProgress >= 1) return
 
     const center = projectHex(entry.anchor)
@@ -6925,7 +6957,8 @@ function drawUnit(unit: Unit, centerOverride?: { x: number; y: number }, alphaOv
     ctx.restore()
   }
 
-  const strengthOrb = drawStrengthDots(center, unit.strength, previewStrength, color)
+  const displayedStrength = getDisplayedUnitStrength(unit)
+  const strengthOrb = drawStrengthDots(center, displayedStrength, previewStrength, color)
   if (strengthOrb) {
     drawUnitModifierColumn(unit.modifiers, strengthOrb)
   }
@@ -8498,6 +8531,11 @@ function getPreviewUnitTargetSnapshot(
   return getUnitSnapshot(snapshot, unitId, order.player)
 }
 
+function shouldHideTrapResolutionPreviewTarget(order: GameState['actionQueue'][number]): boolean {
+  if (order.player === planningPlayer) return false
+  return CARD_DEFS[order.defId].effects.some((effect) => effect.type === 'placeTrap')
+}
+
 function buildResolutionCardPreviewPlan(
   order: GameState['actionQueue'][number],
   beforeState: GameState,
@@ -8506,6 +8544,9 @@ function buildResolutionCardPreviewPlan(
   shouldFizzleForUnavailableTarget = false
 ): ResolutionCardPreviewPlan {
   void animations
+  if (shouldHideTrapResolutionPreviewTarget(order)) {
+    return { mode: 'global' }
+  }
   if (shouldFizzleForUnavailableTarget) {
     return { mode: 'fizzle' }
   }
@@ -10628,11 +10669,20 @@ function collectStrengthChangeAnimationEntries(
     })
   })
 
-  const stackCounts = new Map<string, number>()
-  return [...explicitEvents, ...silentDeltaEvents]
+  const orderedEvents = [...explicitEvents, ...silentDeltaEvents]
     .filter((event) => event.amount !== 0)
     .sort((a, b) => a.index - b.index || a.unitId.localeCompare(b.unitId))
-    .map((event) => {
+  const groupOrderByLogIndex = new Map<number, number>()
+  const simultaneousCountsByLogIndex = new Map<number, number>()
+  const stackCounts = new Map<string, number>()
+  const rawEntries = orderedEvents
+    .map((event): ({
+      unitId: string
+      anchor: Hex
+      amount: number
+      stackIndex: number
+      rawDelay: number
+    } | null) => {
       const anchor =
         animatedPositions?.get(event.unitId) ??
         loggedPositions.get(event.unitId) ??
@@ -10641,14 +10691,37 @@ function collectStrengthChangeAnimationEntries(
       if (!anchor) return null
       const stackIndex = stackCounts.get(event.unitId) ?? 0
       stackCounts.set(event.unitId, stackIndex + 1)
+      const groupOrder = groupOrderByLogIndex.get(event.index) ?? groupOrderByLogIndex.size
+      if (!groupOrderByLogIndex.has(event.index)) {
+        groupOrderByLogIndex.set(event.index, groupOrder)
+      }
+      const simultaneousIndex = simultaneousCountsByLogIndex.get(event.index) ?? 0
+      simultaneousCountsByLogIndex.set(event.index, simultaneousIndex + 1)
       return {
         unitId: event.unitId,
         anchor: { ...anchor },
         amount: event.amount,
         stackIndex,
+        rawDelay: groupOrder * STRENGTH_CHANGE_GROUP_DELAY + simultaneousIndex * STRENGTH_CHANGE_SIMULTANEOUS_DELAY,
       }
     })
-    .filter((entry): entry is StrengthChangeAnimation['entries'][number] => entry !== null)
+    .filter(
+      (
+        entry
+      ): entry is {
+        unitId: string
+        anchor: Hex
+        amount: number
+        stackIndex: number
+        rawDelay: number
+      } => entry !== null
+    )
+  const maxRawDelay = rawEntries.reduce((maxDelay, entry) => Math.max(maxDelay, entry.rawDelay), 0)
+  const delayScale = maxRawDelay > STRENGTH_CHANGE_MAX_DELAY ? STRENGTH_CHANGE_MAX_DELAY / maxRawDelay : 1
+  return rawEntries.map(({ rawDelay, ...entry }) => ({
+    ...entry,
+    delay: rawDelay * delayScale,
+  }))
 }
 
 function parseShoveCollisions(logEntries: string[]): { index: number; targetUnitId: string }[] {
