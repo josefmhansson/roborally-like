@@ -641,7 +641,7 @@ type DeathAnimation = { type: 'death'; unit: Unit; duration: number }
 type DamageFlashAnimation = { type: 'damageFlash'; unitIds: string[]; duration: number }
 type StrengthChangeAnimation = {
   type: 'strengthChange'
-  entries: Array<{ unitId: string; anchor: Hex; amount: number; stackIndex: number; delay: number }>
+  entries: Array<{ unitId: string; anchor: Hex; amount: number; logIndex: number; stackIndex: number; delay: number }>
   duration: number
 }
 type LightningAnimation = { type: 'lightning'; target: Hex; duration: number }
@@ -960,6 +960,9 @@ const UNIT_MODIFIER_VISUALS: Record<Unit['modifiers'][number]['type'], UnitModif
 }
 const unitModifierIconUrls = {} as Record<Unit['modifiers'][number]['type'], string>
 const unitModifierIconAssets = {} as Record<Unit['modifiers'][number]['type'], ImageAsset>
+const unitModifierOutlinedSpriteCache = new Map<Unit['modifiers'][number]['type'], HTMLCanvasElement>()
+const UNIT_MODIFIER_SPRITE_CACHE_SIZE = 192
+const UNIT_MODIFIER_SPRITE_CACHE_PADDING = 10
 ;(Object.entries(UNIT_MODIFIER_VISUALS) as [Unit['modifiers'][number]['type'], UnitModifierVisual][])
   .forEach(([modifierType, visual]) => {
     const url = resolveAssetUrl(visual.iconPath)
@@ -4017,23 +4020,61 @@ function drawUnitModifierCountBadge(
   ctx.restore()
 }
 
-function drawOutlinedModifierAsset(asset: ImageAsset, center: { x: number; y: number }, size: number): void {
-  const offset = Math.max(1, size * 0.035)
+function getCachedOutlinedModifierSprite(
+  modifierType: Unit['modifiers'][number]['type']
+): HTMLCanvasElement | null {
+  const cached = unitModifierOutlinedSpriteCache.get(modifierType)
+  if (cached) return cached
+
+  const asset = unitModifierIconAssets[modifierType]
+  if (!asset?.loaded) return null
+
+  const canvas = document.createElement('canvas')
+  canvas.width = UNIT_MODIFIER_SPRITE_CACHE_SIZE
+  canvas.height = UNIT_MODIFIER_SPRITE_CACHE_SIZE
+  const context = canvas.getContext('2d')
+  if (!context) return null
+
+  const drawSize = UNIT_MODIFIER_SPRITE_CACHE_SIZE - UNIT_MODIFIER_SPRITE_CACHE_PADDING * 2
+  const baseX = UNIT_MODIFIER_SPRITE_CACHE_PADDING
+  const baseY = UNIT_MODIFIER_SPRITE_CACHE_PADDING
+  const offset = Math.max(2, Math.round(UNIT_MODIFIER_SPRITE_CACHE_SIZE * 0.02))
   const offsets = [
     { x: -offset, y: 0 },
     { x: offset, y: 0 },
     { x: 0, y: -offset },
     { x: 0, y: offset },
+    { x: -offset, y: -offset },
+    { x: offset, y: -offset },
+    { x: -offset, y: offset },
+    { x: offset, y: offset },
   ]
 
-  ctx.save()
-  ctx.filter = 'brightness(0)'
-  ctx.globalAlpha = 0.9
   offsets.forEach(({ x, y }) => {
-    ctx.drawImage(asset.img, center.x - size / 2 + x, center.y - size / 2 + y, size, size)
+    context.drawImage(asset.img, baseX + x, baseY + y, drawSize, drawSize)
   })
-  ctx.restore()
+  context.globalCompositeOperation = 'source-in'
+  context.fillStyle = 'rgba(0, 0, 0, 0.92)'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.globalCompositeOperation = 'source-over'
+  context.drawImage(asset.img, baseX, baseY, drawSize, drawSize)
 
+  unitModifierOutlinedSpriteCache.set(modifierType, canvas)
+  return canvas
+}
+
+function drawOutlinedModifierAsset(
+  modifierType: Unit['modifiers'][number]['type'],
+  center: { x: number; y: number },
+  size: number
+): void {
+  const cached = getCachedOutlinedModifierSprite(modifierType)
+  if (cached) {
+    ctx.drawImage(cached, center.x - size / 2, center.y - size / 2, size, size)
+    return
+  }
+  const asset = unitModifierIconAssets[modifierType]
+  if (!asset?.loaded) return
   ctx.drawImage(asset.img, center.x - size / 2, center.y - size / 2, size, size)
 }
 
@@ -4050,17 +4091,12 @@ function drawUnitModifierColumn(modifiers: Unit['modifiers'], orb: StrengthOrbMe
       x: orb.centerX,
       y: orb.centerY - stepY * (index + 1),
     }
-    const asset = unitModifierIconAssets[summary.type]
 
-    ctx.save()
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.42)'
-    ctx.shadowBlur = Math.max(4, orb.radius * 0.5)
-    if (asset?.loaded) {
-      drawOutlinedModifierAsset(asset, center, drawSize)
+    if (unitModifierIconAssets[summary.type]?.loaded) {
+      drawOutlinedModifierAsset(summary.type, center, drawSize)
     } else {
       drawUnitModifierFallback(center, orb.radius, summary.type)
     }
-    ctx.restore()
 
     drawUnitModifierCountBadge(center, drawSize * 0.5, summary.count, summary.kind)
   })
@@ -4138,13 +4174,20 @@ function getDisplayedUnitStrength(unit: Unit): number {
   if (!strengthChangeAnimation) return unit.strength
 
   const progress = currentAnimation?.type === 'strengthChange' ? animationProgress : 0
-  let pendingDelta = 0
+  let displayAdjustment = 0
   strengthChangeAnimation.entries.forEach((entry) => {
     if (entry.unitId !== unit.id) return
-    if (getStrengthChangeEntryProgress(entry, progress) > 0) return
-    pendingDelta += entry.amount
+    const shown = getStrengthChangeEntryProgress(entry, progress) > 0
+    const applied = entry.logIndex <= animationAppliedLogIndex
+    if (applied && !shown) {
+      displayAdjustment -= entry.amount
+      return
+    }
+    if (!applied && shown) {
+      displayAdjustment += entry.amount
+    }
   })
-  return Math.max(0, unit.strength - pendingDelta)
+  return Math.max(0, unit.strength + displayAdjustment)
 }
 
 function drawStrengthChangeAnimation(animation: StrengthChangeAnimation, progress: number): void {
@@ -10680,6 +10723,7 @@ function collectStrengthChangeAnimationEntries(
       unitId: string
       anchor: Hex
       amount: number
+      logIndex: number
       stackIndex: number
       rawDelay: number
     } | null) => {
@@ -10701,6 +10745,7 @@ function collectStrengthChangeAnimationEntries(
         unitId: event.unitId,
         anchor: { ...anchor },
         amount: event.amount,
+        logIndex: event.index,
         stackIndex,
         rawDelay: groupOrder * STRENGTH_CHANGE_GROUP_DELAY + simultaneousIndex * STRENGTH_CHANGE_SIMULTANEOUS_DELAY,
       }
@@ -10712,6 +10757,7 @@ function collectStrengthChangeAnimationEntries(
         unitId: string
         anchor: Hex
         amount: number
+        logIndex: number
         stackIndex: number
         rawDelay: number
       } => entry !== null
