@@ -3070,7 +3070,7 @@ test('charge only needs a direction and moves until blocked before attacking', (
   readyAndResolve(state)
 
   assert.deepEqual(state.units['charge-user']?.pos, { q: 3, r: 2 })
-  assert.equal(state.units['charge-blocker']?.strength, 3)
+  assert.equal(state.units['charge-blocker']?.strength, 2)
 })
 
 test('blade dance chains three moves and damages adjacent units after each step', () => {

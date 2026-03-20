@@ -14,6 +14,7 @@ export type BotScoringHeuristics = {
   leaderStrengthDeltaWeight: number
   unitStrengthDeltaWeight: number
   unitCountDeltaWeight: number
+  spentActionBudgetWeight: number
   pressureDeltaWeight: number
   tacticalDeltaWeight: number
   opponentHistoryRiskWeight: number
@@ -131,6 +132,7 @@ export const BOT_HEURISTICS: BotHeuristics = {
     leaderStrengthDeltaWeight: 500,
     unitStrengthDeltaWeight: 45,
     unitCountDeltaWeight: 22,
+    spentActionBudgetWeight: 8,
     pressureDeltaWeight: 8,
     tacticalDeltaWeight: 10,
     opponentHistoryRiskWeight: -14,
@@ -285,6 +287,11 @@ function normalizeHeuristics(overrides: BotHeuristicOverrides | undefined): BotH
         BOT_HEURISTICS.scoring.unitStrengthDeltaWeight
       ),
       unitCountDeltaWeight: readNumber(overrides?.scoring?.unitCountDeltaWeight, BOT_HEURISTICS.scoring.unitCountDeltaWeight),
+      spentActionBudgetWeight: readNumber(
+        overrides?.scoring?.spentActionBudgetWeight,
+        BOT_HEURISTICS.scoring.spentActionBudgetWeight,
+        0
+      ),
       pressureDeltaWeight: readNumber(overrides?.scoring?.pressureDeltaWeight, BOT_HEURISTICS.scoring.pressureDeltaWeight),
       tacticalDeltaWeight: readNumber(overrides?.scoring?.tacticalDeltaWeight, BOT_HEURISTICS.scoring.tacticalDeltaWeight),
       opponentHistoryRiskWeight: readNumber(
@@ -1118,6 +1125,7 @@ function evaluatePlanningState(
   const leaderStrengthDelta = ownLeaderStrength - enemyLeaderStrength
   const unitStrengthDelta = ownStrength - enemyStrength
   const unitCountDelta = ownUnits.length - enemyUnits.length
+  const spentActionBudget = getSpentImpactfulActionBudget(state, player)
   const pressureDelta = eliminateUnitsMode
     ? computeEliminationPressureDelta(ownUnits, enemyUnits, heuristics)
     : computePressureDelta(projected, player, ownUnits, enemyUnits, heuristics)
@@ -1130,6 +1138,7 @@ function evaluatePlanningState(
     leaderStrengthDelta * heuristics.scoring.leaderStrengthDeltaWeight +
     unitStrengthDelta * heuristics.scoring.unitStrengthDeltaWeight +
     unitCountDelta * heuristics.scoring.unitCountDeltaWeight +
+    spentActionBudget * heuristics.scoring.spentActionBudgetWeight +
     pressureDelta * heuristics.scoring.pressureDeltaWeight +
     tacticalDelta * heuristics.scoring.tacticalDeltaWeight +
     opponentHistoryRisk * heuristics.scoring.opponentHistoryRiskWeight +
@@ -1139,6 +1148,13 @@ function evaluatePlanningState(
 
   evaluationCache?.set(cacheKey, score)
   return score
+}
+
+function getSpentImpactfulActionBudget(state: GameState, player: PlayerId): number {
+  return state.players[player].orders.reduce((sum, order) => {
+    if (NON_IMPACTFUL_FALLBACK_CARD_IDS.has(order.defId)) return sum
+    return sum + (CARD_DEFS[order.defId].actionCost ?? 1)
+  }, 0)
 }
 
 function computePressureDelta(

@@ -288,6 +288,7 @@ test('bot planner resolves nested heuristic overrides without mutating defaults'
   assert.equal(resolved.maxCandidatesPerCard, 40)
   assert.equal(resolved.heuristics.scoring.pressureDeltaWeight, 17)
   assert.equal(resolved.heuristics.scoring.unitStrengthDeltaWeight, BOT_HEURISTICS.scoring.unitStrengthDeltaWeight)
+  assert.equal(resolved.heuristics.scoring.spentActionBudgetWeight, BOT_HEURISTICS.scoring.spentActionBudgetWeight)
   assert.equal(resolved.heuristics.chainLightning.basePlayChance, 1)
   assert.equal(resolved.heuristics.chainLightning.guaranteedReachableTargets, 1)
   assert.equal(resolved.heuristics.history.priors.spell_meteor, 0.4)

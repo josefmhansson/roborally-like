@@ -1055,6 +1055,18 @@ const ONLINE_SESSION_VERSION = 1
 const ONLINE_RECONNECT_DELAY_MS = 2000
 const BOT_HUMAN_PLAYER: PlayerId = 0
 const BOT_PLAYER: PlayerId = 1
+const LIVE_BOT_PLANNER_OPTIONS = {
+  bot: {
+    thinkTimeMs: 80,
+    beamWidth: 10,
+    maxCandidatesPerCard: 12,
+  },
+  roguelike: {
+    thinkTimeMs: 140,
+    beamWidth: 12,
+    maxCandidatesPerCard: 16,
+  },
+} as const
 const ROGUELIKE_STARTING_LEADER_HP = 20
 const ROGUELIKE_BASE_AP_BUDGET = 3
 const ROGUELIKE_RANDOM_REWARD_WEIGHTS = {
@@ -2868,11 +2880,8 @@ function scheduleBotPlanningTurn(): void {
     const botState = state.players[BOT_PLAYER]
     botState.orders = []
     state.ready[BOT_PLAYER] = false
-    const plan = buildBotPlan(state, BOT_PLAYER, {
-      thinkTimeMs: 50,
-      beamWidth: 10,
-      maxCandidatesPerCard: 12,
-    })
+    const plannerOptions = mode === 'roguelike' ? LIVE_BOT_PLANNER_OPTIONS.roguelike : LIVE_BOT_PLANNER_OPTIONS.bot
+    const plan = buildBotPlan(state, BOT_PLAYER, plannerOptions)
 
     if (token !== botPlanToken) return
     if (!isBotControlledMode() || state.phase !== 'planning' || !state.ready[BOT_HUMAN_PLAYER]) {
@@ -5857,28 +5866,42 @@ function drawIceBoltProjectile(animation: LineProjectileAnimation, progress: num
 
 function drawFireballProjectile(animation: LineProjectileAnimation, progress: number): void {
   const pose = getLineProjectilePose(animation, progress, 0.72)
+  const end = projectHex(animation.to)
+  const impact = animation.target ? projectHex(animation.target) : end
+  const travelDistance = Math.hypot(end.x - pose.start.x, end.y - pose.start.y)
+  const isShortRange = !animation.fizzle && travelDistance <= layout.size * 1.8
+  const travelPhase = clamp(progress / (animation.fizzle ? 1 : 0.72), 0, 1)
+  const loft = isShortRange ? Math.sin(travelPhase * Math.PI) * layout.size * 0.62 : 0
+  const launch = {
+    x: pose.start.x,
+    y: pose.start.y - (isShortRange ? layout.size * 0.18 : 0),
+  }
+  const orb = {
+    x: pose.current.x,
+    y: pose.current.y - loft,
+  }
   const radius = layout.size * (0.18 + 0.06 * Math.sin(progress * Math.PI))
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = pose.fadeAlpha
-  const trail = ctx.createLinearGradient(pose.start.x, pose.start.y, pose.current.x, pose.current.y)
+  const trail = ctx.createLinearGradient(launch.x, launch.y, orb.x, orb.y)
   trail.addColorStop(0, 'rgba(255, 120, 40, 0)')
   trail.addColorStop(1, 'rgba(255, 188, 90, 0.82)')
   ctx.strokeStyle = trail
   ctx.lineWidth = Math.max(2, layout.size * 0.11)
   ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.moveTo(pose.start.x, pose.start.y)
-  ctx.lineTo(pose.current.x, pose.current.y)
+  ctx.moveTo(launch.x, launch.y)
+  ctx.lineTo(orb.x, orb.y)
   ctx.stroke()
 
   const glow = ctx.createRadialGradient(
-    pose.current.x,
-    pose.current.y,
+    orb.x,
+    orb.y,
     radius * 0.15,
-    pose.current.x,
-    pose.current.y,
+    orb.x,
+    orb.y,
     radius * 1.8
   )
   glow.addColorStop(0, 'rgba(255, 255, 225, 0.95)')
@@ -5886,18 +5909,18 @@ function drawFireballProjectile(animation: LineProjectileAnimation, progress: nu
   glow.addColorStop(1, 'rgba(220, 78, 18, 0)')
   ctx.fillStyle = glow
   ctx.beginPath()
-  ctx.arc(pose.current.x, pose.current.y, radius * 1.6, 0, Math.PI * 2)
+  ctx.arc(orb.x, orb.y, radius * 1.6, 0, Math.PI * 2)
   ctx.fill()
 
-  if (!animation.fizzle && animation.target && progress > 0.66) {
-    const target = projectHex(animation.target)
-    const burstT = (progress - 0.66) / 0.34
+  const burstStart = isShortRange ? 0.52 : 0.66
+  if (!animation.fizzle && animation.target && progress > burstStart) {
+    const burstT = (progress - burstStart) / (1 - burstStart)
     const burstRadius = layout.size * (0.28 + burstT * 1.35)
     ctx.globalAlpha = Math.max(0.12, 0.88 - burstT * 0.58)
     ctx.strokeStyle = 'rgba(255, 165, 90, 0.95)'
     ctx.lineWidth = 3
     ctx.beginPath()
-    ctx.arc(target.x, target.y, burstRadius, 0, Math.PI * 2)
+    ctx.arc(impact.x, impact.y, burstRadius, 0, Math.PI * 2)
     ctx.stroke()
   }
   ctx.restore()
